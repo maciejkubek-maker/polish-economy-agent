@@ -1,3 +1,4 @@
+import datetime
 from tavily import TavilyClient
 import config
 
@@ -8,9 +9,10 @@ class WebSearchService:
     self.client = TavilyClient(api_key=config.TAVILY_API_KEY)
 
   def search_indicators(self, country: str) -> str:
+    current_year = datetime.datetime.now().year
     query = (
         f"Najnowsze wskaźniki makroekonomiczne {country} PKB inflacja CPI stopa"
-        " bezrobocia stopy procentowe GUS NBP 2026"
+        f" bezrobocia stopy procentowe GUS NBP {current_year}"
     )
 
     print(f"[Tavily Search] Przeszukiwanie sieci dla zapytania: '{query}'...")

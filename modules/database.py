@@ -42,6 +42,43 @@ class EconomyDatabase:
     conn.commit()
     conn.close()
 
+  def are_indicators_fresh(self, country: str, max_days: int = 3) -> bool:
+    """Sprawdza, czy w bazie istnieją dane od obu agentów nie starsze niż max_days."""
+    conn = sqlite3.connect(self.db_path)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+            SELECT agent_name, MAX(created_at)
+            FROM collected_indicators
+            WHERE country = ?
+            GROUP BY agent_name
+        """,
+        (country,),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    agents_found = {row[0]: row[1] for row in rows}
+
+    # Wymagamy danych od obu agentów, by uznać zestaw za kompletny
+    if (
+        "GeminiAgent" not in agents_found
+        or "GPTAgent" not in agents_found
+    ):
+      return False
+
+    now = datetime.datetime.now()
+    for agent, last_date_str in agents_found.items():
+      try:
+        last_date = datetime.datetime.fromisoformat(last_date_str)
+        if (now - last_date).total_seconds() > (max_days * 86400):
+          return False
+      except (ValueError, TypeError):
+        return False
+
+    return True
+
   def get_sources(
       self, country: str, agent_name: str = "PolishEconomyAgent"
   ) -> CountrySourcesResponse | None:
@@ -127,40 +164,3 @@ class EconomyDatabase:
 
     conn.commit()
     conn.close()
-
-  def get_indicator_chart_data(
-      self, country: str, indicator_name: str
-  ) -> dict:
-    conn = sqlite3.connect(self.db_path)
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-            SELECT period, value, created_at 
-            FROM collected_indicators 
-            WHERE country = ? AND indicator_name = ?
-            ORDER BY created_at ASC
-        """,
-        (country, indicator_name),
-    )
-    rows = cursor.fetchall()
-    conn.close()
-
-    labels = [row[0] for row in rows]
-    data = []
-    for row in rows:
-      val_str = row[1].replace("%", "").replace(" pkt", "").strip()
-      try:
-        data.append(float(val_str))
-      except ValueError:
-        data.append(0.0)
-
-    return {
-        "labels": labels,
-        "datasets": [{
-            "label": indicator_name,
-            "data": data,
-            "fill": False,
-            "borderColor": "rgb(75, 192, 192)",
-            "tension": 0.1,
-        }],
-    }
