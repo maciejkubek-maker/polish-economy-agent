@@ -43,7 +43,7 @@ class EconomyDatabase:
     conn.close()
 
   def are_indicators_fresh(self, country: str, max_days: int = 3) -> bool:
-    """Sprawdza, czy w bazie istnieją dane od obu agentów nie starsze niż max_days."""
+    """Sprawdza, czy w bazie istnieją świeże dane od obu agentów."""
     conn = sqlite3.connect(self.db_path)
     cursor = conn.cursor()
 
@@ -61,11 +61,7 @@ class EconomyDatabase:
 
     agents_found = {row[0]: row[1] for row in rows}
 
-    # Wymagamy danych od obu agentów, by uznać zestaw za kompletny
-    if (
-        "GeminiAgent" not in agents_found
-        or "GPTAgent" not in agents_found
-    ):
+    if "GeminiAgent" not in agents_found or "GPTAgent" not in agents_found:
       return False
 
     now = datetime.datetime.now()
@@ -142,6 +138,15 @@ class EconomyDatabase:
     conn = sqlite3.connect(self.db_path)
     cursor = conn.cursor()
     current_time = datetime.datetime.now().isoformat()
+
+    # Zastąpienie starych wskaźników świeżymi dla danego agenta
+    cursor.execute(
+        """
+            DELETE FROM collected_indicators 
+            WHERE country = ? AND agent_name = ?
+        """,
+        (country, agent_name),
+    )
 
     for ind in indicators:
       cursor.execute(

@@ -1,5 +1,9 @@
 import os
+import warnings
 from dotenv import load_dotenv
+
+# Całkowite wyciszenie ostrzeżeń zewnętrznych bibliotek (SDK / HTTP)
+warnings.filterwarnings("ignore")
 
 load_dotenv()
 
@@ -16,5 +20,6 @@ if not TAVILY_API_KEY:
   raise ValueError("Brak klucza TAVILY_API_KEY w .env!")
 
 DEFAULT_COUNTRY = "Polska"
-DEFAULT_LLM_MODEL = "gemini-3.5-flash"
+# Najnowszy model Gemini
+DEFAULT_LLM_MODEL = "gemini-3.8-flash"
 DEFAULT_OPENAI_MODEL = "gpt-4o"
