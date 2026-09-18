@@ -21,5 +21,5 @@ if not TAVILY_API_KEY:
 
 DEFAULT_COUNTRY = "Polska"
 # Najnowszy model Gemini
-DEFAULT_LLM_MODEL = "gemini-3.8-flash"
+DEFAULT_LLM_MODEL = "gemini-3.5-flash"
 DEFAULT_OPENAI_MODEL = "gpt-4o"
