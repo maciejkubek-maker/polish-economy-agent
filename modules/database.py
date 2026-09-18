@@ -39,14 +39,38 @@ class EconomyDatabase:
                 created_at TIMESTAMP
             )
         """)
+    cursor.execute("""
+            CREATE TABLE IF NOT EXISTS generated_reports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                country TEXT,
+                report_date TEXT,
+                periods_summary TEXT,
+                content_markdown TEXT,
+                created_at TIMESTAMP
+            )
+        """)
+
+    # Samoczynna migracja kolumn w tabeli wskaźników
+    cursor.execute("PRAGMA table_info(collected_indicators)")
+    existing_cols = [col[1] for col in cursor.fetchall()]
+
+    if "previous_value" not in existing_cols:
+      cursor.execute(
+          "ALTER TABLE collected_indicators ADD COLUMN previous_value TEXT"
+          " DEFAULT 'Brak danych'"
+      )
+    if "trend_direction" not in existing_cols:
+      cursor.execute(
+          "ALTER TABLE collected_indicators ADD COLUMN trend_direction TEXT"
+          " DEFAULT 'brak danych'"
+      )
+
     conn.commit()
     conn.close()
 
   def are_indicators_fresh(self, country: str, max_days: int = 3) -> bool:
-    """Sprawdza, czy w bazie istnieją świeże dane od obu agentów."""
     conn = sqlite3.connect(self.db_path)
     cursor = conn.cursor()
-
     cursor.execute(
         """
             SELECT agent_name, MAX(created_at)
@@ -60,7 +84,6 @@ class EconomyDatabase:
     conn.close()
 
     agents_found = {row[0]: row[1] for row in rows}
-
     if "GeminiAgent" not in agents_found or "GPTAgent" not in agents_found:
       return False
 
@@ -139,33 +162,92 @@ class EconomyDatabase:
     cursor = conn.cursor()
     current_time = datetime.datetime.now().isoformat()
 
-    # Zastąpienie starych wskaźników świeżymi dla danego agenta
-    cursor.execute(
-        """
-            DELETE FROM collected_indicators 
-            WHERE country = ? AND agent_name = ?
-        """,
-        (country, agent_name),
-    )
-
     for ind in indicators:
+      prev_val = getattr(ind, "previous_value", "Brak danych")
+      trend = getattr(ind, "trend_direction", "brak danych")
+
       cursor.execute(
           """
-                INSERT INTO collected_indicators 
-                (agent_name, country, indicator_name, value, period, source_name, page_info, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                SELECT id FROM collected_indicators 
+                WHERE agent_name = ? AND country = ? AND indicator_name = ? AND period = ?
             """,
-          (
-              agent_name,
-              country,
-              ind.indicator_name,
-              ind.value,
-              ind.period,
-              ind.source_name,
-              ind.page_info,
-              current_time,
-          ),
+          (agent_name, country, ind.indicator_name, ind.period),
       )
+      existing = cursor.fetchone()
+
+      if existing:
+        cursor.execute(
+            """
+                    UPDATE collected_indicators 
+                    SET value = ?, previous_value = ?, trend_direction = ?, source_name = ?, page_info = ?, created_at = ?
+                    WHERE id = ?
+                """,
+            (
+                ind.value,
+                prev_val,
+                trend,
+                ind.source_name,
+                ind.page_info,
+                current_time,
+                existing[0],
+            ),
+        )
+      else:
+        cursor.execute(
+            """
+                    INSERT INTO collected_indicators 
+                    (agent_name, country, indicator_name, value, period, previous_value, trend_direction, source_name, page_info, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+            (
+                agent_name,
+                country,
+                ind.indicator_name,
+                ind.value,
+                ind.period,
+                prev_val,
+                trend,
+                ind.source_name,
+                ind.page_info,
+                current_time,
+            ),
+        )
 
     conn.commit()
     conn.close()
+
+  def save_generated_report(
+      self,
+      country: str,
+      report_date: str,
+      periods_summary: str,
+      markdown_text: str,
+  ):
+    conn = sqlite3.connect(self.db_path)
+    cursor = conn.cursor()
+    current_time = datetime.datetime.now().isoformat()
+    cursor.execute(
+        """
+            INSERT INTO generated_reports (country, report_date, periods_summary, content_markdown, created_at)
+            VALUES (?, ?, ?, ?, ?)
+        """,
+        (country, report_date, periods_summary, markdown_text, current_time),
+    )
+    conn.commit()
+    conn.close()
+
+  def get_latest_report(self, country: str) -> tuple | None:
+    conn = sqlite3.connect(self.db_path)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+            SELECT report_date, periods_summary, content_markdown, created_at 
+            FROM generated_reports 
+            WHERE country = ? 
+            ORDER BY id DESC LIMIT 1
+        """,
+        (country,),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return row
