@@ -49,3 +49,12 @@ Najpierw krótki raport Markdown, opcjonalnie poniższy JSON do przetwarzania ma
   "requires_decision": []
 }
 ```
+
+## Obowiązkowy raport do GitHub — komunikacja z recenzentem ChatGPT
+- Po **każdym zakończonym zadaniu** albo po napotkaniu blokującej decyzji przygotuj i **opublikuj** raport Markdown pod `docs/agent-reports/TASK-XX-REPORT.md` na branchu danego zadania. Skorzystaj z `docs/agent-reports/REPORT_TEMPLATE.md`.
+- Raport zawiera: zakres wykonanych czynności, konkretne ścieżki zmienionych plików, commit SHA, link do PR, polecenia i faktyczne wyniki testów, znane podatności, ryzyka, pytania oraz następny krok. Oddziel `DONE` od `PROPOSED` i `NOT_RUN`.
+- Pytania wymagające decyzji zgłaszaj w `docs/agent-reports/DECISION_REQUESTS.md` z identyfikatorem `DR-XXX`, opcjami, rekomendacją i statusem `PENDING_REVIEW`.
+- Commituj i pushuj raport wraz ze zmianami na **branchu zadania**. Jeśli nie ma zmian w kodzie, można wypchnąć commit wyłącznie z raportem. Nie commituj do `main` i nie wykonuj merge.
+- Jeśli nie masz uprawnień lub nie możesz wykonać push, jawnie oznacz `NOT_PUBLISHED`, nie deklaruj publikacji i przekaż treść raportu właścicielowi.
+- Raport w repo nie jest wiadomością wysłaną automatycznie do ChatGPT. Po publikacji podaj właścicielowi link do PR lub commita, aby mógł napisać „sprawdź raport na GitHubie”.
+- Nie publikuj sekretów, kopii bazy ani lokalnych ścieżek identyfikujących użytkownika.
