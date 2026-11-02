@@ -1,19 +1,24 @@
-import datetime
+"""
+Aplikacja Polish Economy Agent.
+Uruchamia potok danych makroekonomicznych v2 oraz serwuje raport analityczny.
+"""
+
+from datetime import datetime
 import html
 import os
 import re
+from typing import Optional
 from urllib.parse import urlparse
-import config
 from flask import Flask, send_file
-from modules.data_fetcher import EconomyDataFetcher
+import config
 from modules.database import EconomyDatabase
 from modules.evaluator import EconomyEvaluator
-from modules.gpt_fetcher import OpenAIDataFetcher
-from modules.search_service import WebSearchService
 from modules.sources import PolishEconomySourceChecker
+from modules.storage_v2 import SQLiteV2Storage
 
 server = Flask(__name__)
 _db = None
+_storage_v2 = None
 
 
 def get_db() -> EconomyDatabase:
@@ -24,13 +29,41 @@ def get_db() -> EconomyDatabase:
   return _db
 
 
-def set_db(database: EconomyDatabase):
+def set_db(database: Optional[EconomyDatabase]):
   """Umożliwia wstrzyknięcie izolowanej instancji bazy danych (np. w testach)."""
   global _db
   _db = database
 
 
+def get_storage_v2() -> Optional[SQLiteV2Storage]:
+  """Zwraca instancję bazy SQLite v2 z leniwą inicjalizacją."""
+  global _storage_v2
+  if _storage_v2 is None:
+    v2_path = getattr(config, "DB_V2_PATH", os.path.join("instance", "economy_agent_v2.db"))
+    if os.path.exists(v2_path):
+      try:
+        _storage_v2 = SQLiteV2Storage(v2_path)
+      except Exception:
+        _storage_v2 = None
+  return _storage_v2
+
+
+def set_storage_v2(storage: Optional[SQLiteV2Storage]):
+  """Umożliwia wstrzyknięcie izolowanej instancji SQLiteV2Storage (np. w testach)."""
+  global _storage_v2
+  _storage_v2 = storage
+
+
 def format_report_html(text: str) -> str:
+  """Bezpiecznie formatuje tekst markdown raportu na HTML.
+
+  Stosuje rygorystyczne reguły ochrony przed XSS i formatowania:
+  1. Pełna ucieczka znaków specjalnych HTML (escape).
+  2. Zamiana nagłówków Markdown (#, ##, ###) na semantyczne tagi HTML (h1, h2, h3).
+  3. Formatowanie pogrubień (**tekst** -> <strong>tekst</strong>).
+  4. Bezpieczna zamiana odnośników numerycznych [1], [2] na indeksy górne.
+  5. Zamiana bezpiecznych linków URL na klikalne hiperłącza z walidacją scheme.
+  """
   if not text:
     return ""
 
@@ -115,15 +148,48 @@ def save_report_to_html(report_text: str):
 @server.route("/")
 @server.route("/report.html")
 def serve_report():
-  # 1. Pobranie z bazy danych
+  # 1. Jeśli wstrzyknięto izolowaną bazę SQLite v2 (np. w testach v2)
+  global _storage_v2, _db
+  if _storage_v2 is not None:
+    try:
+      latest_v2 = _storage_v2.get_latest_report(config.DEFAULT_COUNTRY)
+      if latest_v2 and latest_v2.get("report_markdown"):
+        return build_html_template(latest_v2["report_markdown"], config.DEFAULT_COUNTRY)
+    except Exception as err:
+      print(f"[App Warning] Błąd odczytu ze wstrzykniętej bazy v2: {err}")
+
+  # 2. Jeśli wstrzyknięto izolowaną bazę legacy SQLite v1 (np. w testach v1 / html security)
+  if _db is not None:
+    latest_db_report = _db.get_latest_report(config.DEFAULT_COUNTRY)
+    if latest_db_report:
+      markdown_content = latest_db_report[2]
+      return build_html_template(markdown_content, config.DEFAULT_COUNTRY)
+    # Jeśli wstrzyknięto _db, ale brak w niej raportu - sprawdź fallback do pliku
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    report_path = os.path.join(current_dir, "report.html")
+    if os.path.exists(report_path):
+      return send_file(report_path)
+    return "Brak wygenerowanego raportu w bazie ani na dysku.", 404
+
+  # 3. Domyślny tryb produkcyjny (brak wstrzykniętych baz testowych)
+  # Priorytet 1: Baza SQLite v2 na dysku
+  storage_v2 = get_storage_v2()
+  if storage_v2 is not None:
+    try:
+      latest_v2 = storage_v2.get_latest_report(config.DEFAULT_COUNTRY)
+      if latest_v2 and latest_v2.get("report_markdown"):
+        return build_html_template(latest_v2["report_markdown"], config.DEFAULT_COUNTRY)
+    except Exception as err:
+      print(f"[App Warning] Błąd odczytu z domyślnej bazy v2: {err}")
+
+  # Priorytet 2: Baza legacy SQLite v1 na dysku
   database = get_db()
   latest_db_report = database.get_latest_report(config.DEFAULT_COUNTRY)
   if latest_db_report:
-    # latest_db_report: 0: report_date, 1: periods_summary, 2: content_markdown, 3: created_at
     markdown_content = latest_db_report[2]
     return build_html_template(markdown_content, config.DEFAULT_COUNTRY)
 
-  # 2. Awaryjny fallback do pliku na dysku
+  # Priorytet 3: Plik HTML na dysku
   current_dir = os.path.dirname(os.path.abspath(__file__))
   report_path = os.path.join(current_dir, "report.html")
   if os.path.exists(report_path):
@@ -132,12 +198,23 @@ def serve_report():
   return "Brak wygenerowanego raportu w bazie ani na dysku.", 404
 
 
-def run_pipeline(force_refresh: bool = True):
+def run_pipeline(force_refresh: bool = True, offline_mode: bool = False, use_v2: bool = True):
   country = config.DEFAULT_COUNTRY
   print("=" * 60)
   print(f"Uruchamianie Agenta Ekonomicznego dla kraju: {country}")
   print("=" * 60)
 
+  if use_v2:
+    from modules.pipeline_v2 import MacroPipelineV2
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    report_path = os.path.join(current_dir, "report.html")
+    v2_storage = get_storage_v2() or SQLiteV2Storage()
+    pipeline = MacroPipelineV2(db=v2_storage, offline_mode=offline_mode)
+    result = pipeline.run(country=country, output_html_path=report_path, force_refresh=force_refresh)
+    print("\n[System] Potok v2 zakończony sukcesem. Podgląd: http://127.0.0.1:5000/report.html\n")
+    return result
+
+  # Ścieżka legacy (v1)
   database = get_db()
   economic_data = database.get_sources(
       country=country, agent_name="PolishEconomyAgent"
@@ -145,51 +222,22 @@ def run_pipeline(force_refresh: bool = True):
   if not economic_data:
     print("[System] Inicjalizacja listy zaufanych źródeł...")
     checker = PolishEconomySourceChecker()
-    economic_data = checker.get_trusted_sources(country=country)
-    database.save_sources(economic_data, agent_name="PolishEconomyAgent")
-
-  if not force_refresh and database.are_indicators_fresh(
-      country=country, max_days=3
-  ):
-    print(f"[Cache] Dane dla {country} są aktualne. Generowanie raportu...")
-  else:
-    print(f"[System] Pobieranie nowych wskaźników dla kraju: {country}...")
-    search_service = WebSearchService()
-    web_results = search_service.search_indicators(country=country)
-
-    gemini_fetcher = EconomyDataFetcher(agent_name="GeminiAgent")
-    gemini_fetcher.fetch_and_store_indicators(
-        country=country, web_results=web_results
-    )
-
-    gpt_fetcher = OpenAIDataFetcher(agent_name="GPTAgent")
-    gpt_fetcher.fetch_and_store_indicators(
-        country=country, web_results=web_results
+    checker.populate_initial_sources(country=country)
+    economic_data = database.get_sources(
+        country=country, agent_name="PolishEconomyAgent"
     )
 
   evaluator = EconomyEvaluator()
-  report_text = evaluator.evaluate_and_compare(country=country)
-
-  # Zapis lokalny HTML
-  save_report_to_html(report_text)
-
-  # Zapis trwały w bazie SQLite
-  today_str = datetime.datetime.now().strftime("%d.%m.%Y")
-  database.save_generated_report(
+  report_text = evaluator.evaluate(
       country=country,
-      report_date=today_str,
-      periods_summary="Najnowsze dostępne odczyty",
-      markdown_text=report_text,
+      economic_data=economic_data,
+      force_refresh=force_refresh,
   )
 
-  print(
-      "\n[System] Raport został pomyślnie zarchiwizowany w bazie danych i"
-      " zapisany do HTML."
-  )
-  print("Podgląd: http://127.0.0.1:5000/report.html\n")
+  save_report_to_html(report_text)
+  print("\n[System] Raport wygenerowany. Podgląd: http://127.0.0.1:5000/report.html\n")
 
 
 if __name__ == "__main__":
-  run_pipeline()
-  port = int(os.environ.get("PORT", 5000))
-  server.run(host="0.0.0.0", port=port, debug=False)
+  run_pipeline(force_refresh=True)
+  server.run(host="127.0.0.1", port=5000, debug=False)
