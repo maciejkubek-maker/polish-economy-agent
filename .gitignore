@@ -47,6 +47,10 @@ ENV/
 # dotenv
 *.env
 
+# SQLite local target databases
+instance/*_v2.db
+instance/test_*.db
+
 # OS
 .DS_Store
 Thumbs.db

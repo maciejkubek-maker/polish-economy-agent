@@ -1,0 +1,289 @@
+{
+  "timestamp_utc": "2026-11-02T19:04:47.805022+00:00",
+  "tests": [
+    {
+      "service": "NBP",
+      "name": "Kurs średni EUR/PLN (Tabela A)",
+      "url": "https://api.nbp.pl/api/exchangerates/rates/A/EUR/?format=json",
+      "http_status": 200,
+      "response_type": "JSON",
+      "payload_bytes": 120,
+      "payload_hash": "2f3c004fef626e8a0115e006ba4b75b6fc0b4d3d16c3973da3a557befafe8004",
+      "duration_ms": 211,
+      "verified": true,
+      "validation_status": "VERIFIED",
+      "observation": {
+        "indicator": "PL_FX_EUR_PLN",
+        "value": "4.4185",
+        "unit": "EUR_PLN",
+        "period": "2026-11-02 - 2026-11-02",
+        "publication_date": "2026-11-02",
+        "metadata": {
+          "table_no": "213/A/NBP/2026",
+          "currency_name": "euro",
+          "currency_code": "EUR"
+        }
+      },
+      "notes": "Odczyt tabeli A NBP z oficjalnego endpointu REST."
+    },
+    {
+      "service": "NBP",
+      "name": "Kurs średni USD/PLN (Tabela A)",
+      "url": "https://api.nbp.pl/api/exchangerates/rates/A/USD/?format=json",
+      "http_status": 200,
+      "response_type": "JSON",
+      "payload_bytes": 133,
+      "payload_hash": "9141bba106bef12085956e00406015bdc81342fb6901bc9b3b6a71c00ce9b43d",
+      "duration_ms": 138,
+      "verified": true,
+      "validation_status": "VERIFIED",
+      "observation": {
+        "indicator": "PL_FX_USD_PLN",
+        "value": "3.9389",
+        "unit": "USD_PLN",
+        "period": "2026-11-02 - 2026-11-02",
+        "publication_date": "2026-11-02",
+        "metadata": {
+          "table_no": "213/A/NBP/2026",
+          "currency_name": "dolar amerykański",
+          "currency_code": "USD"
+        }
+      },
+      "notes": "Odczyt tabeli A NBP z oficjalnego endpointu REST."
+    },
+    {
+      "service": "NBP",
+      "name": "Podstawowa stopa procentowa (referencyjna) NBP",
+      "url": "https://static.nbp.pl/dane/stopy/stopy_procentowe.xml",
+      "http_status": 200,
+      "response_type": "XML",
+      "payload_bytes": 2999,
+      "payload_hash": "1b945a7924832474af670b0f0a4871dc1724e7f154ccbfaee8ab548e1c3dbfe3",
+      "duration_ms": 194,
+      "verified": true,
+      "validation_status": "VERIFIED",
+      "observation": {
+        "indicator": "PL_NBP_REFERENCE_RATE",
+        "value": "3.75",
+        "unit": "PCT",
+        "period": "od 2026-03-05",
+        "publication_date": "2026-03-05",
+        "metadata": {
+          "rate_type": "referencyjna",
+          "rate_id": "ref",
+          "effective_from": "2026-03-05"
+        }
+      },
+      "notes": "Oficjalny plik XML stóp procentowych NBP (stopy_procentowe.xml)."
+    },
+    {
+      "service": "Eurostat",
+      "name": "HICP r/r (teicp000, COICOP 2018 - bieżąca seria 2026)",
+      "url": "https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/teicp000?format=JSON&lang=en&geo=PL",
+      "http_status": 200,
+      "response_type": "JSON-stat 2.0",
+      "payload_bytes": 5993,
+      "payload_hash": "9d21e885e4e5d47a8f7e76970d4696c2bbc0899d1cc00c16bec1597f280f832c",
+      "duration_ms": 209,
+      "verified": true,
+      "validation_status": "VERIFIED",
+      "series_count": 12,
+      "latest_observation": {
+        "indicator": "EU_HICP_YOY",
+        "value": "4.0",
+        "unit": "PCT",
+        "period": "2026-09-01 - 2026-09-30",
+        "publication_date": null,
+        "classification": "COICOP_2018",
+        "is_archival": false
+      },
+      "notes": "Bieżąca tabela wskaźników kluczowych teicp000, coicop18 TOTAL, unit PCH_M12."
+    },
+    {
+      "service": "Eurostat",
+      "name": "HICP r/r (prc_hicp_manr, COICOP 1999 - archiwalna seria do 2025-12)",
+      "url": "https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/prc_hicp_manr?format=JSON&lang=en&geo=PL&coicop=CP00",
+      "http_status": 200,
+      "response_type": "JSON-stat 2.0",
+      "payload_bytes": 18521,
+      "payload_hash": "e1cbec36c33914f844a300d98b7380945d685b41eb1d0c7fa927e3fd976c584f",
+      "duration_ms": 244,
+      "verified": true,
+      "validation_status": "VERIFIED",
+      "series_count": 348,
+      "latest_observation": {
+        "indicator": "EU_HICP_YOY",
+        "value": "2.5",
+        "unit": "PCT",
+        "period": "2025-12-01 - 2025-12-31",
+        "publication_date": null,
+        "classification": "COICOP_1999_ARCHIVAL",
+        "is_archival": true
+      },
+      "notes": "Dataset prc_hicp_manr, coicop CP00 (szereg archiwalny Eurostatu)."
+    },
+    {
+      "service": "Eurostat",
+      "name": "Zharmonizowana stopa bezrobocia BAEL (PL)",
+      "url": "https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/une_rt_m?format=JSON&lang=en&s_adj=SA&age=TOTAL&sex=T&unit=PC_ACT&geo=PL",
+      "http_status": 200,
+      "response_type": "JSON-stat 2.0",
+      "payload_bytes": 25710,
+      "payload_hash": "19799726a597518b28acc72114b3da0d76889367fcf9757d50c88da3d5a97615",
+      "duration_ms": 269,
+      "verified": true,
+      "validation_status": "VERIFIED",
+      "series_count": 357,
+      "latest_observation": {
+        "indicator": "PL_UNEMPLOYMENT_LFS_RATE",
+        "value": "3.4",
+        "unit": "PCT",
+        "period": "2026-09-01 - 2026-09-30",
+        "publication_date": null
+      },
+      "notes": "Dataset une_rt_m, s_adj SA, unit PC_ACT."
+    },
+    {
+      "service": "Eurostat",
+      "name": "Kwartalny wzrost PKB kw/kw (PL_GDP_QOQ)",
+      "url": "https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/namq_10_gdp?format=JSON&lang=en&na_item=B1GQ&s_adj=SCA&unit=CLV_PCH_PRE&geo=PL",
+      "http_status": 200,
+      "response_type": "JSON-stat 2.0",
+      "payload_bytes": 11012,
+      "payload_hash": "79493d67f39725f25e27d05ecea9cd1453922789394fce6d88ccfb62d8348908",
+      "duration_ms": 191,
+      "verified": true,
+      "validation_status": "VERIFIED",
+      "series_count": 125,
+      "latest_observation": {
+        "indicator": "PL_GDP_QOQ",
+        "value": "1.1",
+        "unit": "PCT",
+        "period": "2026-04-01 - 2026-06-30",
+        "publication_date": null
+      },
+      "notes": "Dataset namq_10_gdp, unit CLV_PCH_PRE / PCH_PRE, na_item B1GQ."
+    },
+    {
+      "service": "Eurostat",
+      "name": "Kwartalny wzrost PKB r/r (PL_GDP_YOY)",
+      "url": "https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/namq_10_gdp?format=JSON&lang=en&na_item=B1GQ&s_adj=SCA&unit=CLV_PCH_SM&geo=PL",
+      "http_status": 200,
+      "response_type": "JSON-stat 2.0",
+      "payload_bytes": 11008,
+      "payload_hash": "2349718d2fcfab779e0e8136742d308a7dd54b77a0d3a576872a4c42a0300dbb",
+      "duration_ms": 223,
+      "verified": true,
+      "validation_status": "VERIFIED",
+      "series_count": 122,
+      "latest_observation": {
+        "indicator": "PL_GDP_YOY",
+        "value": "4.0",
+        "unit": "PCT",
+        "period": "2026-04-01 - 2026-06-30",
+        "publication_date": null
+      },
+      "notes": "Dataset namq_10_gdp, unit CLV_PCH_SM / PCH_SM_PR_Y, na_item B1GQ."
+    },
+    {
+      "service": "Eurostat",
+      "name": "Poziom/wolumen PKB w cenach stałych (PL_GDP_VOLUME)",
+      "url": "https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/namq_10_gdp?format=JSON&lang=en&na_item=B1GQ&s_adj=SCA&unit=CLV10_MEUR&geo=PL",
+      "http_status": 200,
+      "response_type": "JSON-stat 2.0",
+      "payload_bytes": 11535,
+      "payload_hash": "278ce95e40c916819cb266ca24b76db018af3c35d85fc0a5f3a88603fa407819",
+      "duration_ms": 200,
+      "verified": true,
+      "validation_status": "VERIFIED",
+      "series_count": 126,
+      "latest_observation": {
+        "indicator": "PL_GDP_VOLUME",
+        "value": "154972.9",
+        "unit": "MEUR",
+        "period": "2026-04-01 - 2026-06-30",
+        "publication_date": null
+      },
+      "notes": "Dataset namq_10_gdp, unit CLV10_MEUR (mln EUR w cenach stałych), na_item B1GQ."
+    },
+    {
+      "service": "GUS BDL",
+      "name": "Stopa bezrobocia rejestrowanego (PL_UNEMPLOYMENT_REGISTERED_RATE)",
+      "url": "https://bdl.stat.gov.pl/api/v1/data/by-variable/60270?unit-level=0&format=json",
+      "http_status": 200,
+      "response_type": "JSON",
+      "payload_bytes": 975,
+      "payload_hash": "fcbf0e94ed8f8b09b6a1ba64ef501ee51433f4988f0e3c9d0abea7fab05793db",
+      "duration_ms": 2258,
+      "verified": true,
+      "validation_status": "VERIFIED",
+      "series_count": 22,
+      "latest_observation": {
+        "indicator": "PL_UNEMPLOYMENT_REGISTERED_RATE",
+        "value": "5.7",
+        "unit": "PCT",
+        "period": "2025-01-01 - 2025-12-31",
+        "publication_date": null
+      },
+      "notes": "BDL zmienna 60270 (ogółem, poziom 0 / Polska - szereg roczny ANNUAL)."
+    },
+    {
+      "service": "GUS BDL",
+      "name": "Liczba bezrobotnych zarejestrowanych (var 60269)",
+      "url": "https://bdl.stat.gov.pl/api/v1/data/by-variable/60269?unit-level=0&format=json",
+      "http_status": 404,
+      "duration_ms": 2504,
+      "verified": false,
+      "validation_status": "NOT_VERIFIED",
+      "error": "HTTP 404: Not Found - Zasób nie istnieje w publicznym API GUS BDL (zmienna wycofana lub przeniesiona)",
+      "raw_error_payload": "{\r\n  \"errors\": [\r\n    {\r\n      \"errorResult\": \"Zasób nie istnieje\",\r\n      \"errorReason\": \"Nie znaleziono zasobu o podanym identyfikatorze\",\r\n      \"errorSolution\": \"Proszę sprawdzić poprawność identyfikatora zasobu\",\r\n      \"errorCode\": 3,\r\n      \"errorHelp\": \"https://bdl.stat.gov.pl/api/v1/help/co",
+      "notes": "Zmienna 60269 nie istnieje w katalogu GUS BDL. Wskaźnik PL_UNEMPLOYMENT_REGISTERED_COUNT wymaga kompletnego mapowania weryfikacyjnego i pozostaje jako NOT_VERIFIED."
+    },
+    {
+      "service": "GUS DBW",
+      "name": "Wskaźnik cen towarów i usług konsumpcyjnych CPI r/r (PL_CPI_YOY)",
+      "url": "https://api-dbw.stat.gov.pl/api/variable/variable-data-section?id-zmienna=305&id-przekroj=736&id-rok=2024&id-okres=255",
+      "http_status": 200,
+      "response_type": "JSON",
+      "payload_bytes": 24280,
+      "payload_hash": "0a8a5db9793841f5af9c8fc54559803b0a7e5010b5cca2c19484b85c28a61f9a",
+      "duration_ms": 237,
+      "verified": true,
+      "validation_status": "VERIFIED",
+      "observation": {
+        "indicator": "PL_CPI_YOY",
+        "value": "0.1",
+        "unit": "PCT",
+        "period": "2024-09-01 - 2024-09-30",
+        "publication_date": null,
+        "metadata": {
+          "gus_dbw_zmienna": 305,
+          "gus_dbw_przekroj": 736,
+          "rok": 2024,
+          "okres_id": 255,
+          "resolved_month": 9,
+          "raw_value": "100.1",
+          "is_index_base_100": true,
+          "as_percentage_change": true
+        }
+      },
+      "notes": "Endpoint api-dbw.stat.gov.pl/api/variable/variable-data-section (zmienna 305, przekrój 736, okres 255 = wrzesień)."
+    },
+    {
+      "service": "GUS DBW",
+      "name": "Słownik okresów DBW (weryfikacja kodów 247–258)",
+      "url": "https://api-dbw.stat.gov.pl/api/dictionaries/periods-dictionary?page-size=50",
+      "http_status": 200,
+      "response_type": "JSON",
+      "duration_ms": 163,
+      "verified": true,
+      "validation_status": "VERIFIED",
+      "sample_mappings": {
+        "247": "miesiąc - dane miesięczne - styczeń",
+        "255": "miesiąc - dane miesięczne - wrzesień",
+        "258": "miesiąc - dane miesięczne - grudzień"
+      },
+      "notes": "Oficjalny słownik okresów potwierdza 247=styczeń, 255=wrzesień, 258=grudzień."
+    }
+  ]
+}
