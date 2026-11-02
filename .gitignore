@@ -41,6 +41,9 @@ ENV/
 # Jupyter Notebook
 .ipynb_checkpoints
 
+# Pytest
+.pytest_cache/
+
 # dotenv
 *.env
 
