@@ -95,4 +95,4 @@ Wszystkie 98 testów (konektory, migrator v2, bezpieczeństwo HTML, izolacja SQL
 - **Branch:** `feature/data-platform-v2`
 - **Draft PR:** [PR #4](https://github.com/maciejkubek-maker/polish-economy-agent/pull/4)
 - **Commit TASK-04:** `ac4f7f821a1caa1756d50c114044bb30c3664197`
-- **Commit TASK-05:** (zostanie wygenerowany i uzupełniony poniżej po zatwierdzeniu plików)
+- **Commit TASK-05:** `f3f7ce8a12ffd138902338b22910fc4c11854ca7`
