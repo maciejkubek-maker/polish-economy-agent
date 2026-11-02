@@ -2,7 +2,7 @@
 
 **Status:** `READY_FOR_REVIEW` (Wdrożenie poprawek z code review: out-of-order import, źródła i hashe)  
 **Branch:** `design/03-data-contract`  
-**Commit SHA:** `PENDING_COMMIT_SHA`  
+**Commit SHA:** `f0fb7c01f423cc410c2352e22e49def96a02e81e`  
 **PR:** `https://github.com/maciejkubek-maker/polish-economy-agent/pull/3`  
 **Data:** 2026-11-02  
 
@@ -88,7 +88,7 @@ Wszystkie 3 uwagi z ostatniego przeglądu kodu zostały w pełni wdrożone i zwe
   "task_id": "TASK-03",
   "status": "READY_FOR_REVIEW",
   "branch": "design/03-data-contract",
-  "commit_sha": "PENDING_COMMIT_SHA",
+  "commit_sha": "f0fb7c01f423cc410c2352e22e49def96a02e81e",
   "pull_request": "https://github.com/maciejkubek-maker/polish-economy-agent/pull/3",
   "tests": {"status": "PASSED", "passed": 64, "failed": 0},
   "files_changed": [
