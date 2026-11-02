@@ -6,8 +6,8 @@ Obsługuje:
 1. GUS BDL (Bank Danych Lokalnych REST API v1):
    - Wyszukiwanie zmiennych: GET https://bdl.stat.gov.pl/api/v1/variables/search?name={query}&format=json
    - Pobieranie danych dla zmiennej: GET https://bdl.stat.gov.pl/api/v1/data/by-variable/{var_id}?unit-level=0&format=json
-   - Potwierdzony wskaźnik: Stopa bezrobocia rejestrowanego (var_id=60270) -> PL_UNEMPLOYMENT_REGISTERED_RATE
-   - Potwierdzony wskaźnik: Liczba bezrobotnych zarejestrowanych (var_id=60269) -> PL_UNEMPLOYMENT_REGISTERED_COUNT
+   - Potwierdzony wskaźnik: Stopa bezrobocia rejestrowanego - ogółem, dane roczne (var_id=60270) -> PL_UNEMPLOYMENT_REGISTERED_RATE
+   - Zmienna 60269 (Liczba bezrobotnych zarejestrowanych) wycofana z publicznego API BDL (HTTP 404) -> status NOT_VERIFIED
 
 2. GUS DBW (Dziedzinowe Bazy Wiedzy REST API):
    - Pobieranie danych: GET https://api-dbw.stat.gov.pl/api/variable/variable-data-section?id-zmienna={var_id}&id-przekroj={przekroj_id}&id-rok={rok}&id-okres={okres_id}
@@ -16,8 +16,10 @@ Obsługuje:
    - Przeliczanie indeksu na stopę procentową w oparciu o potwierdzoną metodologię bazy 100 (bez heurystyk liczbowych)
 
 3. Rygor braku fikcyjnych ID (Rule 8 & 12 AGENTS.md):
-   - Wskaźniki wymagające zmapowania (wynagrodzenia, produkcja przemysłowa, PKB) rzucają
+   - Wskaźniki wymagające zmapowania (wynagrodzenia, produkcja przemysłowa, PKB, liczba bezrobotnych) rzucają
      wyjątek VariableNotMappedError, jeśli nie podano zweryfikowanego identyfikatora zmiennej.
+
+4. Rozdzielenie period_end od daty publikacji (jeśli API nie podaje daty publikacji, publication_date=None).
 """
 
 import calendar
@@ -44,19 +46,16 @@ class GusConnector(BaseConnector):
     SOURCE_ID_BDL = "SRC_GUS_BDL"
     SOURCE_ID_DBW = "SRC_GUS_DBW"
 
-    # Słownik zweryfikowanych identyfikatorów zmiennych (potwierdzone w dokumentacji i testach)
+    # Słownik zweryfikowanych identyfikatorów zmiennych BDL
+    # Zmienna 60270 w oficjalnym API BDL to szereg ROCZNY (stany roczne).
+    # Zmienna 60269 została usunięta z katalogu zweryfikowanych, ponieważ live API zwraca HTTP 404 (zasób nie istnieje).
     VERIFIED_BDL_VARIABLES = {
         60270: {
             "indicator_code": "PL_UNEMPLOYMENT_REGISTERED_RATE",
-            "name": "Stopa bezrobocia rejestrowanego - ogółem",
+            "name": "Stopa bezrobocia rejestrowanego - ogółem (szereg roczny BDL)",
             "unit_code": "PCT",
-            "frequency": "MONTHLY",
-        },
-        60269: {
-            "indicator_code": "PL_UNEMPLOYMENT_REGISTERED_COUNT",
-            "name": "Bezrobotni zarejestrowani - ogółem",
-            "unit_code": "THOUSAND_PERSONS",
-            "frequency": "MONTHLY",
+            "frequency": "ANNUAL",
+            "status": "VERIFIED",
         },
     }
 
@@ -72,8 +71,9 @@ class GusConnector(BaseConnector):
     }
 
     # Wskaźniki ze statusem CONFIRMED_API_REQUIRES_VARIABLE_MAPPING, które nie posiadają
-    # statycznie zakodowanego ID, aby uniknąć fikcyjnych identyfikatorów przy corocznych zmianach GUS
+    # statycznie zakodowanego ID, aby uniknąć fikcyjnych identyfikatorów przy zmianach GUS
     UNMAPPED_INDICATORS = {
+        "PL_UNEMPLOYMENT_REGISTERED_COUNT": "Liczba bezrobotnych zarejestrowanych (dawne ID 60269 wycofane z API BDL z błędem HTTP 404; wymaga zmapowania nowego ID)",
         "PL_WAGE_AVERAGE_GROSS": "Przeciętne miesięczne wynagrodzenie w sektorze przedsiębiorstw",
         "PL_INDUSTRIAL_PRODUCTION_YOY": "Dynamika produkcji sprzedanej przemysłu (r/r)",
         "PL_RETAIL_SALES_YOY": "Dynamika sprzedaży detalicznej w cenach stałych (r/r)",
@@ -133,7 +133,7 @@ class GusConnector(BaseConnector):
         if meta:
             ind_code = indicator_code or meta["indicator_code"]
             u_code = unit_code or meta["unit_code"]
-            frequency = meta["frequency"]
+            default_freq = meta["frequency"]
         else:
             if not indicator_code or not unit_code:
                 raise VariableNotMappedError(
@@ -142,7 +142,7 @@ class GusConnector(BaseConnector):
                 )
             ind_code = indicator_code
             u_code = unit_code
-            frequency = "ANNUAL"
+            default_freq = "ANNUAL"
 
         if unit_id == "000000000000":
             url = f"{self.BDL_BASE_URL}/data/by-variable/{var_id}?unit-level=0&format=json"
@@ -187,6 +187,9 @@ class GusConnector(BaseConnector):
                 continue
 
             year_int = int(year)
+            # Rygorystyczna weryfikacja częstotliwości:
+            # Jeśli obserwacja posiada miesiąc, to jest miesięczna.
+            # Jeśli brak miesiąca, to jest bezwzględnie oznaczana jako ANNUAL (nie może zastępować danych miesięcznych).
             if month is not None:
                 month_int = int(month)
                 p_start = f"{year_int:04d}-{month_int:02d}-01"
@@ -211,11 +214,12 @@ class GusConnector(BaseConnector):
                 revision_type="FINAL",
                 status="VERIFIED",
                 evidence_id=evidence.evidence_id,
-                publication_date=p_end,
+                publication_date=None,  # Rozdzielenie: BDL nie podaje daty publikacji per obserwacja
                 metadata={
                     "bdl_var_id": var_id,
                     "territory_name": territory_data.get("name", "POLSKA"),
                     "attr_id": v.get("attrId"),
+                    "frequency_confirmed": freq,
                 },
             )
             observations.append(obs)
@@ -227,15 +231,24 @@ class GusConnector(BaseConnector):
 
     def fetch_registered_unemployment(self) -> Tuple[RawEvidence, List[MacroObservation]]:
         """
-        Pobiera oficjalną serię stopy bezrobocia rejestrowanego GUS (var_id=60270).
+        Pobiera oficjalną roczną serię stopy bezrobocia rejestrowanego GUS (var_id=60270).
+        Uwaga: Jest to szereg roczny (ANNUAL) dla Polski z BDL; nie zastępuje miesięcznych odczytów BAEL/LFS.
         """
         return self.fetch_bdl_variable(60270)
 
-    def fetch_registered_unemployment_count(self) -> Tuple[RawEvidence, List[MacroObservation]]:
+    def fetch_registered_unemployment_count(self, var_id: Optional[int] = None) -> Tuple[RawEvidence, List[MacroObservation]]:
         """
-        Pobiera oficjalną liczbę bezrobotnych zarejestrowanych GUS (var_id=60269).
+        Pobiera liczbę bezrobotnych zarejestrowanych GUS.
+        Identyfikator legacy 60269 został wycofany z publicznego API BDL (HTTP 404 - Zasób nie istnieje).
+        Wymaga podania zweryfikowanego var_id lub użycia search_bdl_variables(). Blokuje pobieranie bez ID.
         """
-        return self.fetch_bdl_variable(60269)
+        if var_id is None:
+            raise VariableNotMappedError(
+                "Identyfikator 60269 został wycofany z publicznego API GUS BDL (HTTP 404 - Zasób nie istnieje). "
+                "Wskaźnik PL_UNEMPLOYMENT_REGISTERED_COUNT posiada status NOT_VERIFIED / CONFIRMED_API_REQUIRES_VARIABLE_MAPPING. "
+                "Podaj jawnie zweryfikowany parametr 'var_id' lub wyszukaj aktualną zmienną przez search_bdl_variables()."
+            )
+        return self.fetch_bdl_variable(var_id, indicator_code="PL_UNEMPLOYMENT_REGISTERED_COUNT", unit_code="THOUSAND_PERSONS")
 
     def _resolve_dbw_month(self, okres_id: int, explicit_month: Optional[int] = None) -> int:
         """
@@ -273,6 +286,7 @@ class GusConnector(BaseConnector):
         - Miesiąc ustalany ściśle z metadanych okresu lub jawnego parametru 'month' (brak zgadywania rocznego zakresu).
         - Konwersja indeksu bazy 100 na stopę procentową r/r (wartosc - 100.0) wykonywana wyłącznie na podstawie
           potwierdzonej definicji serii ('is_index_base_100=True'), a nie na podstawie heurystyk numerycznych.
+        - Rozdzielenie period_end od daty publikacji (publication_date=None, jeśli DBW nie podaje daty publikacji).
         """
         # Ustalenie miesiąca bez zgadywania
         resolved_month = self._resolve_dbw_month(okres_id=okres_id, explicit_month=month)
@@ -348,7 +362,7 @@ class GusConnector(BaseConnector):
             revision_type="FINAL",
             status="VERIFIED",
             evidence_id=evidence.evidence_id,
-            publication_date=p_end,
+            publication_date=None,  # Rozdzielenie: DBW nie podaje daty publikacji per obserwacja
             metadata={
                 "gus_dbw_zmienna": var_id,
                 "gus_dbw_przekroj": przekroj_id,
@@ -373,7 +387,8 @@ class GusConnector(BaseConnector):
             return self.fetch_registered_unemployment()
 
         if code == "PL_UNEMPLOYMENT_REGISTERED_COUNT":
-            return self.fetch_registered_unemployment_count()
+            var_id = kwargs.get("var_id")
+            return self.fetch_registered_unemployment_count(var_id=var_id)
 
         if code == "PL_CPI_YOY":
             rok = kwargs.get("rok")

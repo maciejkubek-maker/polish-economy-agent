@@ -7,13 +7,17 @@ Wymagania:
 - Weryfikacja NBP (REST EUR/USD oraz XML stóp procentowych).
 - Weryfikacja Eurostat:
   * JSON-stat 2.0 dla HICP i bezrobocia BAEL.
+  * Wielowymiarowy parser z kalkulacją strides oraz kontrolą kompletności danych.
   * Wyraźne rozdzielenie poziomu PKB (CLV10_MEUR -> PL_GDP_VOLUME, unit=MEUR)
     od dynamiki kw/kw (PCH_PRE -> PL_GDP_QOQ, unit=PCT) i r/r (PCH_SM_PR_Y -> PL_GDP_YOY, unit=PCT).
   * Zakaz zapisywania poziomu wolumenu jako PL_GDP_QOQ.
+  * Rozdzielenie period_end od daty publikacji (publication_date=None, gdy API nie podaje daty publikacji).
 - Weryfikacja GUS:
-  * BDL: var_id 60270/60269, wyszukiwanie zmiennych.
+  * BDL: var_id 60270 (szereg roczny ANNUAL), wyszukiwanie zmiennych.
+  * Wycofanie 60269 z VERIFIED_BDL_VARIABLES, blokowanie pobierania bez zweryfikowanego ID (VariableNotMappedError).
   * DBW: ścisłe ustalanie miesiąca z metadanych okresu (zakaz rocznego zakresu dla wskaźnika miesięcznego).
   * DBW: przeliczanie indeksu bazy 100 na stopę procentową oparte na potwierdzonej metodologii (usunięcie heurystyk numerycznych).
+  * Rozdzielenie period_end od daty publikacji.
 - Rygorystyczny test zakazu fikcyjnych ID (VariableNotMappedError).
 - Weryfikacja odporności na błędy: retry, timeout, 404 (DataNotFoundError), walidacja zakresów.
 """
@@ -215,8 +219,7 @@ GUS_BDL_UNEMPLOYMENT_JSON = """
     "measureUnitId": 5,
     "measureUnitName": "%"
   },
-  "results": [
-    {
+  "results": [\n    {
       "id": "000000000000",
       "name": "POLSKA",
       "values": [
@@ -378,7 +381,7 @@ class TestNbpConnector:
 
 
 # ==============================================================================
-# TESTY EUROSTAT CONNECTOR (W TYM POPRAWKA EUROSTAT GDP)
+# TESTY EUROSTAT CONNECTOR (W TYM POPRAWKA EUROSTAT GDP I STRIDES JSON-STAT)
 # ==============================================================================
 
 class TestEurostatConnector:
@@ -402,6 +405,9 @@ class TestEurostatConnector:
         assert obs0.value_decimal == "4.2"
         assert obs0.unit_code == "PCT"
         assert obs0.status == "VERIFIED"
+        assert obs0.publication_date is None  # Rozdzielenie period_end od daty publikacji
+        assert obs0.metadata["dataset"] == "prc_hicp_manr"
+        assert obs0.metadata["completeness_pct"] == 100.0
 
     def test_fetch_harmonized_unemployment_success(self):
         connector = EurostatConnector(offline_mode=True)
@@ -417,6 +423,7 @@ class TestEurostatConnector:
         assert obs.value_decimal == "2.9"
         assert obs.unit_code == "PCT"
         assert obs.metadata["standard"] == "ILO_BAEL"
+        assert obs.publication_date is None
 
     def test_fetch_quarterly_gdp_growth_qoq_success(self):
         """Weryfikuje, że dynamika kw/kw (PCH_PRE) jest poprawnie oznaczana jako PL_GDP_QOQ z jednostką PCT."""
@@ -434,6 +441,7 @@ class TestEurostatConnector:
         assert q1.value_decimal == "0.8"
         assert q1.unit_code == "PCT"
         assert q1.metadata["eurostat_unit"] == "PCH_PRE"
+        assert q1.publication_date is None
 
         q2 = observations[1]
         assert q2.indicator_code == "PL_GDP_QOQ"
@@ -473,6 +481,7 @@ class TestEurostatConnector:
         assert q1.unit_code == "MEUR"
         assert q1.unit_code != "INDEX_POINTS"
         assert q1.value_decimal == "135400.5"
+        assert q1.publication_date is None
 
         q2 = observations[1]
         assert q2.indicator_code == "PL_GDP_VOLUME"
@@ -491,6 +500,59 @@ class TestEurostatConnector:
 
         with pytest.raises(ValidationError, match="Brak wymiaru 'time'"):
             connector.fetch_hicp("PL")
+
+    def test_multidimensional_jsonstat_parser_and_completeness_control(self):
+        """
+        Weryfikuje poprawność wielowymiarowego parsera JSON-stat 2.0 z kalkulacją strides:
+        - poprawny iloczyn wymiarów stride[i] = stride[i+1] * size[i+1]
+        - precyzyjne adresowanie w spłaszczonej tablicy wartości (flat_index = sum(coord * stride))
+        - kontrola kompletności danych (total_periods, valid_periods, missing_periods, completeness_pct)
+        - odporność na brakujące okresy
+        """
+        connector = EurostatConnector(offline_mode=True)
+        # Przykładowa kostka 3D: [geo (2), unit (2), time (3)]
+        # size: [2, 2, 3] -> strides: time=1, unit=3, geo=6, total=12
+        cube = {
+            "version": "2.0",
+            "class": "dataset",
+            "id": ["geo", "unit", "time"],
+            "size": [2, 2, 3],
+            "dimension": {
+                "geo": {"category": {"index": {"DE": 0, "PL": 1}}},
+                "unit": {"category": {"index": {"PCH_PRE": 0, "CLV10_MEUR": 1}}},
+                "time": {"category": {"index": {"2026Q1": 0, "2026Q2": 1, "2026Q3": 2}}},
+            },
+            # Dla PL (geo=1 -> base=6), unit=PCH_PRE (unit=0 -> offset=0) -> indeksy bazowe: 6 + 0 + t = 6, 7, 8
+            # Dla PL (geo=1), unit=CLV10_MEUR (unit=1 -> offset=3) -> indeksy bazowe: 6 + 3 + t = 9, 10, 11
+            # Celowo pomijamy 2026Q2 dla PL PCH_PRE (indeks 7), aby przetestować missing_periods i completeness
+            "value": {
+                "0": 0.2, "1": 0.3, "2": 0.4,
+                "6": 0.8, "8": 1.2,
+                "9": 100.0, "10": 105.0, "11": 110.0,
+            },
+        }
+
+        # Test wyodrębnienia PL PCH_PRE z brakującą obserwacją
+        series_pch, metrics_pch = connector._extract_jsonstat_time_series(
+            cube, target_categories={"geo": "PL", "unit": "PCH_PRE"}
+        )
+        assert len(series_pch) == 2
+        assert series_pch[0] == ("2026Q1", 0.8)
+        assert series_pch[1] == ("2026Q3", 1.2)
+        assert metrics_pch["total_periods"] == 3
+        assert metrics_pch["valid_periods"] == 2
+        assert metrics_pch["missing_periods"] == 1
+        assert metrics_pch["completeness_pct"] == 66.67
+        assert metrics_pch["resolved_coords"] == {"geo": 1, "unit": 0}
+
+        # Test wyodrębnienia PL CLV10_MEUR z pełną serią 100%
+        series_clv, metrics_clv = connector._extract_jsonstat_time_series(
+            cube, target_categories={"geo": "PL", "unit": "CLV10_MEUR"}
+        )
+        assert len(series_clv) == 3
+        assert [v for _, v in series_clv] == [100.0, 105.0, 110.0]
+        assert metrics_clv["completeness_pct"] == 100.0
+        assert metrics_clv["missing_periods"] == 0
 
 
 # ==============================================================================
@@ -516,29 +578,43 @@ class TestGusConnector:
         assert obs_ann.frequency == "ANNUAL"
         assert obs_ann.value_decimal == "5.1"
         assert obs_ann.unit_code == "PCT"
+        assert obs_ann.publication_date is None
 
         obs_month = observations[1]
         assert obs_month.period_start == "2026-08-01"
         assert obs_month.period_end == "2026-08-31"
         assert obs_month.frequency == "MONTHLY"
         assert obs_month.value_decimal == "5.0"
+        assert obs_month.publication_date is None
 
     def test_fetch_registered_unemployment_count_success(self):
+        """
+        Weryfikuje, że wskaźnik PL_UNEMPLOYMENT_REGISTERED_COUNT (dawne ID 60269):
+        - blokuje próbę pobrania bez podania zweryfikowanego var_id (zwraca VariableNotMappedError)
+        - po przekazaniu jawnego var_id (np. w fixture offline) poprawnie pobiera dane i zachowuje publication_date=None
+        """
         connector = GusConnector(offline_mode=True)
         connector.register_fixture("by-variable/60269", GUS_BDL_COUNT_JSON)
 
-        evidence, observations = connector.fetch_registered_unemployment_count()
+        # 1. Próba pobrania bez zweryfikowanego var_id jest blokowana
+        with pytest.raises(VariableNotMappedError, match="Identyfikator 60269 został wycofany"):
+            connector.fetch_registered_unemployment_count()
+
+        # 2. Pobranie z jawnym, zweryfikowanym var_id
+        evidence, observations = connector.fetch_registered_unemployment_count(var_id=60269)
 
         assert len(observations) == 1
         assert observations[0].indicator_code == "PL_UNEMPLOYMENT_REGISTERED_COUNT"
         assert observations[0].value_decimal == "845.3"
         assert observations[0].unit_code == "THOUSAND_PERSONS"
+        assert observations[0].publication_date is None
 
     def test_fetch_cpi_dbw_resolves_exact_month_from_period_metadata(self):
         """
         Kluczowy test regresyjny (Problem 2 z Code Review):
         Miesięczna obserwacja CPI z DBW (okres_id 255 = wrzesień) NIE MOŻE mieć zakresu 01-01 do 12-31!
         Musi mieć okres od 2026-09-01 do 2026-09-30.
+        Rozdzielenie period_end od publication_date (publication_date=None).
         """
         connector = GusConnector(offline_mode=True)
         connector.register_fixture("data/data-data", GUS_DBW_CPI_JSON)
@@ -549,7 +625,7 @@ class TestGusConnector:
         assert obs.indicator_code == "PL_CPI_YOY"
         assert obs.period_start == "2026-09-01"
         assert obs.period_end == "2026-09-30"
-        assert obs.publication_date == "2026-09-30"
+        assert obs.publication_date is None
         assert obs.metadata["resolved_month"] == 9
 
     def test_fetch_cpi_dbw_with_explicit_month(self):

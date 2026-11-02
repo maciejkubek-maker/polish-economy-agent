@@ -3,12 +3,14 @@ Konektor do oficjalnego Statistics API 1.0 Eurostatu (JSON-stat 2.0).
 Plik: modules/connectors/eurostat.py
 
 Obsługuje:
-1. HICP — Zharmonizowany Wskaźnik Cen Konsumpcyjnych (dataset: prc_hicp_manr).
+1. HICP — Zharmonizowany Wskaźnik Cen Konsumpcyjnych (dataset: prc_hicp_manr oraz teicp000).
 2. Stopę bezrobocia zharmonizowanego wg BAEL/ILO (dataset: une_rt_m).
 3. Kwartalne PKB (dataset: namq_10_gdp) — z wyraźnym rozdzieleniem:
    - dynamiki kw/kw (unit=CLV_PCH_PRE / PCH_PRE -> PL_GDP_QOQ, unit=PCT)
    - dynamiki r/r (unit=CLV_PCH_SM / PCH_SM_PR_Y -> PL_GDP_YOY, unit=PCT)
    - poziomu/wolumenu PKB (unit=CLV10_MEUR -> PL_GDP_VOLUME, unit=MEUR)
+4. W pełni wielowymiarowy parser JSON-stat 2.0 obliczający wagi (strides) dla wszystkich wymiarów.
+5. Rozdzielenie period_end od daty publikacji (jeśli API nie podaje daty publikacji obserwacji, publication_date=None).
 """
 
 import calendar
@@ -69,15 +71,57 @@ class EurostatConnector(BaseConnector):
             return f"{year:04d}-{m_start}", f"{year:04d}-{m_end}"
         raise ValidationError(f"Nieobsługiwany format okresu kwartalnego Eurostat: '{time_code}'")
 
-    def _extract_jsonstat_time_series(self, payload_dict: Dict[str, Any]) -> List[Tuple[str, Any]]:
-        """Wyciąga uporządkowane chronologicznie pary (time_code, value) z formatu JSON-stat 2.0."""
+    def _extract_jsonstat_time_series(
+        self,
+        payload_dict: Dict[str, Any],
+        target_categories: Optional[Dict[str, str]] = None,
+    ) -> Tuple[List[Tuple[str, Any]], Dict[str, Any]]:
+        """
+        W pełni wielowymiarowy parser JSON-stat 2.0 uwzględniający wszystkie wymiary i obliczający
+        wagi (strides) zgodnie ze specyfikacją standardu JSON-stat.
+        
+        Zwraca: (series, metrics), gdzie:
+        - series: lista par (time_code, value) uporządkowana chronologicznie
+        - metrics: statystyki kompletności ('total_periods', 'valid_periods', 'missing_periods', 'completeness_pct')
+        """
+        if target_categories is None:
+            target_categories = {}
+
         dimension = payload_dict.get("dimension")
         if not isinstance(dimension, dict):
             raise ValidationError("Brak węzła 'dimension' w odpowiedzi Eurostat")
 
-        time_dim = dimension.get("time")
-        if not isinstance(time_dim, dict) or not time_dim:
+        id_list = payload_dict.get("id")
+        size_list = payload_dict.get("size")
+
+        # Jeśli format JSON-stat 2.0 nie zawiera 'id' lub 'size' na poziomie głównym,
+        # fallback do kluczy dimension
+        if not id_list or not isinstance(id_list, list):
+            id_list = list(dimension.keys())
+        if not size_list or not isinstance(size_list, list):
+            size_list = []
+            for d_name in id_list:
+                cat_idx = dimension.get(d_name, {}).get("category", {}).get("index", {})
+                size_list.append(len(cat_idx) if cat_idx else 1)
+
+        if len(id_list) != len(size_list):
+            raise ValidationError(f"Niezgodność wymiarów JSON-stat: len(id)={len(id_list)} != len(size)={len(size_list)}")
+
+        # Znajdź wymiar czasu
+        time_dim_idx = None
+        time_dim_name = None
+        for idx, name in enumerate(id_list):
+            if name.lower() in ("time", "time_period"):
+                time_dim_idx = idx
+                time_dim_name = name
+                break
+
+        if time_dim_idx is None or time_dim_name is None:
             raise ValidationError("Brak wymiaru 'time' lub nieprawidłowa struktura w odpowiedzi Eurostat")
+
+        time_dim = dimension.get(time_dim_name)
+        if not isinstance(time_dim, dict):
+            raise ValidationError("Nieprawidłowa definicja wymiaru 'time' w odpowiedzi Eurostat")
 
         time_category = time_dim.get("category")
         if not isinstance(time_category, dict):
@@ -87,7 +131,6 @@ class EurostatConnector(BaseConnector):
         if not time_index:
             raise ValidationError("Pusty indeks wymiaru 'time' w odpowiedzi Eurostat")
 
-        # Obsługa indeksów jako słownika {"2026M01": 0} lub listy ["2026M01", ...]
         if isinstance(time_index, dict):
             sorted_times = sorted(time_index.keys(), key=lambda k: time_index[k])
         elif isinstance(time_index, list):
@@ -95,24 +138,83 @@ class EurostatConnector(BaseConnector):
         else:
             raise ValidationError("Brak wymiaru 'time' lub nieprawidłowa struktura w odpowiedzi Eurostat")
 
+        # Obliczanie wag wymiarów (strides) zgodnie ze specyfikacją JSON-stat
+        k = len(size_list)
+        strides = [1] * k
+        for i in range(k - 2, -1, -1):
+            strides[i] = strides[i + 1] * size_list[i + 1]
+
+        # Wyznaczanie przesunięcia bazowego (base_offset) dla wymiarów innych niż czas
+        base_offset = 0
+        resolved_coords = {}
+        for idx, name in enumerate(id_list):
+            if idx == time_dim_idx:
+                continue
+
+            dim_info = dimension.get(name, {})
+            cat_info = dim_info.get("category", {}) if isinstance(dim_info, dict) else {}
+            cat_idx_map = cat_info.get("index", {}) if isinstance(cat_info, dict) else {}
+
+            target_val = target_categories.get(name)
+            if target_val is not None:
+                if isinstance(cat_idx_map, dict) and target_val in cat_idx_map:
+                    coord = cat_idx_map[target_val]
+                elif isinstance(cat_idx_map, list) and target_val in cat_idx_map:
+                    coord = cat_idx_map.index(target_val)
+                else:
+                    # Kategoria nie istnieje w wymiarze
+                    raise ValidationError(
+                        f"Wskazana kategoria '{target_val}' nie występuje w wymiarze '{name}'. "
+                        f"Dostępne kategorie: {list(cat_idx_map.keys()) if isinstance(cat_idx_map, dict) else cat_idx_map}"
+                    )
+            else:
+                # Domyślnie bierzemy indeks 0 dla tego wymiaru
+                coord = 0
+
+            resolved_coords[name] = coord
+            base_offset += coord * strides[idx]
+
+        time_stride = strides[time_dim_idx]
         values_raw = payload_dict.get("value", {})
         series = []
+        missing_count = 0
 
-        for idx, time_code in enumerate(sorted_times):
+        for t_code in sorted_times:
+            if isinstance(time_index, dict):
+                t_coord = time_index[t_code]
+            else:
+                t_coord = time_index.index(t_code)
+
+            flat_idx = base_offset + (t_coord * time_stride)
             val = None
             if isinstance(values_raw, dict):
-                val = values_raw.get(str(idx))
-            elif isinstance(values_raw, list) and idx < len(values_raw):
-                val = values_raw[idx]
+                val = values_raw.get(str(flat_idx))
+            elif isinstance(values_raw, list) and flat_idx < len(values_raw):
+                val = values_raw[flat_idx]
 
             if val is not None:
-                series.append((time_code, val))
+                series.append((t_code, val))
+            else:
+                missing_count += 1
 
-        return series
+        total_p = len(sorted_times)
+        valid_p = len(series)
+        completeness_pct = round((valid_p / total_p) * 100.0, 2) if total_p > 0 else 0.0
+
+        metrics = {
+            "total_periods": total_p,
+            "valid_periods": valid_p,
+            "missing_periods": missing_count,
+            "completeness_pct": completeness_pct,
+            "resolved_coords": resolved_coords,
+        }
+
+        return series, metrics
 
     def fetch_hicp(self, geo: str = "PL") -> Tuple[RawEvidence, List[MacroObservation]]:
         """
         Pobiera serię HICP r/r dla danego kraju (domyślnie PL) z datasetu prc_hicp_manr.
+        Rozdziela period_end od daty publikacji (Eurostat nie podaje daty publikacji per obserwacja).
         """
         url = f"{self.BASE_URL}/prc_hicp_manr?format=JSON&lang=en&geo={geo}&coicop=CP00"
         status_code, payload_text, content_hash, retrieved_at_utc = self._execute_request(url)
@@ -122,7 +224,7 @@ class EurostatConnector(BaseConnector):
         except json.JSONDecodeError as err:
             raise ValidationError(f"Błąd parsowania JSON z Eurostatu: {str(err)}") from err
 
-        time_series = self._extract_jsonstat_time_series(data)
+        time_series, metrics = self._extract_jsonstat_time_series(data, target_categories={"geo": geo, "coicop": "CP00"})
         if not time_series:
             raise DataNotFoundError(f"Brak danych HICP w odpowiedzi Eurostat dla geo={geo}")
 
@@ -136,6 +238,7 @@ class EurostatConnector(BaseConnector):
             retrieved_at_utc=retrieved_at_utc,
         )
 
+        dataset_updated = data.get("updated")
         observations = []
         for time_code, raw_val in time_series:
             p_start, p_end = self._parse_time_period_monthly(time_code)
@@ -152,8 +255,14 @@ class EurostatConnector(BaseConnector):
                 revision_type="FINAL",
                 status="VERIFIED",
                 evidence_id=evidence.evidence_id,
-                publication_date=p_end,
-                metadata={"time_code": time_code, "dataset": "prc_hicp_manr", "coicop": "CP00"},
+                publication_date=None,  # Rozdzielenie: API nie podaje daty publikacji pojedynczej obserwacji
+                metadata={
+                    "time_code": time_code,
+                    "dataset": "prc_hicp_manr",
+                    "coicop": "CP00",
+                    "dataset_updated": dataset_updated,
+                    "completeness_pct": metrics["completeness_pct"],
+                },
             )
             observations.append(obs)
 
@@ -171,7 +280,9 @@ class EurostatConnector(BaseConnector):
         except json.JSONDecodeError as err:
             raise ValidationError(f"Błąd parsowania JSON ze stóp bezrobocia Eurostat: {str(err)}") from err
 
-        time_series = self._extract_jsonstat_time_series(data)
+        time_series, metrics = self._extract_jsonstat_time_series(
+            data, target_categories={"geo": geo, "s_adj": "SA", "unit": "PC_ACT"}
+        )
         if not time_series:
             raise DataNotFoundError(f"Brak danych bezrobocia w odpowiedzi Eurostat dla geo={geo}")
 
@@ -186,6 +297,7 @@ class EurostatConnector(BaseConnector):
         )
 
         indicator_code = "PL_UNEMPLOYMENT_LFS_RATE" if geo == "PL" else "EU_UNEMPLOYMENT_RATE"
+        dataset_updated = data.get("updated")
         observations = []
 
         for time_code, raw_val in time_series:
@@ -203,8 +315,14 @@ class EurostatConnector(BaseConnector):
                 revision_type="FINAL",
                 status="VERIFIED",
                 evidence_id=evidence.evidence_id,
-                publication_date=p_end,
-                metadata={"time_code": time_code, "dataset": "une_rt_m", "standard": "ILO_BAEL"},
+                publication_date=None,  # Rozdzielenie: brak daty publikacji per obserwacja w API
+                metadata={
+                    "time_code": time_code,
+                    "dataset": "une_rt_m",
+                    "standard": "ILO_BAEL",
+                    "dataset_updated": dataset_updated,
+                    "completeness_pct": metrics["completeness_pct"],
+                },
             )
             observations.append(obs)
 
@@ -259,7 +377,9 @@ class EurostatConnector(BaseConnector):
         except json.JSONDecodeError as err:
             raise ValidationError(f"Błąd parsowania JSON z PKB Eurostat: {str(err)}") from err
 
-        time_series = self._extract_jsonstat_time_series(data)
+        time_series, metrics = self._extract_jsonstat_time_series(
+            data, target_categories={"geo": geo, "unit": eurostat_unit, "na_item": "B1GQ", "s_adj": "SCA"}
+        )
         if not time_series:
             raise DataNotFoundError(f"Brak danych PKB w odpowiedzi Eurostat dla geo={geo}, measure={measure_upper}")
 
@@ -273,6 +393,7 @@ class EurostatConnector(BaseConnector):
             retrieved_at_utc=retrieved_at_utc,
         )
 
+        dataset_updated = data.get("updated")
         observations = []
         for time_code, raw_val in time_series:
             p_start, p_end = self._parse_time_period_quarterly(time_code)
@@ -289,13 +410,15 @@ class EurostatConnector(BaseConnector):
                 revision_type="FINAL",
                 status="VERIFIED",
                 evidence_id=evidence.evidence_id,
-                publication_date=p_end,
+                publication_date=None,  # Rozdzielenie: brak daty publikacji per obserwacja w API
                 metadata={
                     "time_code": time_code,
                     "dataset": "namq_10_gdp",
                     "na_item": "B1GQ",
                     "eurostat_unit": eurostat_unit,
                     "measure_type": measure_upper,
+                    "dataset_updated": dataset_updated,
+                    "completeness_pct": metrics["completeness_pct"],
                 },
             )
             observations.append(obs)

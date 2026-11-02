@@ -1,5 +1,5 @@
 {
-  "timestamp_utc": "2026-11-02T17:54:28.472711+00:00",
+  "timestamp_utc": "2026-11-02T18:18:00.127747+00:00",
   "tests": [
     {
       "service": "NBP",
@@ -9,7 +9,7 @@
       "response_type": "JSON",
       "payload_bytes": 120,
       "payload_hash": "2f3c004fef626e8a0115e006ba4b75b6fc0b4d3d16c3973da3a557befafe8004",
-      "duration_ms": 222,
+      "duration_ms": 270,
       "verified": true,
       "validation_status": "VERIFIED",
       "observation": {
@@ -34,7 +34,7 @@
       "response_type": "JSON",
       "payload_bytes": 133,
       "payload_hash": "9141bba106bef12085956e00406015bdc81342fb6901bc9b3b6a71c00ce9b43d",
-      "duration_ms": 164,
+      "duration_ms": 159,
       "verified": true,
       "validation_status": "VERIFIED",
       "observation": {
@@ -59,7 +59,7 @@
       "response_type": "OFFICIAL_XML",
       "payload_bytes": 2999,
       "payload_hash": "1b945a7924832474af670b0f0a4871dc1724e7f154ccbfaee8ab548e1c3dbfe3",
-      "duration_ms": 193,
+      "duration_ms": 172,
       "verified": true,
       "validation_status": "VERIFIED",
       "observation": {
@@ -84,7 +84,7 @@
       "response_type": "JSON-stat 2.0",
       "payload_bytes": 18521,
       "payload_hash": "e1cbec36c33914f844a300d98b7380945d685b41eb1d0c7fa927e3fd976c584f",
-      "duration_ms": 329,
+      "duration_ms": 279,
       "verified": true,
       "validation_status": "VERIFIED",
       "series_count": 348,
@@ -93,7 +93,7 @@
         "value": "2.5",
         "unit": "PCT",
         "period": "2025-12-01 - 2025-12-31",
-        "publication_date": "2025-12-31"
+        "publication_date": null
       },
       "notes": "Dataset prc_hicp_manr, coicop CP00."
     },
@@ -105,7 +105,7 @@
       "response_type": "JSON-stat 2.0",
       "payload_bytes": 25710,
       "payload_hash": "19799726a597518b28acc72114b3da0d76889367fcf9757d50c88da3d5a97615",
-      "duration_ms": 295,
+      "duration_ms": 246,
       "verified": true,
       "validation_status": "VERIFIED",
       "series_count": 357,
@@ -114,7 +114,7 @@
         "value": "3.4",
         "unit": "PCT",
         "period": "2026-09-01 - 2026-09-30",
-        "publication_date": "2026-09-30"
+        "publication_date": null
       },
       "notes": "Dataset une_rt_m, s_adj SA, unit PC_ACT."
     },
@@ -126,7 +126,7 @@
       "response_type": "JSON-stat 2.0",
       "payload_bytes": 11012,
       "payload_hash": "79493d67f39725f25e27d05ecea9cd1453922789394fce6d88ccfb62d8348908",
-      "duration_ms": 236,
+      "duration_ms": 213,
       "verified": true,
       "validation_status": "VERIFIED",
       "series_count": 125,
@@ -135,7 +135,7 @@
         "value": "1.1",
         "unit": "PCT",
         "period": "2026-04-01 - 2026-06-30",
-        "publication_date": "2026-06-30"
+        "publication_date": null
       },
       "notes": "Dataset namq_10_gdp, unit PCH_PRE, na_item B1GQ."
     },
@@ -147,7 +147,7 @@
       "response_type": "JSON-stat 2.0",
       "payload_bytes": 11008,
       "payload_hash": "2349718d2fcfab779e0e8136742d308a7dd54b77a0d3a576872a4c42a0300dbb",
-      "duration_ms": 243,
+      "duration_ms": 213,
       "verified": true,
       "validation_status": "VERIFIED",
       "series_count": 122,
@@ -156,7 +156,7 @@
         "value": "4.0",
         "unit": "PCT",
         "period": "2026-04-01 - 2026-06-30",
-        "publication_date": "2026-06-30"
+        "publication_date": null
       },
       "notes": "Dataset namq_10_gdp, unit PCH_SM_PR_Y, na_item B1GQ."
     },
@@ -168,7 +168,7 @@
       "response_type": "JSON-stat 2.0",
       "payload_bytes": 11535,
       "payload_hash": "278ce95e40c916819cb266ca24b76db018af3c35d85fc0a5f3a88603fa407819",
-      "duration_ms": 235,
+      "duration_ms": 201,
       "verified": true,
       "validation_status": "VERIFIED",
       "series_count": 126,
@@ -177,7 +177,7 @@
         "value": "154972.9",
         "unit": "MEUR",
         "period": "2026-04-01 - 2026-06-30",
-        "publication_date": "2026-06-30"
+        "publication_date": null
       },
       "notes": "Dataset namq_10_gdp, unit CLV10_MEUR (mln EUR w cenach stałych), na_item B1GQ."
     },
@@ -189,7 +189,7 @@
       "response_type": "JSON",
       "payload_bytes": 975,
       "payload_hash": "fcbf0e94ed8f8b09b6a1ba64ef501ee51433f4988f0e3c9d0abea7fab05793db",
-      "duration_ms": 4271,
+      "duration_ms": 9672,
       "verified": true,
       "validation_status": "VERIFIED",
       "series_count": 22,
@@ -198,7 +198,7 @@
         "value": "5.7",
         "unit": "PCT",
         "period": "2025-01-01 - 2025-12-31",
-        "publication_date": "2025-12-31"
+        "publication_date": null
       },
       "notes": "BDL zmienna 60270 (ogółem, poziom 0 / Polska)."
     },
@@ -206,13 +206,11 @@
       "service": "GUS BDL",
       "name": "Liczba bezrobotnych zarejestrowanych (var 60269)",
       "url": "https://bdl.stat.gov.pl/api/v1/data/by-variable/60269?unit-level=0&format=json",
-      "http_status": 404,
-      "duration_ms": 3377,
+      "http_status": 0,
+      "duration_ms": 10100,
       "verified": false,
       "validation_status": "NOT_VERIFIED",
-      "error": "HTTP 404: Not Found - Zasób nie istnieje w publicznym API GUS BDL (zmienna wycofana lub przeniesiona)",
-      "raw_error_payload": "{\r\n  \"errors\": [\r\n    {\r\n      \"errorResult\": \"Zasób nie istnieje\",\r\n      \"errorReason\": \"Nie znaleziono zasobu o podanym identyfikatorze\",\r\n      \"errorSolution\": \"Proszę sprawdzić poprawność identyfikatora zasobu\",\r\n      \"errorCode\": 3,\r\n      \"errorHelp\": \"https://bdl.stat.gov.pl/api/v1/help/co",
-      "notes": "Zmienna 60269 nie istnieje w katalogu GUS BDL. Zgodnie z wytycznymi, oznaczono jako NOT_VERIFIED bez zgadywania."
+      "error": "The read operation timed out"
     },
     {
       "service": "GUS DBW",
@@ -222,7 +220,7 @@
       "response_type": "JSON",
       "payload_bytes": 24280,
       "payload_hash": "0a8a5db9793841f5af9c8fc54559803b0a7e5010b5cca2c19484b85c28a61f9a",
-      "duration_ms": 212,
+      "duration_ms": 291,
       "verified": true,
       "validation_status": "VERIFIED",
       "observation": {
@@ -230,7 +228,7 @@
         "value": "0.1",
         "unit": "PCT",
         "period": "2024-09-01 - 2024-09-30",
-        "publication_date": "2024-09-30",
+        "publication_date": null,
         "metadata": {
           "gus_dbw_zmienna": 305,
           "gus_dbw_przekroj": 736,
