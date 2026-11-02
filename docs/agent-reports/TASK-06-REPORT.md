@@ -359,3 +359,55 @@ TASK-06 został w pełni zrealizowany. Platforma danych v2 jest gotowa do dział
 - Nie zmodyfikowano bazy legacy ani wyglądu raportu HTML.
 - `KNOWN_VULNERABILITY`: brak nowych znanych podatności w zmienionym zakresie; wynik LLM nadal podlega istniejącemu bezpiecznemu rendererowi.
 - `PROPOSED`: końcowy code review i decyzja właściciela dotycząca merge PR #4. Merge nie został wykonany.
+
+---
+
+## 10. Finalna zmiana GPT-only na `main`
+
+**Data kontroli:** 2026-11-02<br>
+**Status:** `DONE`<br>
+**Branch:** `main`<br>
+**Commit poprawki:** `894f738558c913f7dc0de64d7a98b71feae6f45a`<br>
+**PR:** `NONE` — zmiana wykonana bezpośrednio na `main` na jawne polecenie właściciela.
+
+### DONE
+
+- Generator raportu korzysta wyłącznie z `ChatOpenAI`, modelu `gpt-4o` i istniejącego streamingu LangChain do terminala.
+- Usunięto przełączanie Gemini → OpenAI oraz wszystkie operacyjne odwołania do `ChatGoogleGenerativeAI`, `GOOGLE_API_KEY` i `DEFAULT_LLM_MODEL`.
+- Istniejące komponenty ekstrakcji i wyboru źródeł przełączono na ten sam model OpenAI, dzięki czemu usunięto zależność `langchain-google-genai` wraz z jej nieużywanymi zależnościami przechodnimi.
+- Zachowano prompt, sześć sekcji raportu, Tavily, SQLite v2, renderer HTML oraz walidację liczb, przypisów i URL-i.
+- Fallback deterministyczny rozróżnia w terminalu błąd API GPT od odrzucenia raportu przez walidator. Komunikaty błędów redagują klucz API.
+- Kryterium świeżości legacy dostosowano do jedynego aktywnego `GPTAgent`; nie wymaga już nieistniejącego `GeminiAgent`.
+- `.env.example` i README EN/PL wymagają do analizy AI wyłącznie `OPENAI_API_KEY`.
+- Nie zmieniono `app.py`, `report.html`, CSS ani struktury raportu.
+
+### Zmienione pliki
+
+| Ścieżka | Opis |
+|---|---|
+| `modules/evaluator.py` | GPT-only, streaming, bezpieczne i konkretne przyczyny fallbacku. |
+| `modules/data_fetcher.py`, `modules/sources.py` | Usunięcie ostatnich wywołań Gemini bez zmiany interfejsów. |
+| `modules/database.py` | Kryterium świeżości dla jednego aktywnego dostawcy. |
+| `config.py`, `.env.example` | Usunięcie konfiguracji Gemini. |
+| `pyproject.toml`, `uv.lock` | Usunięcie `langchain-google-genai` i zależności przechodnich. |
+| `README.md` | Dokumentacja GPT-only w języku angielskim i polskim. |
+| `tests/` | Regresje GPT-4o, streamingu, błędu API, redakcji sekretu i fallbacku walidatora. |
+
+### Testy i kontrole
+
+| Polecenie / kontrola | Status | Wynik |
+|---|---|---|
+| `uv lock` | `PASSED` | 63 pakiety; usunięto `langchain-google-genai` i zależności Google. |
+| `uv sync --group dev` | `PASSED` | Zainstalowano 61 pakietów w izolowanym worktree. |
+| Testy celowane | `PASSED` | 33/33 w 2,55 s. |
+| `uv run pytest -q` | `PASSED` | 136/136 w 7,79 s. |
+| Wyszukiwanie odwołań Gemini w aktywnym kodzie/testach/konfiguracji | `PASSED` | Brak wyników. |
+| Integralność `instance/economy_agent.db` | `PASSED` | SHA-256 `e6c5f318ffe1eceeb34191a7a74ec9f7f7de6069c4f298850792734277ecde3b`. |
+| Integralność `report.html` na `main` | `PASSED` | Pliku nie zmieniono; SHA-256 `e2ff86aa8d7031af94b4836ea6b4f35cade73c1321db38f73323b98a40d16ab3`. |
+
+### Bezpieczeństwo, ograniczenia i następny krok
+
+- Nie wykonano żadnych wywołań OpenAI, Tavily ani innych płatnych API; wszystkie testy działały offline.
+- `NOT_RUN`: rzeczywisty przebieg GPT live — celowo poza zakresem i bez zgody na płatne wywołanie.
+- Nie wykonano merge.
+- `PROPOSED`: code review commita na `main`.
