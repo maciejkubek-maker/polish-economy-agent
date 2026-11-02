@@ -2,7 +2,7 @@
 
 **Status:** `READY_FOR_REVIEW` (Aktualizacja po Code Review: CHANGES REQUESTED)  
 **Branch:** `design/03-data-contract`  
-**Commit SHA:** `TO_BE_UPDATED`  
+**Commit SHA:** `dd5514de13a375f4d8a59960ffbb700fe85bc516`  
 **PR:** `https://github.com/maciejkubek-maker/polish-economy-agent/pull/3`  
 **Data:** 2026-11-02  
 
@@ -84,7 +84,7 @@ Wszystkie 6 punktów zgłoszonych w recenzji zostało w pełni wdrożonych i zwe
   "task_id": "TASK-03",
   "status": "READY_FOR_REVIEW",
   "branch": "design/03-data-contract",
-  "commit_sha": "TO_BE_UPDATED",
+  "commit_sha": "dd5514de13a375f4d8a59960ffbb700fe85bc516",
   "pull_request": "https://github.com/maciejkubek-maker/polish-economy-agent/pull/3",
   "tests": {"status": "PASSED", "passed": 61, "failed": 0},
   "files_changed": [
