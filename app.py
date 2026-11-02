@@ -1,6 +1,8 @@
 import datetime
+import html
 import os
 import re
+from urllib.parse import urlparse
 import config
 from flask import Flask, send_file
 from modules.data_fetcher import EconomyDataFetcher
@@ -11,43 +13,72 @@ from modules.search_service import WebSearchService
 from modules.sources import PolishEconomySourceChecker
 
 server = Flask(__name__)
-db = EconomyDatabase()
+_db = None
+
+
+def get_db() -> EconomyDatabase:
+  """Zwraca instancję bazy danych z leniwą inicjalizacją (nie obciąża importu modułu)."""
+  global _db
+  if _db is None:
+    _db = EconomyDatabase()
+  return _db
+
+
+def set_db(database: EconomyDatabase):
+  """Umożliwia wstrzyknięcie izolowanej instancji bazy danych (np. w testach)."""
+  global _db
+  _db = database
 
 
 def format_report_html(text: str) -> str:
   if not text:
     return ""
 
+  # 1. Escapowanie znaków specjalnych HTML (neutralizuje tagi <script>, <img>, <iframe>, zdarzenia on* itp.)
+  text = html.escape(str(text), quote=True)
+
+  # 2. Bezpieczna zamiana nagłówków i akcentów Markdown
   text = re.sub(r"^###\s+(.+)$", r"<h3>\1</h3>", text, flags=re.MULTILINE)
   text = re.sub(r"^##\s+(.+)$", r"<h2>\1</h2>", text, flags=re.MULTILINE)
   text = re.sub(r"^#\s+(.+)$", r"<h1>\1</h1>", text, flags=re.MULTILINE)
   text = re.sub(r"\*\*(.*?)\*\*", r"<strong>\1</strong>", text)
 
-  # Zamiana przypisów [1], [2] na indeks górny
+  # 3. Zamiana przypisów [1], [2] na indeks górny
   text = re.sub(
       r"\[(\d+)\]",
       r"<sup style='color:#2980b9; font-weight:bold;'>[\1]</sup>",
       text,
   )
 
-  # Zamiana linków URL na klikalne hiperłącza
-  text = re.sub(
-      r'(https?://[^\s\)<>"]+)',
-      r'<a href="\1" target="_blank" rel="noopener noreferrer" style="color:'
-      r' #3498db; text-decoration: underline;">\1</a>',
-      text,
-  )
+  # 4. Bezpieczna zamiana linków URL na klikalne hiperłącza z walidacją schematu
+  def replace_url(match):
+    raw_url = match.group(1)
+    trailing = ""
+    while raw_url and raw_url[-1] in ".,;:!?":
+      trailing = raw_url[-1] + trailing
+      raw_url = raw_url[:-1]
+
+    parsed = urlparse(raw_url.replace("&amp;", "&"))
+    if parsed.scheme in ("http", "https") and parsed.netloc:
+      return (
+          f'<a href="{raw_url}" target="_blank" rel="noopener noreferrer"'
+          f' style="color: #3498db; text-decoration: underline;">{raw_url}</a>{trailing}'
+      )
+    return match.group(0)
+
+  text = re.sub(r'(https?://[^\s\)<>"\']+)', replace_url, text)
 
   return text
 
 
 def build_html_template(report_text: str, country: str) -> str:
+  safe_country = html.escape(str(country or ""), quote=True)
   formatted_content = format_report_html(report_text)
   return f"""<!DOCTYPE html>
 <html lang="pl">
 <head>
     <meta charset="UTF-8">
-    <title>Raport Kondycji Gospodarczej: {country}</title>
+    <title>Raport Kondycji Gospodarczej: {safe_country}</title>
     <style>
         body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; margin: 0; background-color: #f4f6f9; color: #2c3e50; }}
         .header {{ background-color: #1a252f; color: white; padding: 30px 40px; text-align: center; }}
@@ -66,7 +97,7 @@ def build_html_template(report_text: str, country: str) -> str:
     <div class="container">
         <div class="report-content">{formatted_content}</div>
         <div class="footer">
-            Raport wygenerowany dla kraju: {country}
+            Raport wygenerowany dla kraju: {safe_country}
         </div>
     </div>
 </body>
@@ -85,7 +116,8 @@ def save_report_to_html(report_text: str):
 @server.route("/report.html")
 def serve_report():
   # 1. Pobranie z bazy danych
-  latest_db_report = db.get_latest_report(config.DEFAULT_COUNTRY)
+  database = get_db()
+  latest_db_report = database.get_latest_report(config.DEFAULT_COUNTRY)
   if latest_db_report:
     # latest_db_report: 0: report_date, 1: periods_summary, 2: content_markdown, 3: created_at
     markdown_content = latest_db_report[2]
@@ -106,16 +138,17 @@ def run_pipeline(force_refresh: bool = True):
   print(f"Uruchamianie Agenta Ekonomicznego dla kraju: {country}")
   print("=" * 60)
 
-  economic_data = db.get_sources(
+  database = get_db()
+  economic_data = database.get_sources(
       country=country, agent_name="PolishEconomyAgent"
   )
   if not economic_data:
     print("[System] Inicjalizacja listy zaufanych źródeł...")
     checker = PolishEconomySourceChecker()
     economic_data = checker.get_trusted_sources(country=country)
-    db.save_sources(economic_data, agent_name="PolishEconomyAgent")
+    database.save_sources(economic_data, agent_name="PolishEconomyAgent")
 
-  if not force_refresh and db.are_indicators_fresh(
+  if not force_refresh and database.are_indicators_fresh(
       country=country, max_days=3
   ):
     print(f"[Cache] Dane dla {country} są aktualne. Generowanie raportu...")
@@ -142,7 +175,7 @@ def run_pipeline(force_refresh: bool = True):
 
   # Zapis trwały w bazie SQLite
   today_str = datetime.datetime.now().strftime("%d.%m.%Y")
-  db.save_generated_report(
+  database.save_generated_report(
       country=country,
       report_date=today_str,
       periods_summary="Najnowsze dostępne odczyty",
