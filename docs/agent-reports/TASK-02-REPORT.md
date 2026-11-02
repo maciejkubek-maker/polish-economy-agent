@@ -2,7 +2,7 @@
 
 **Status:** `READY_FOR_REVIEW`  
 **Branch:** `refactor/02-html-security`  
-**Commit SHA:** `TO_BE_UPDATED`  
+**Commit SHA:** `22a0df32420a3be87b5a5ef0fa940e70beea25fa`  
 **PR:** `https://github.com/maciejkubek-maker/polish-economy-agent/pull/2`  
 **Data:** 2026-11-02  
 
@@ -66,7 +66,7 @@
   "task_id": "TASK-02",
   "status": "READY_FOR_REVIEW",
   "branch": "refactor/02-html-security",
-  "commit_sha": "TO_BE_UPDATED",
+  "commit_sha": "22a0df32420a3be87b5a5ef0fa940e70beea25fa",
   "pull_request": "https://github.com/maciejkubek-maker/polish-economy-agent/pull/2",
   "tests": {"status": "PASSED", "passed": 52, "failed": 0},
   "files_changed": [
