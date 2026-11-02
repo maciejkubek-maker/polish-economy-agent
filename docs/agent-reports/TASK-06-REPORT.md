@@ -256,3 +256,60 @@ TASK-06 został w pełni zrealizowany. Platforma danych v2 jest gotowa do dział
 - `PROPOSED`: przegląd treści README przez właściciela w PR #4.
 - `NOT_RUN`: tryb live i płatne API — poza zakresem zmiany dokumentacyjnej.
 - Merge nie został wykonany.
+
+---
+
+## 8. Audyt integralności raportu live
+
+**Data audytu:** 2026-11-02<br>
+**Status:** `DONE`<br>
+**Commit poprawki:** `e4a822047fdba5a9f8f49ce4f7c23ae1f4c318d0`<br>
+**PR:** https://github.com/maciejkubek-maker/polish-economy-agent/pull/4
+
+### Przyczyna
+
+- Zakłócony raport był rekordem v2 `REP_V2_7d31fb1c88` z przebiegu live `RUN_a166245e272b`, a jego HTML odpowiadał użytkownikowemu `report.html`. Nie pochodził z legacy v1 ani z awaryjnego odczytu starego pliku.
+- Generator raportu odczytywał wszystkie aktualne rewizje dla wszystkich okresów i przebiegów. W bazie v2 znajdowały się zarówno wcześniejsze fixture'y offline, jak i późniejsze dane live, dlatego aparat źródłowy urósł do numerów `[125]`–`[792]`, a kontekst raportu mieszał uruchomienia.
+- Tryb live usługi Tavily cicho zwracał fixture'y demonstracyjne, gdy klient był niedostępny lub wyszukiwanie zwróciło pusty wynik.
+- Wynik LLM nie przechodził końcowej kontroli zgodności liczb, przypisów i bezpośrednich URL-i z obserwacjami dopuszczonymi przez walidator.
+- Fixture NBP dla tabeli `212/A/NBP/2026` miał błędne kursy. Odczyt EUR/PLN dla 2026-10-30 skorygowano z `4.3450` na oficjalne `4.3955`, a USD/PLN z `4.0215` na `3.9251`.
+
+### DONE
+
+- Raport v2 jest ograniczony do bieżącego `run_id` i wybiera dokładnie jeden najnowszy zweryfikowany odczyt na wskaźnik.
+- Tryb live nie podstawia fixture'ów offline. Brak kontekstu Tavily jest zapisywany jako zdarzenie jakości, daje status `PARTIAL` i jest jawnie opisany w raporcie.
+- Dodano kontrolę wyniku AI: obce wartości liczbowe, nieznane przypisy, brak URL-i, liczby bez przypisu lub surowy HTML powodują odrzucenie wyniku i jawnie oznaczony fallback deterministyczny.
+- Złagodzono kategoryczne prognozy generatora deterministycznego; raport rozdziela obserwacje, interpretacje i scenariusze oraz nie traktuje pojedynczych odczytów jako prognozy.
+- Zachowano istniejące sześć sekcji, renderer, strukturę i wygląd HTML. `app.py` oraz szablon CSS nie zostały zmienione.
+- Dodano regresje dla izolacji przebiegów, zakazu fallbacku fixture'ów w live oraz odrzucania niespójnego wyniku AI.
+
+### Zmienione pliki
+
+| Ścieżka | Opis |
+|---|---|
+| `modules/storage_v2.py` | Izolacja obserwacji według przebiegu i wybór najnowszego odczytu na wskaźnik. |
+| `modules/search_service.py` | Usunięcie cichego fallbacku demo w trybie live. |
+| `modules/pipeline_v2.py` | Przekazanie `run_id`, jawne metadane trybu i zdarzenie jakości przy braku Tavily; korekta fixture'ów NBP. |
+| `modules/evaluator.py` | Walidacja integralności raportu AI, bezpośrednie URL-e, jawne oznaczenia trybu i ostrożniejszy język. |
+| `tests/test_pipeline_v2.py` | Testy regresyjne integralności i izolacji live/offline. |
+| `tests/test_connectors.py` | Oczekiwane oficjalne kursy NBP. |
+| `docs/API_SOURCE_CATALOG.md` | Korekta przykładowej odpowiedzi NBP. |
+
+### Testy i kontrole
+
+| Polecenie / kontrola | Status | Wynik |
+|---|---|---|
+| `uv sync --group dev` | `PASSED` | 72 pakiety rozwiązane, 70 sprawdzonych. |
+| `uv run pytest -q tests/test_pipeline_v2.py tests/test_connectors.py` | `PASSED` | 57/57 w 2,06 s. |
+| `uv run pytest -q` | `PASSED` | 133/133 w 7,77 s. |
+| Identyfikacja problematycznego raportu | `PASSED` | v2 live; nie v1 i nie fallback starego pliku. |
+| Integralność `instance/economy_agent.db` | `PASSED` | SHA-256 `e6c5f318ffe1eceeb34191a7a74ec9f7f7de6069c4f298850792734277ecde3b`. |
+| Integralność użytkownikowego `report.html` | `PASSED` | Pliku nie nadpisano; SHA-256 `148574ae9c916a3c034c007d34a0b05b1c31bc5533fb2a57d4dbc4d3153e0d84`. |
+
+### Stan bezpieczeństwa i ograniczenia
+
+- Nie wykonano płatnych wywołań Tavily, Gemini ani OpenAI. Testy działały offline z pustymi kluczami.
+- Wykonano wyłącznie odczyt publicznego, bezpłatnego endpointu NBP w celu potwierdzenia kursów z tabeli A.
+- Nie zmodyfikowano oryginalnej bazy SQLite ani użytkownikowego raportu HTML.
+- `NOT_RUN`: pełny przebieg live z płatnymi usługami — celowo poza zakresem.
+- `PROPOSED`: code review poprawki w istniejącym PR #4. Merge nie został wykonany.
