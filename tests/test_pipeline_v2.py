@@ -15,6 +15,7 @@ Weryfikuje:
 """
 
 import hashlib
+import json
 import os
 import re
 import sqlite3
@@ -441,6 +442,96 @@ def test_invalid_live_ai_report_falls_back_with_integrity_notice(
     assert "dowodem przyszłej stabilności walut" in report
     assert max(citations) == 1
     assert evidence.source_url in report
+
+
+def test_valid_live_ai_report_is_archived_without_fallback(temp_v2_db, monkeypatch):
+    """Poprawna analiza może cytować podzbiór źródeł i zachowuje tryb AI."""
+    monkeypatch.setattr(config, "OFFLINE_MODE", False)
+    run_id = temp_v2_db.start_ingestion_run(provider="MANUAL", run_type="TRIGGERED")
+
+    observations = [
+        ("EUR", "PL_FX_EUR_PLN", "4.3955", "EUR_PLN"),
+        ("USD", "PL_FX_USD_PLN", "3.9251", "USD_PLN"),
+    ]
+    for currency, indicator_code, value, unit_code in observations:
+        evidence = RawEvidence(
+            evidence_id=f"EVI_VALID_{currency}",
+            source_id="SRC_NBP",
+            source_url=(
+                "https://api.nbp.pl/api/exchangerates/rates/A/"
+                f"{currency}/2026-10-30/"
+            ),
+            document_type="API_RESPONSE",
+            content_hash=f"valid-{currency.lower()}",
+            payload_text="official",
+            status_code=200,
+            retrieved_at_utc="2026-10-30T12:05:00Z",
+        )
+        temp_v2_db.save_evidence(evidence, run_id=run_id)
+        temp_v2_db.save_observation(MacroObservation(
+            indicator_code=indicator_code,
+            country_code="PL",
+            period_start="2026-10-30",
+            period_end="2026-10-30",
+            frequency="DAILY",
+            value_decimal=value,
+            unit_code=unit_code,
+            revision_type="FINAL",
+            status="VERIFIED",
+            evidence_id=evidence.evidence_id,
+        ), run_id=run_id)
+
+    valid_report = """# RAPORT KONDYCJI GOSPODARCZEJ: Polska
+
+## 1. Analiza Trendów w Dostępnym Okresie
+
+Kurs EUR/PLN wyniósł 4.3955 zł/EUR [1].
+
+## 2. Zagrożenia i Ryzyka Makroekonomiczne
+
+Pojedynczy odczyt nie stanowi prognozy kursowej.
+
+## 3. Co to oznacza dla Kowalskiego? (Perspektywa Obywatela)
+
+Zmiany kursu mogą wpływać na ceny importu.
+
+## 4. Co to oznacza dla Przedsiębiorców?
+
+Odczyt może wspierać bieżące rozliczenia, ale nie przewiduje przyszłości.
+
+## 5. Podsumowanie i Realistyczny Werdykt
+
+Wniosek ogranicza się do zweryfikowanej obserwacji.
+
+## 6. Źródła danych i Metodologia
+
+[1] NBP, kurs EUR/PLN, https://api.nbp.pl/api/exchangerates/rates/A/EUR/2026-10-30/
+"""
+    evaluator = EconomyEvaluator()
+    monkeypatch.setattr(
+        evaluator,
+        "_run_llm_synthesis",
+        lambda *args, **kwargs: valid_report,
+    )
+    pipeline = MacroPipelineV2(
+        db=temp_v2_db,
+        offline_mode=False,
+        evaluator=evaluator,
+    )
+
+    report_id, report_markdown, _ = pipeline.generate_and_archive_report(
+        country="Polska",
+        search_news=[],
+        run_id=run_id,
+    )
+    stored = temp_v2_db.get_latest_report("PL")
+    metadata = json.loads(stored["model_metadata_json"])
+
+    assert stored["report_id"] == report_id
+    assert "analiza online zweryfikowana" in report_markdown
+    assert "deterministyczny fallback trybu live" not in report_markdown
+    assert metadata["generation_mode"] == "LIVE_AI_VALIDATED"
+    assert "USD/2026-10-30" not in report_markdown
 
 
 # ==============================================================================

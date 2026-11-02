@@ -70,21 +70,29 @@ The default mode is offline. It requires no API keys and does not call NBP, GUS,
 Requirements: Python 3.11 or newer and `uv`.
 
 ```bash
-git clone --branch feature/data-platform-v2 https://github.com/maciejkubek-maker/polish-economy-agent.git
+git clone https://github.com/maciejkubek-maker/polish-economy-agent.git
 cd polish-economy-agent
+cp .env.example .env
 uv sync --group dev
 uv run python app.py
 ```
 
+In PowerShell, use `Copy-Item .env.example .env` instead of `cp`. The copied file already contains `OFFLINE_MODE=true` and empty API keys.
+
 Open <http://127.0.0.1:5000/> or <http://127.0.0.1:5000/report.html>. Stop the local server with `Ctrl+C`.
 
-No `.env` file is needed for this mode. Do not set `DB_V2_PATH` to `instance/economy_agent.db`; that legacy database is protected and must remain unchanged.
+The application is offline by default even without `.env`, but copying the example makes the safe configuration explicit. Do not set `DB_V2_PATH` to `instance/economy_agent.db`; that legacy database is protected and must remain unchanged.
 
 ### Optional online mode
 
 Online mode contacts external services and may create billable model or search requests depending on the configured accounts. Enable it only when you intend to use those services.
 
-Create a local `.env` file that is not committed:
+Copy the safe example to a local `.env` file that is not committed, then set `OFFLINE_MODE=false` and provide keys only for services you intend to use:
+
+```bash
+cp .env.example .env
+# PowerShell: Copy-Item .env.example .env
+```
 
 ```dotenv
 OFFLINE_MODE=false
@@ -101,18 +109,18 @@ Then run:
 uv run python app.py
 ```
 
-In online report generation, the evaluator tries Gemini first, then OpenAI GPT, and falls back to deterministic synthesis if both are unavailable. Live official-data calls and live Tavily context also require network access; Tavily uses its local demo fixtures when no usable client is configured.
+In online report generation, the evaluator tries Gemini first, then OpenAI GPT, and falls back to explicitly labelled deterministic synthesis if both are unavailable or the AI report fails integrity validation. Live official-data calls and Tavily context require network access. If Tavily is unavailable or returns no results, the live run is marked partial and continues without search context; offline fixtures are never substituted in live mode.
 
 ### Tests
 
-The final TASK-06 audit passed **130 tests** offline:
+The final pre-merge audit passed **134 tests** offline:
 
 ```bash
 uv sync --group dev
 uv run pytest -q
 ```
 
-Expected audited result: `130 passed`.
+Expected audited result: `134 passed`.
 
 <a id="report-screenshots"></a>
 
@@ -203,21 +211,29 @@ Tryb offline jest domyślny. Nie wymaga kluczy API i nie łączy się z NBP, GUS
 Wymagania: Python 3.11 lub nowszy oraz `uv`.
 
 ```bash
-git clone --branch feature/data-platform-v2 https://github.com/maciejkubek-maker/polish-economy-agent.git
+git clone https://github.com/maciejkubek-maker/polish-economy-agent.git
 cd polish-economy-agent
+cp .env.example .env
 uv sync --group dev
 uv run python app.py
 ```
 
+W PowerShell zamiast `cp` użyj `Copy-Item .env.example .env`. Skopiowany plik ma już `OFFLINE_MODE=true` i puste klucze API.
+
 Otwórz <http://127.0.0.1:5000/> lub <http://127.0.0.1:5000/report.html>. Zatrzymaj lokalny serwer skrótem `Ctrl+C`.
 
-W tym trybie plik `.env` nie jest potrzebny. Nie ustawiaj `DB_V2_PATH` na `instance/economy_agent.db`; ta baza legacy jest chroniona i musi pozostać niezmieniona.
+Aplikacja jest domyślnie offline również bez pliku `.env`, ale skopiowanie przykładu jawnie utrwala bezpieczną konfigurację. Nie ustawiaj `DB_V2_PATH` na `instance/economy_agent.db`; ta baza legacy jest chroniona i musi pozostać niezmieniona.
 
 ### Opcjonalny tryb online
 
 Tryb online łączy się z usługami zewnętrznymi i zależnie od skonfigurowanych kont może powodować płatne wywołania modeli lub wyszukiwarki. Włączaj go wyłącznie świadomie.
 
-Utwórz lokalny, niecommitowany plik `.env`:
+Skopiuj bezpieczny przykład do lokalnego, niecommitowanego pliku `.env`, następnie ustaw `OFFLINE_MODE=false` i uzupełnij wyłącznie klucze usług, których zamierzasz użyć:
+
+```bash
+cp .env.example .env
+# PowerShell: Copy-Item .env.example .env
+```
 
 ```dotenv
 OFFLINE_MODE=false
@@ -234,18 +250,18 @@ Następnie uruchom:
 uv run python app.py
 ```
 
-Podczas generowania online evaluator najpierw próbuje Gemini, następnie OpenAI GPT, a przy braku obu modeli przechodzi do syntezy deterministycznej. Pobieranie aktualnych danych oficjalnych i kontekstu Tavily wymaga dostępu do sieci; bez użytecznego klienta Tavily wykorzystywane są lokalne fixture'y demonstracyjne.
+Podczas generowania online evaluator najpierw próbuje Gemini, następnie OpenAI GPT, a przy braku modeli lub odrzuceniu raportu przez kontrolę integralności przechodzi do jawnie oznaczonej syntezy deterministycznej. Pobieranie aktualnych danych oficjalnych i kontekstu Tavily wymaga dostępu do sieci. Jeśli Tavily jest niedostępne lub nie zwróci wyników, przebieg live otrzymuje status częściowy i działa bez kontekstu wyszukiwania; fixture'y offline nigdy nie są podstawiane w trybie live.
 
 ### Testy
 
-Końcowy audyt TASK-06 potwierdził **130 testów** działających offline:
+Końcowy audyt przed merge potwierdził **134 testy** działające offline:
 
 ```bash
 uv sync --group dev
 uv run pytest -q
 ```
 
-Oczekiwany wynik audytu: `130 passed`.
+Oczekiwany wynik audytu: `134 passed`.
 
 ### Zrzuty ekranu raportu
 

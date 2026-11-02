@@ -528,10 +528,12 @@ class EconomyEvaluator:
     missing_urls = [
         str(c["url"])
         for c in citations
-        if c.get("url") and str(c["url"]) not in report_text
+        if int(c["idx"]) in used_indices
+        and c.get("url")
+        and str(c["url"]) not in report_text
     ]
     if missing_urls:
-      raise ValueError("Raport nie zawiera bezpośrednich URL-i wszystkich źródeł")
+      raise ValueError("Raport nie zawiera bezpośrednich URL-i cytowanych źródeł")
 
     allowed_values = {
         self._normalize_numeric_claim(o["value_decimal"])
