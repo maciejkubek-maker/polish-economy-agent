@@ -1,5 +1,5 @@
 {
-  "timestamp_utc": "2026-11-02T18:18:00.127747+00:00",
+  "timestamp_utc": "2026-11-02T18:36:01.246539+00:00",
   "tests": [
     {
       "service": "NBP",
@@ -9,7 +9,7 @@
       "response_type": "JSON",
       "payload_bytes": 120,
       "payload_hash": "2f3c004fef626e8a0115e006ba4b75b6fc0b4d3d16c3973da3a557befafe8004",
-      "duration_ms": 270,
+      "duration_ms": 298,
       "verified": true,
       "validation_status": "VERIFIED",
       "observation": {
@@ -34,7 +34,7 @@
       "response_type": "JSON",
       "payload_bytes": 133,
       "payload_hash": "9141bba106bef12085956e00406015bdc81342fb6901bc9b3b6a71c00ce9b43d",
-      "duration_ms": 159,
+      "duration_ms": 202,
       "verified": true,
       "validation_status": "VERIFIED",
       "observation": {
@@ -53,20 +53,20 @@
     },
     {
       "service": "NBP",
-      "name": "Stopa referencyjna NBP (XML)",
+      "name": "Podstawowa stopa procentowa (referencyjna) NBP",
       "url": "https://static.nbp.pl/dane/stopy/stopy_procentowe.xml",
       "http_status": 200,
-      "response_type": "OFFICIAL_XML",
+      "response_type": "XML",
       "payload_bytes": 2999,
       "payload_hash": "1b945a7924832474af670b0f0a4871dc1724e7f154ccbfaee8ab548e1c3dbfe3",
-      "duration_ms": 172,
+      "duration_ms": 281,
       "verified": true,
       "validation_status": "VERIFIED",
       "observation": {
         "indicator": "PL_NBP_REFERENCE_RATE",
         "value": "3.75",
         "unit": "PCT",
-        "period": "2026-03-05",
+        "period": "od 2026-03-05",
         "publication_date": "2026-03-05",
         "metadata": {
           "rate_type": "referencyjna",
@@ -74,17 +74,40 @@
           "effective_from": "2026-03-05"
         }
       },
-      "notes": "Oficjalny plik XML stóp NBP (pozycja 'ref')."
+      "notes": "Oficjalny plik XML stóp procentowych NBP (stopy_procentowe.xml)."
     },
     {
       "service": "Eurostat",
-      "name": "HICP (Harmonised Index of Consumer Prices) r/r (PL)",
+      "name": "HICP r/r (teicp000, COICOP 2018 - bieżąca seria 2026)",
+      "url": "https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/teicp000?format=JSON&lang=en&geo=PL",
+      "http_status": 200,
+      "response_type": "JSON-stat 2.0",
+      "payload_bytes": 5993,
+      "payload_hash": "9d21e885e4e5d47a8f7e76970d4696c2bbc0899d1cc00c16bec1597f280f832c",
+      "duration_ms": 327,
+      "verified": true,
+      "validation_status": "VERIFIED",
+      "series_count": 12,
+      "latest_observation": {
+        "indicator": "EU_HICP_YOY",
+        "value": "4.0",
+        "unit": "PCT",
+        "period": "2026-09-01 - 2026-09-30",
+        "publication_date": null,
+        "classification": "COICOP_2018",
+        "is_archival": false
+      },
+      "notes": "Bieżąca tabela wskaźników kluczowych teicp000, coicop18 TOTAL, unit PCH_M12."
+    },
+    {
+      "service": "Eurostat",
+      "name": "HICP r/r (prc_hicp_manr, COICOP 1999 - archiwalna seria do 2025-12)",
       "url": "https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/prc_hicp_manr?format=JSON&lang=en&geo=PL&coicop=CP00",
       "http_status": 200,
       "response_type": "JSON-stat 2.0",
       "payload_bytes": 18521,
       "payload_hash": "e1cbec36c33914f844a300d98b7380945d685b41eb1d0c7fa927e3fd976c584f",
-      "duration_ms": 279,
+      "duration_ms": 351,
       "verified": true,
       "validation_status": "VERIFIED",
       "series_count": 348,
@@ -93,9 +116,11 @@
         "value": "2.5",
         "unit": "PCT",
         "period": "2025-12-01 - 2025-12-31",
-        "publication_date": null
+        "publication_date": null,
+        "classification": "COICOP_1999_ARCHIVAL",
+        "is_archival": true
       },
-      "notes": "Dataset prc_hicp_manr, coicop CP00."
+      "notes": "Dataset prc_hicp_manr, coicop CP00 (szereg archiwalny Eurostatu)."
     },
     {
       "service": "Eurostat",
@@ -105,7 +130,7 @@
       "response_type": "JSON-stat 2.0",
       "payload_bytes": 25710,
       "payload_hash": "19799726a597518b28acc72114b3da0d76889367fcf9757d50c88da3d5a97615",
-      "duration_ms": 246,
+      "duration_ms": 344,
       "verified": true,
       "validation_status": "VERIFIED",
       "series_count": 357,
@@ -126,7 +151,7 @@
       "response_type": "JSON-stat 2.0",
       "payload_bytes": 11012,
       "payload_hash": "79493d67f39725f25e27d05ecea9cd1453922789394fce6d88ccfb62d8348908",
-      "duration_ms": 213,
+      "duration_ms": 273,
       "verified": true,
       "validation_status": "VERIFIED",
       "series_count": 125,
@@ -137,7 +162,7 @@
         "period": "2026-04-01 - 2026-06-30",
         "publication_date": null
       },
-      "notes": "Dataset namq_10_gdp, unit PCH_PRE, na_item B1GQ."
+      "notes": "Dataset namq_10_gdp, unit CLV_PCH_PRE / PCH_PRE, na_item B1GQ."
     },
     {
       "service": "Eurostat",
@@ -147,7 +172,7 @@
       "response_type": "JSON-stat 2.0",
       "payload_bytes": 11008,
       "payload_hash": "2349718d2fcfab779e0e8136742d308a7dd54b77a0d3a576872a4c42a0300dbb",
-      "duration_ms": 213,
+      "duration_ms": 227,
       "verified": true,
       "validation_status": "VERIFIED",
       "series_count": 122,
@@ -158,7 +183,7 @@
         "period": "2026-04-01 - 2026-06-30",
         "publication_date": null
       },
-      "notes": "Dataset namq_10_gdp, unit PCH_SM_PR_Y, na_item B1GQ."
+      "notes": "Dataset namq_10_gdp, unit CLV_PCH_SM / PCH_SM_PR_Y, na_item B1GQ."
     },
     {
       "service": "Eurostat",
@@ -168,7 +193,7 @@
       "response_type": "JSON-stat 2.0",
       "payload_bytes": 11535,
       "payload_hash": "278ce95e40c916819cb266ca24b76db018af3c35d85fc0a5f3a88603fa407819",
-      "duration_ms": 201,
+      "duration_ms": 289,
       "verified": true,
       "validation_status": "VERIFIED",
       "series_count": 126,
@@ -189,7 +214,7 @@
       "response_type": "JSON",
       "payload_bytes": 975,
       "payload_hash": "fcbf0e94ed8f8b09b6a1ba64ef501ee51433f4988f0e3c9d0abea7fab05793db",
-      "duration_ms": 9672,
+      "duration_ms": 3767,
       "verified": true,
       "validation_status": "VERIFIED",
       "series_count": 22,
@@ -200,17 +225,18 @@
         "period": "2025-01-01 - 2025-12-31",
         "publication_date": null
       },
-      "notes": "BDL zmienna 60270 (ogółem, poziom 0 / Polska)."
+      "notes": "BDL zmienna 60270 (ogółem, poziom 0 / Polska - szereg roczny ANNUAL)."
     },
     {
       "service": "GUS BDL",
       "name": "Liczba bezrobotnych zarejestrowanych (var 60269)",
       "url": "https://bdl.stat.gov.pl/api/v1/data/by-variable/60269?unit-level=0&format=json",
       "http_status": 0,
-      "duration_ms": 10100,
+      "duration_ms": 3085,
       "verified": false,
       "validation_status": "NOT_VERIFIED",
-      "error": "The read operation timed out"
+      "error": "The read operation timed out",
+      "notes": "Brak zweryfikowanego zasobu w BDL. Zgodnie z wytycznymi, funkcja i wskaźnik pozostają jako NOT_VERIFIED."
     },
     {
       "service": "GUS DBW",
@@ -220,7 +246,7 @@
       "response_type": "JSON",
       "payload_bytes": 24280,
       "payload_hash": "0a8a5db9793841f5af9c8fc54559803b0a7e5010b5cca2c19484b85c28a61f9a",
-      "duration_ms": 291,
+      "duration_ms": 226,
       "verified": true,
       "validation_status": "VERIFIED",
       "observation": {
@@ -248,7 +274,7 @@
       "url": "https://api-dbw.stat.gov.pl/api/dictionaries/periods-dictionary?page-size=50",
       "http_status": 200,
       "response_type": "JSON",
-      "duration_ms": 144,
+      "duration_ms": 214,
       "verified": true,
       "validation_status": "VERIFIED",
       "sample_mappings": {

@@ -121,7 +121,7 @@ def run_all_smoke_tests():
             "error": str(e),
         })
 
-    # 1.3 Stopa referencyjna XML
+    # 1.3 Stopa referencyjna (XML)
     t0 = time.time()
     try:
         evi, obs = nbp.fetch_reference_rate()
@@ -129,10 +129,10 @@ def run_all_smoke_tests():
         print(f"[OK 200] NBP Stopa referencyjna: {obs.value_decimal}% obowiązuje od {obs.period_start} ({dt} ms)")
         report_data["tests"].append({
             "service": "NBP",
-            "name": "Stopa referencyjna NBP (XML)",
+            "name": "Podstawowa stopa procentowa (referencyjna) NBP",
             "url": evi.source_url,
             "http_status": evi.status_code,
-            "response_type": "OFFICIAL_XML",
+            "response_type": "XML",
             "payload_bytes": len(evi.payload_text),
             "payload_hash": evi.content_hash,
             "duration_ms": dt,
@@ -142,11 +142,11 @@ def run_all_smoke_tests():
                 "indicator": obs.indicator_code,
                 "value": obs.value_decimal,
                 "unit": obs.unit_code,
-                "period": obs.period_start,
+                "period": f"od {obs.period_start}",
                 "publication_date": obs.publication_date,
                 "metadata": obs.metadata,
             },
-            "notes": "Oficjalny plik XML stóp NBP (pozycja 'ref').",
+            "notes": "Oficjalny plik XML stóp procentowych NBP (stopy_procentowe.xml).",
         })
     except Exception as e:
         dt = int((time.time() - t0) * 1000)
@@ -167,16 +167,16 @@ def run_all_smoke_tests():
     print("\n--- 2. WERYFIKACJA EUROSTAT (Statistics API 1.0 — JSON-stat 2.0) ---")
     euro = EurostatConnector(offline_mode=False)
 
-    # 2.1 HICP
+    # 2.1 HICP (Bieżąca seria teicp000 - COICOP 2018)
     t0 = time.time()
     try:
-        evi, obs_list = euro.fetch_hicp("PL")
+        evi, obs_list = euro.fetch_hicp("PL", dataset="teicp000", require_fresh=True)
         dt = int((time.time() - t0) * 1000)
         latest = obs_list[-1]
-        print(f"[OK 200] Eurostat HICP ({len(obs_list)} obs): ostatnia {latest.period_start} do {latest.period_end} = {latest.value_decimal} {latest.unit_code} ({dt} ms)")
+        print(f"[OK 200] Eurostat HICP teicp000 COICOP 2018 ({len(obs_list)} obs): ostatnia {latest.period_start} do {latest.period_end} = {latest.value_decimal} {latest.unit_code} ({dt} ms)")
         report_data["tests"].append({
             "service": "Eurostat",
-            "name": "HICP (Harmonised Index of Consumer Prices) r/r (PL)",
+            "name": "HICP r/r (teicp000, COICOP 2018 - bieżąca seria 2026)",
             "url": evi.source_url,
             "http_status": evi.status_code,
             "response_type": "JSON-stat 2.0",
@@ -192,15 +192,59 @@ def run_all_smoke_tests():
                 "unit": latest.unit_code,
                 "period": f"{latest.period_start} - {latest.period_end}",
                 "publication_date": latest.publication_date,
+                "classification": latest.metadata.get("classification"),
+                "is_archival": latest.metadata.get("is_archival"),
             },
-            "notes": "Dataset prc_hicp_manr, coicop CP00.",
+            "notes": "Bieżąca tabela wskaźników kluczowych teicp000, coicop18 TOTAL, unit PCH_M12.",
         })
     except Exception as e:
         dt = int((time.time() - t0) * 1000)
-        print(f"[FAIL] Eurostat HICP: {e} ({dt} ms)")
+        print(f"[FAIL] Eurostat HICP teicp000: {e} ({dt} ms)")
         report_data["tests"].append({
             "service": "Eurostat",
-            "name": "HICP",
+            "name": "HICP (teicp000)",
+            "duration_ms": dt,
+            "verified": False,
+            "validation_status": "FAILED",
+            "error": str(e),
+        })
+
+    # 2.1b HICP (Seria archiwalna prc_hicp_manr - COICOP 1999)
+    t0 = time.time()
+    try:
+        evi, obs_list = euro.fetch_hicp_archival("PL")
+        dt = int((time.time() - t0) * 1000)
+        latest = obs_list[-1]
+        print(f"[OK 200] Eurostat HICP archiwalny prc_hicp_manr COICOP 1999 ({len(obs_list)} obs): ostatnia {latest.period_start} do {latest.period_end} = {latest.value_decimal} {latest.unit_code} ({dt} ms)")
+        report_data["tests"].append({
+            "service": "Eurostat",
+            "name": "HICP r/r (prc_hicp_manr, COICOP 1999 - archiwalna seria do 2025-12)",
+            "url": evi.source_url,
+            "http_status": evi.status_code,
+            "response_type": "JSON-stat 2.0",
+            "payload_bytes": len(evi.payload_text),
+            "payload_hash": evi.content_hash,
+            "duration_ms": dt,
+            "verified": True,
+            "validation_status": "VERIFIED",
+            "series_count": len(obs_list),
+            "latest_observation": {
+                "indicator": latest.indicator_code,
+                "value": latest.value_decimal,
+                "unit": latest.unit_code,
+                "period": f"{latest.period_start} - {latest.period_end}",
+                "publication_date": latest.publication_date,
+                "classification": latest.metadata.get("classification"),
+                "is_archival": latest.metadata.get("is_archival"),
+            },
+            "notes": "Dataset prc_hicp_manr, coicop CP00 (szereg archiwalny Eurostatu).",
+        })
+    except Exception as e:
+        dt = int((time.time() - t0) * 1000)
+        print(f"[FAIL] Eurostat HICP prc_hicp_manr: {e} ({dt} ms)")
+        report_data["tests"].append({
+            "service": "Eurostat",
+            "name": "HICP (prc_hicp_manr)",
             "duration_ms": dt,
             "verified": False,
             "validation_status": "FAILED",
@@ -273,7 +317,7 @@ def run_all_smoke_tests():
                 "period": f"{latest.period_start} - {latest.period_end}",
                 "publication_date": latest.publication_date,
             },
-            "notes": "Dataset namq_10_gdp, unit PCH_PRE, na_item B1GQ.",
+            "notes": "Dataset namq_10_gdp, unit CLV_PCH_PRE / PCH_PRE, na_item B1GQ.",
         })
     except Exception as e:
         dt = int((time.time() - t0) * 1000)
@@ -313,7 +357,7 @@ def run_all_smoke_tests():
                 "period": f"{latest.period_start} - {latest.period_end}",
                 "publication_date": latest.publication_date,
             },
-            "notes": "Dataset namq_10_gdp, unit PCH_SM_PR_Y, na_item B1GQ.",
+            "notes": "Dataset namq_10_gdp, unit CLV_PCH_SM / PCH_SM_PR_Y, na_item B1GQ.",
         })
     except Exception as e:
         dt = int((time.time() - t0) * 1000)
@@ -399,7 +443,7 @@ def run_all_smoke_tests():
                 "period": f"{latest.period_start} - {latest.period_end}",
                 "publication_date": latest.publication_date,
             },
-            "notes": "BDL zmienna 60270 (ogółem, poziom 0 / Polska).",
+            "notes": "BDL zmienna 60270 (ogółem, poziom 0 / Polska - szereg roczny ANNUAL).",
         })
     except Exception as e:
         dt = int((time.time() - t0) * 1000)
@@ -413,23 +457,24 @@ def run_all_smoke_tests():
             "error": str(e),
         })
 
-    # 3.2 GUS BDL 60269 (Liczba bezrobotnych zarejestrowanych) — test rygorystyczny
+    # 3.2 GUS BDL 60269 (Liczba bezrobotnych zarejestrowanych — rygor statusu NOT_VERIFIED)
     t0 = time.time()
     url_60269 = "https://bdl.stat.gov.pl/api/v1/data/by-variable/60269?unit-level=0&format=json"
     req_60269 = urllib.request.Request(url_60269, headers={"User-Agent": "PolishEconomyAgent/2.0"})
     try:
-        with urllib.request.urlopen(req_60269, timeout=10) as resp:
+        with urllib.request.urlopen(req_60269, timeout=3) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             dt = int((time.time() - t0) * 1000)
-            print(f"[OK 200] GUS BDL 60269 ({dt} ms)")
+            print(f"[NOT_VERIFIED] GUS BDL 60269: odpowiedź 200, lecz brak zweryfikowanego mapowania ({dt} ms)")
             report_data["tests"].append({
                 "service": "GUS BDL",
                 "name": "Liczba bezrobotnych zarejestrowanych (var 60269)",
                 "url": url_60269,
                 "http_status": 200,
                 "duration_ms": dt,
-                "verified": True,
-                "validation_status": "VERIFIED",
+                "verified": False,
+                "validation_status": "NOT_VERIFIED",
+                "notes": "Podanie var_id bez kompletnego mapowania (ID, definicja, jednostka, częstotliwość) pozostawia status NOT_VERIFIED.",
             })
     except urllib.error.HTTPError as he:
         dt = int((time.time() - t0) * 1000)
@@ -445,7 +490,7 @@ def run_all_smoke_tests():
             "validation_status": "NOT_VERIFIED",
             "error": f"HTTP {he.code}: {he.reason} - Zasób nie istnieje w publicznym API GUS BDL (zmienna wycofana lub przeniesiona)",
             "raw_error_payload": err_msg[:300],
-            "notes": "Zmienna 60269 nie istnieje w katalogu GUS BDL. Zgodnie z wytycznymi, oznaczono jako NOT_VERIFIED bez zgadywania.",
+            "notes": "Zmienna 60269 nie istnieje w katalogu GUS BDL. Wskaźnik PL_UNEMPLOYMENT_REGISTERED_COUNT wymaga kompletnego mapowania weryfikacyjnego i pozostaje jako NOT_VERIFIED.",
         })
     except Exception as ex:
         dt = int((time.time() - t0) * 1000)
@@ -459,6 +504,7 @@ def run_all_smoke_tests():
             "verified": False,
             "validation_status": "NOT_VERIFIED",
             "error": str(ex),
+            "notes": "Brak zweryfikowanego zasobu w BDL. Zgodnie z wytycznymi, funkcja i wskaźnik pozostają jako NOT_VERIFIED.",
         })
 
     # 3.3 GUS DBW CPI (Zmienna 305, Przekrój 736, Rok 2024, Okres 255 = wrzesień)
@@ -509,7 +555,6 @@ def run_all_smoke_tests():
             p_data = json.loads(resp.read().decode("utf-8"))
             dt = int((time.time() - t0) * 1000)
             items = p_data.get("results", []) or p_data.get("data", [])
-            # Potwierdzenie obecności 247-258
             found_ids = {it.get("id") or it.get("id-okres"): it.get("nazwa") or it.get("opis") for it in items}
             is_247_jan = 247 in found_ids and "styczeń" in found_ids[247].lower()
             is_255_sep = 255 in found_ids and "wrzesień" in found_ids[255].lower()

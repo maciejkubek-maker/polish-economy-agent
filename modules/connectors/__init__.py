@@ -10,6 +10,7 @@ from modules.connectors.base import (
     DataNotFoundError,
     VariableNotMappedError,
     ValidationError,
+    StaleDataError,
 )
 from modules.connectors.nbp import NbpConnector
 from modules.connectors.eurostat import EurostatConnector
@@ -23,6 +24,7 @@ __all__ = [
     "DataNotFoundError",
     "VariableNotMappedError",
     "ValidationError",
+    "StaleDataError",
     "NbpConnector",
     "EurostatConnector",
     "GusConnector",

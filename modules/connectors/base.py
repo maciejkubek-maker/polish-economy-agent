@@ -10,6 +10,7 @@ Wymagania:
 - Ścisła walidacja jednostki, okresu i definicji ekonomicznej.
 - Obsługa braku danych bez wymyślania/halucynowania wartości (DataNotFoundError).
 - Obsługa trybu offline (mock fixtures dla testów bez internetu).
+- Rygor świeżości danych (StaleDataError).
 """
 
 from dataclasses import dataclass, field
@@ -40,6 +41,11 @@ class VariableNotMappedError(ConnectorException):
 
 class ValidationError(ConnectorException):
     """Rzucany, gdy dane z API naruszają reguły dziedzinowe lub ograniczenia schematu."""
+    pass
+
+
+class StaleDataError(ValidationError):
+    """Rzucany, gdy seria danych jest przeterminowana (np. archiwalna seria z 2025 r. prezentowana jako aktualna w 2026 r.)."""
     pass
 
 

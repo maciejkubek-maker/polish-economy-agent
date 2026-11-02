@@ -8,6 +8,9 @@ Wymagania:
 - Weryfikacja Eurostat:
   * JSON-stat 2.0 dla HICP i bezrobocia BAEL.
   * Wielowymiarowy parser z kalkulacją strides oraz kontrolą kompletności danych.
+  * Obsługa aktualnej serii HICP z tabeli teicp000 (COICOP 2018).
+  * Obsługa archiwalnej serii HICP z prc_hicp_manr (COICOP 1999).
+  * Test świeżości danych (blokowanie prezentowania odczytu z 2025 r. jako aktualnego w 2026 r. - StaleDataError).
   * Wyraźne rozdzielenie poziomu PKB (CLV10_MEUR -> PL_GDP_VOLUME, unit=MEUR)
     od dynamiki kw/kw (PCH_PRE -> PL_GDP_QOQ, unit=PCT) i r/r (PCH_SM_PR_Y -> PL_GDP_YOY, unit=PCT).
   * Zakaz zapisywania poziomu wolumenu jako PL_GDP_QOQ.
@@ -15,6 +18,8 @@ Wymagania:
 - Weryfikacja GUS:
   * BDL: var_id 60270 (szereg roczny ANNUAL), wyszukiwanie zmiennych.
   * Wycofanie 60269 z VERIFIED_BDL_VARIABLES, blokowanie pobierania bez zweryfikowanego ID (VariableNotMappedError).
+  * Rygor braku arbitralnego oznaczania zmiennej jako VERIFIED: podanie samego var_id pozostawia status NOT_VERIFIED;
+    wymagany jest komplet zweryfikowanego mapowania (ID, definicja, jednostka, częstotliwość).
   * DBW: ścisłe ustalanie miesiąca z metadanych okresu (zakaz rocznego zakresu dla wskaźnika miesięcznego).
   * DBW: przeliczanie indeksu bazy 100 na stopę procentową oparte na potwierdzonej metodologii (usunięcie heurystyk numerycznych).
   * Rozdzielenie period_end od daty publikacji.
@@ -32,6 +37,7 @@ from modules.connectors.base import (
     DataNotFoundError,
     MacroObservation,
     RawEvidence,
+    StaleDataError,
     ValidationError,
     VariableNotMappedError,
 )
@@ -84,6 +90,65 @@ NBP_RATES_XML = """<?xml version="1.0" encoding="utf-8"?>
 </stopy_procentowe>
 """
 
+# Fixture dla bieżącej serii HICP z teicp000 (COICOP 2018 - 2026 r.)
+EUROSTAT_TEICP000_JSON = """
+{
+  "version": "2.0",
+  "class": "dataset",
+  "label": "HICP - monthly data (annual rate of change - COICOP 2018)",
+  "id": ["freq", "coicop18", "unit", "geo", "time"],
+  "size": [1, 1, 2, 1, 3],
+  "dimension": {
+    "freq": {"category": {"index": {"M": 0}}},
+    "coicop18": {"category": {"index": {"TOTAL": 0}}},
+    "unit": {"category": {"index": {"PCH_M1": 0, "PCH_M12": 1}}},
+    "geo": {"category": {"index": {"PL": 0}}},
+    "time": {
+      "category": {
+        "index": {
+          "2026-07": 0,
+          "2026-08": 1,
+          "2026-09": 2
+        }
+      }
+    }
+  },
+  "value": {
+    "0": 0.2, "1": 0.1, "2": 0.3,
+    "3": 3.1, "4": 3.5, "5": 4.0
+  }
+}
+"""
+
+# Fixture dla archiwalnej serii HICP z prc_hicp_manr (COICOP 1999 - zamrożona na 2025-12)
+EUROSTAT_HICP_ARCHIVAL_2025_JSON = """
+{
+  "version": "2.0",
+  "class": "dataset",
+  "label": "HICP - monthly data (annual rate of change - COICOP 1999 archival)",
+  "dimension": {
+    "geo": {"category": {"index": ["PL"]}},
+    "coicop": {"category": {"index": ["CP00"]}},
+    "unit": {"category": {"index": ["RCH_A"]}},
+    "time": {
+      "category": {
+        "index": {
+          "2025M10": 0,
+          "2025M11": 1,
+          "2025M12": 2
+        }
+      }
+    }
+  },
+  "value": {
+    "0": 2.8,
+    "1": 2.6,
+    "2": 2.5
+  }
+}
+"""
+
+# Kompatybilność wsteczna z bazowym fixture prc_hicp_manr
 EUROSTAT_HICP_JSON = """
 {
   "version": "2.0",
@@ -219,7 +284,8 @@ GUS_BDL_UNEMPLOYMENT_JSON = """
     "measureUnitId": 5,
     "measureUnitName": "%"
   },
-  "results": [\n    {
+  "results": [
+    {
       "id": "000000000000",
       "name": "POLSKA",
       "values": [
@@ -381,33 +447,86 @@ class TestNbpConnector:
 
 
 # ==============================================================================
-# TESTY EUROSTAT CONNECTOR (W TYM POPRAWKA EUROSTAT GDP I STRIDES JSON-STAT)
+# TESTY EUROSTAT CONNECTOR (W TYM TEICP000, ARCHIWALNY HICP ORAZ FRESHNESS GUARD)
 # ==============================================================================
 
 class TestEurostatConnector:
     """Testy oficjalnego konektora Eurostatu (JSON-stat 2.0)."""
 
-    def test_fetch_hicp_success(self):
+    def test_fetch_hicp_teicp000_coicop_2018_default_success(self):
+        """Weryfikuje pobieranie aktualnej serii HICP z tabeli teicp000 (COICOP 2018, dane z 2026 r.)."""
         connector = EurostatConnector(offline_mode=True)
-        connector.register_fixture("prc_hicp_manr", EUROSTAT_HICP_JSON)
+        connector.register_fixture("teicp000", EUROSTAT_TEICP000_JSON)
 
-        evidence, observations = connector.fetch_hicp("PL")
+        evidence, observations = connector.fetch_hicp("PL", dataset="teicp000", require_fresh=True)
 
         assert evidence.source_id == "SRC_EUROSTAT"
         assert len(observations) == 3
 
-        obs0 = observations[0]
-        assert obs0.indicator_code == "EU_HICP_YOY"
-        assert obs0.country_code == "PL"
-        assert obs0.period_start == "2026-07-01"
-        assert obs0.period_end == "2026-07-31"
-        assert obs0.frequency == "MONTHLY"
-        assert obs0.value_decimal == "4.2"
-        assert obs0.unit_code == "PCT"
-        assert obs0.status == "VERIFIED"
-        assert obs0.publication_date is None  # Rozdzielenie period_end od daty publikacji
-        assert obs0.metadata["dataset"] == "prc_hicp_manr"
-        assert obs0.metadata["completeness_pct"] == 100.0
+        latest = observations[-1]
+        assert latest.indicator_code == "EU_HICP_YOY"
+        assert latest.country_code == "PL"
+        assert latest.period_start == "2026-09-01"
+        assert latest.period_end == "2026-09-30"
+        assert latest.frequency == "MONTHLY"
+        assert latest.value_decimal == "4.0"
+        assert latest.unit_code == "PCT"
+        assert latest.status == "VERIFIED"
+        assert latest.publication_date is None
+        assert latest.metadata["dataset"] == "teicp000"
+        assert latest.metadata["classification"] == "COICOP_2018"
+        assert latest.metadata["is_archival"] is False
+        assert latest.metadata["completeness_pct"] == 100.0
+
+    def test_fetch_hicp_archival_prc_hicp_manr_success(self):
+        """Weryfikuje pobieranie archiwalnej serii HICP z prc_hicp_manr (COICOP 1999)."""
+        connector = EurostatConnector(offline_mode=True)
+        connector.register_fixture("prc_hicp_manr", EUROSTAT_HICP_ARCHIVAL_2025_JSON)
+
+        evidence, observations = connector.fetch_hicp_archival("PL")
+
+        assert len(observations) == 3
+        latest = observations[-1]
+        assert latest.indicator_code == "EU_HICP_YOY"
+        assert latest.period_end == "2025-12-31"
+        assert latest.value_decimal == "2.5"
+        assert latest.metadata["dataset"] == "prc_hicp_manr"
+        assert latest.metadata["classification"] == "COICOP_1999_ARCHIVAL"
+        assert latest.metadata["is_archival"] is True
+
+    def test_hicp_freshness_guard_blocks_2025_reading_in_2026(self):
+        """
+        Kluczowy test świeżości danych (Wymóg 1):
+        Nie dopuszcza do prezentowania ostatniego odczytu z 2025 r. jako aktualnego w 2026 r.
+        Gdy żądana jest świeża seria (require_fresh=True) lub sprawdzany jest szereg archiwalny,
+        system musi zgłosić StaleDataError.
+        """
+        connector = EurostatConnector(offline_mode=True)
+        connector.register_fixture("prc_hicp_manr", EUROSTAT_HICP_ARCHIVAL_2025_JSON)
+        connector.register_fixture("teicp000", EUROSTAT_TEICP000_JSON)
+
+        # 1. Próba pobrania serii z 2025 r. jako aktualnej z wymogiem świeżości rzuca StaleDataError
+        with pytest.raises(StaleDataError, match="Brak świeżości danych"):
+            connector.fetch_hicp("PL", dataset="prc_hicp_manr", require_fresh=True)
+
+        # 2. Bezpośrednia weryfikacja świeżości na liście obserwacji z 2025 r.
+        _, obs_archival = connector.fetch_hicp_archival("PL")
+        with pytest.raises(StaleDataError, match="pochodzi z roku 2025"):
+            connector.validate_series_freshness(obs_archival, reference_year=2026)
+
+        # 3. Seria z teicp000 (2026 r.) przechodzi pomyślnie walidację świeżości
+        _, obs_fresh = connector.fetch_hicp("PL", dataset="teicp000", require_fresh=True)
+        assert connector.validate_series_freshness(obs_fresh, reference_year=2026) is True
+
+    def test_fetch_hicp_backward_compatibility_fallback(self):
+        """Weryfikuje kompatybilność wsteczną dla starszych fixture prc_hicp_manr."""
+        connector = EurostatConnector(offline_mode=True)
+        connector.register_fixture("prc_hicp_manr", EUROSTAT_HICP_JSON)
+
+        evidence, observations = connector.fetch_hicp("PL")
+        assert len(observations) == 3
+        assert observations[0].indicator_code == "EU_HICP_YOY"
+        assert observations[0].value_decimal == "4.2"
 
     def test_fetch_harmonized_unemployment_success(self):
         connector = EurostatConnector(offline_mode=True)
@@ -556,7 +675,7 @@ class TestEurostatConnector:
 
 
 # ==============================================================================
-# TESTY GUS CONNECTOR (W TYM POPRAWKI OKRESU I PRZELICZENIA CPI)
+# TESTY GUS CONNECTOR (W TYM POPRAWKI OKRESU, PRZELICZENIA CPI ORAZ MAPPING GUARDS)
 # ==============================================================================
 
 class TestGusConnector:
@@ -578,6 +697,7 @@ class TestGusConnector:
         assert obs_ann.frequency == "ANNUAL"
         assert obs_ann.value_decimal == "5.1"
         assert obs_ann.unit_code == "PCT"
+        assert obs_ann.status == "VERIFIED"
         assert obs_ann.publication_date is None
 
         obs_month = observations[1]
@@ -587,27 +707,67 @@ class TestGusConnector:
         assert obs_month.value_decimal == "5.0"
         assert obs_month.publication_date is None
 
-    def test_fetch_registered_unemployment_count_success(self):
+    def test_fetch_registered_unemployment_count_blocks_unmapped_call(self):
+        """Wywołanie bez argumentów rzuca VariableNotMappedError."""
+        connector = GusConnector(offline_mode=True)
+        with pytest.raises(VariableNotMappedError, match="status NOT_VERIFIED"):
+            connector.fetch_registered_unemployment_count()
+
+    def test_fetch_registered_unemployment_count_arbitrary_var_id_remains_not_verified(self):
         """
-        Weryfikuje, że wskaźnik PL_UNEMPLOYMENT_REGISTERED_COUNT (dawne ID 60269):
-        - blokuje próbę pobrania bez podania zweryfikowanego var_id (zwraca VariableNotMappedError)
-        - po przekazaniu jawnego var_id (np. w fixture offline) poprawnie pobiera dane i zachowuje publication_date=None
+        Kluczowy test rygoru walidacji (Wymóg 2):
+        Samo podanie dowolnego var_id (np. 60269) bez zweryfikowanego mapowania
+        NIE oznacza zmiennej jako VERIFIED — musi mieć status NOT_VERIFIED!
         """
         connector = GusConnector(offline_mode=True)
         connector.register_fixture("by-variable/60269", GUS_BDL_COUNT_JSON)
 
-        # 1. Próba pobrania bez zweryfikowanego var_id jest blokowana
-        with pytest.raises(VariableNotMappedError, match="Identyfikator 60269 został wycofany"):
-            connector.fetch_registered_unemployment_count()
-
-        # 2. Pobranie z jawnym, zweryfikowanym var_id
         evidence, observations = connector.fetch_registered_unemployment_count(var_id=60269)
 
         assert len(observations) == 1
-        assert observations[0].indicator_code == "PL_UNEMPLOYMENT_REGISTERED_COUNT"
-        assert observations[0].value_decimal == "845.3"
-        assert observations[0].unit_code == "THOUSAND_PERSONS"
-        assert observations[0].publication_date is None
+        obs = observations[0]
+        assert obs.indicator_code == "PL_UNEMPLOYMENT_REGISTERED_COUNT"
+        assert obs.value_decimal == "845.3"
+        # Rygor: status musi być NOT_VERIFIED!
+        assert obs.status == "NOT_VERIFIED"
+        assert obs.status != "VERIFIED"
+        assert obs.metadata["status_reason"] == "UNVERIFIED_VARIABLE_MAPPING"
+
+    def test_fetch_registered_unemployment_count_incomplete_mapping_raises_validation_error(self):
+        """Przekazanie niekompletnego mapowania (np. bez częstotliwości) rzuca ValidationError."""
+        connector = GusConnector(offline_mode=True)
+        incomplete_mapping = {
+            "var_id": 999999,
+            "name": "Bezrobotni zarejestrowani",
+            "unit_code": "THOUSAND_PERSONS",
+            # brak pola frequency
+        }
+        with pytest.raises(ValidationError, match="Niekompletne mapowanie"):
+            connector.fetch_registered_unemployment_count(verified_mapping=incomplete_mapping)
+
+    def test_fetch_registered_unemployment_count_complete_verified_mapping_succeeds_as_verified(self):
+        """
+        Przekazanie kompletnego, zweryfikowanego mapowania (ID, definicja, jednostka, częstotliwość)
+        rejestruje zmienną i zwraca obserwację ze statusem VERIFIED.
+        """
+        connector = GusConnector(offline_mode=True)
+        connector.register_fixture("by-variable/999999", GUS_BDL_COUNT_JSON)
+
+        complete_mapping = {
+            "var_id": 999999,
+            "name": "Bezrobotni zarejestrowani w urzędach pracy",
+            "unit_code": "THOUSAND_PERSONS",
+            "frequency": "MONTHLY",
+        }
+
+        evidence, observations = connector.fetch_registered_unemployment_count(verified_mapping=complete_mapping)
+
+        assert len(observations) == 1
+        obs = observations[0]
+        assert obs.indicator_code == "PL_UNEMPLOYMENT_REGISTERED_COUNT"
+        assert obs.status == "VERIFIED"
+        assert obs.unit_code == "THOUSAND_PERSONS"
+        assert obs.metadata["status_reason"] == "VERIFIED_CATALOG"
 
     def test_fetch_cpi_dbw_resolves_exact_month_from_period_metadata(self):
         """
@@ -692,7 +852,7 @@ class TestGusConnector:
             connector.fetch_indicator("PL_INDUSTRIAL_PRODUCTION_YOY")
 
     def test_unmapped_indicator_with_explicit_verified_var_id_succeeds(self):
-        """Jeśli użytkownik przekaże zweryfikowane ID, pobranie się powiedzie."""
+        """Jeśli użytkownik przekaże ID, pobranie się powiedzie ze statusem NOT_VERIFIED dopóki brak pełnego mapowania."""
         connector = GusConnector(offline_mode=True)
         connector.register_fixture("by-variable/644070", GUS_BDL_COUNT_JSON)
 
@@ -702,6 +862,7 @@ class TestGusConnector:
 
         assert observations[0].indicator_code == "PL_WAGE_AVERAGE_GROSS"
         assert observations[0].unit_code == "PLN_PER_MONTH"
+        assert observations[0].status == "NOT_VERIFIED"
 
 
 # ==============================================================================
