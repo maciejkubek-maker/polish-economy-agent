@@ -2,8 +2,8 @@
 
 **Status:** `DONE`  
 **Branch:** `refactor/02-html-security`  
-**Commit SHA:** do uzupełnienia po commicie  
-**PR:** do uzupełnienia po utworzeniu Draft PR  
+**Commit SHA:** `218725d22227d86f78fbb984fa5b4b1a477382ae`  
+**PR:** `https://github.com/maciejkubek-maker/polish-economy-agent/pull/2`  
 **Data:** 2026-11-02  
 
 ## Co wykonałem
@@ -55,8 +55,8 @@
   "task_id": "TASK-02",
   "status": "READY_FOR_REVIEW",
   "branch": "refactor/02-html-security",
-  "commit_sha": "<commit_sha>",
-  "pull_request": "<pull_request_url>",
+  "commit_sha": "218725d22227d86f78fbb984fa5b4b1a477382ae",
+  "pull_request": "https://github.com/maciejkubek-maker/polish-economy-agent/pull/2",
   "tests": {"status": "PASSED", "passed": 48, "failed": 0},
   "files_changed": [
     "app.py",
