@@ -1,8 +1,29 @@
 import html
 import os
+import subprocess
+import sys
 import pytest
-from app import format_report_html, build_html_template, server, get_db, set_db
+from app import format_report_html, build_html_template, save_report_to_html, server, get_db, set_db
 from modules.database import EconomyDatabase
+
+
+# ==============================================================================
+# FIXTURE: IZOLACJA GLOBALNEJ INSTANCJI BAZY
+# ==============================================================================
+
+@pytest.fixture(autouse=True)
+def reset_app_database():
+    """Ensure app._db is restored to its initial state before and after each test
+
+    so tests never pollute each other through the module-level database reference.
+    """
+    import app
+    old_db = app._db
+    app.set_db(None)
+    try:
+        yield
+    finally:
+        app.set_db(old_db)
 
 
 # ==============================================================================
@@ -140,8 +161,10 @@ def test_valid_markdown_and_citations_preserved():
 
     assert "<h1>Tytuł Raportu</h1>" in rendered
     assert "<h2>Podrozdział</h2>" in rendered
+    assert "### Sekcja" not in rendered
     assert "<h3>Sekcja</h3>" in rendered
     assert "<strong>3.9%</strong>" in rendered
+    assert "<sup style='color:#2980b9; font-weight:bold;'>[\1]</sup>" not in rendered
     assert "<sup style='color:#2980b9; font-weight:bold;'>[1]</sup>" in rendered
     assert "<sup style='color:#2980b9; font-weight:bold;'>[2]</sup>" in rendered
     assert '<a href="https://stat.gov.pl/pkb"' in rendered
@@ -173,11 +196,135 @@ def test_flask_endpoint_serves_sanitized_content(isolated_db):
         assert "<strong>Wartość</strong>" in html_data
 
 
-def test_lazy_database_initialization_does_not_touch_file(tmp_path, monkeypatch):
-    """Verify that importing app or formatting HTML does not instantiate EconomyDatabase eagerly."""
-    # Ensure _db is None
-    set_db(None)
+# ==============================================================================
+# TESTY BEZPIECZEŃSTWA FALLBACKU DO PLIKU report.html
+# ==============================================================================
 
-    # Calling format_report_html should not initialize the database
-    format_report_html("# Test")
-    assert get_db() is not None or True  # get_db should only initialize when invoked explicitly
+def test_flask_endpoint_fallback_to_file_when_db_has_no_report(isolated_db):
+    """Verify that when database has no reports, serve_report falls back to the static report.html on disk."""
+    # isolated_db has no generated reports
+    set_db(isolated_db)
+
+    with server.test_client() as client:
+        response = client.get("/")
+        assert response.status_code == 200
+        content = response.get_data(as_text=True)
+        assert "<!DOCTYPE html>" in content
+        assert "Raport" in content
+
+
+def test_flask_endpoint_404_when_db_and_file_missing(isolated_db, monkeypatch):
+    """Verify that when neither database report nor report.html file exists, a clean 404 is returned."""
+    set_db(isolated_db)
+
+    # Mock os.path.exists to return False specifically for report.html
+    original_exists = os.path.exists
+    monkeypatch.setattr(os.path, "exists", lambda p: False if str(p).endswith("report.html") else original_exists(p))
+
+    with server.test_client() as client:
+        response = client.get("/")
+        assert response.status_code == 404
+        assert "Brak wygenerowanego raportu w bazie ani na dysku." in response.get_data(as_text=True)
+
+
+def test_save_report_to_html_produces_sanitized_file(tmp_path, monkeypatch):
+    """Verify that save_report_to_html writes sanitized HTML to disk, preventing XSS in static exports."""
+    test_report_file = tmp_path / "test_report.html"
+
+    # Safely redirect report_path in save_report_to_html without recursive os.path.join patching
+    orig_open = open
+    def mock_open(file, *args, **kwargs):
+        if str(file).endswith("report.html"):
+            return orig_open(test_report_file, *args, **kwargs)
+        return orig_open(file, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", mock_open)
+
+    malicious_input = "# Raport Export\n<script>alert('Export-XSS')</script>\n<img src=x onerror=alert(1)>"
+    save_report_to_html(malicious_input)
+
+    assert test_report_file.exists()
+    content = test_report_file.read_text(encoding="utf-8")
+
+    assert "<script>" not in content
+    assert "<img" not in content
+    assert "&lt;script&gt;alert(&#x27;Export-XSS&#x27;)&lt;/script&gt;" in content
+    assert "&lt;img" in content
+    assert "<h1>Raport Export</h1>" in content
+
+
+# ==============================================================================
+# TESTY LENIWEJ INICJALIZACJI BAZY (BRAK ZAPISU / POŁĄCZENIA PRZY IMPORCIE)
+# ==============================================================================
+
+def test_import_and_rendering_does_not_instantiate_or_touch_database(monkeypatch):
+    """Verify in-process with a spy that calling format_report_html and build_html_template
+
+    never instantiates EconomyDatabase and keeps _db as None.
+    """
+    import app
+    app.set_db(None)
+
+    db_init_calls = []
+
+    def spy_init(self, *args, **kwargs):
+        db_init_calls.append(args)
+        raise RuntimeError("EconomyDatabase.__init__ should NEVER be called by HTML rendering functions!")
+
+    monkeypatch.setattr(EconomyDatabase, "__init__", spy_init)
+
+    # Calling HTML rendering functions must NOT trigger EconomyDatabase instantiation
+    res1 = format_report_html("# Test\n<script>alert(1)</script>")
+    res2 = build_html_template("# Test", country="Polska")
+
+    assert "<h1>Test</h1>" in res1
+    assert "<h1>Test</h1>" in res2
+    assert len(db_init_calls) == 0, f"Expected 0 calls to EconomyDatabase.__init__, got {len(db_init_calls)}"
+    assert app._db is None
+
+
+def test_isolated_process_import_app_does_not_create_db_connection():
+    """Verify in an isolated Python process that importing app and rendering HTML
+
+    maintains _db as None and executes 0 sqlite3.connect calls.
+    """
+    code = """
+import sys, os
+os.environ['GOOGLE_API_KEY'] = 'mock'
+os.environ['OPENAI_API_KEY'] = 'mock'
+os.environ['TAVILY_API_KEY'] = 'mock'
+
+import sqlite3
+connect_calls = []
+original_connect = sqlite3.connect
+
+def monitored_connect(*args, **kwargs):
+    connect_calls.append(args)
+    return original_connect(*args, **kwargs)
+
+sqlite3.connect = monitored_connect
+
+import app
+
+# Verify _db is None upon importing the module
+if app._db is not None:
+    sys.exit(f"FAIL: app._db was initialized upon import: {app._db}")
+
+# Verify rendering functions do not trigger database connections
+out1 = app.format_report_html("# Header\\n<script>alert(1)</script>")
+out2 = app.build_html_template("# Header", country="Polska")
+
+if app._db is not None:
+    sys.exit(f"FAIL: app._db was initialized during HTML rendering: {app._db}")
+
+if len(connect_calls) > 0:
+    sys.exit(f"FAIL: sqlite3.connect was called {len(connect_calls)} times: {connect_calls}")
+
+if "<script>" in out1 or "<script>" in out2:
+    sys.exit("FAIL: <script> was not sanitized!")
+
+print("OK")
+"""
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert result.returncode == 0, f"Subprocess failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+    assert "OK" in result.stdout
