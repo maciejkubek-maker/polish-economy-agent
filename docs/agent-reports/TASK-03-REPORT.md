@@ -2,8 +2,8 @@
 
 **Status:** `READY_FOR_REVIEW`  
 **Branch:** `design/03-data-contract`  
-**Commit SHA:** `TO_BE_UPDATED`  
-**PR:** `TO_BE_UPDATED`  
+**Commit SHA:** `df048397bbc1ea46eaffbc67834ff66e2e6695c1`  
+**PR:** `https://github.com/maciejkubek-maker/polish-economy-agent/pull/3`  
 **Data:** 2026-11-02  
 
 ## Co wykonałem
@@ -110,8 +110,8 @@
   "task_id": "TASK-03",
   "status": "READY_FOR_REVIEW",
   "branch": "design/03-data-contract",
-  "commit_sha": "TO_BE_UPDATED",
-  "pull_request": "TO_BE_UPDATED",
+  "commit_sha": "df048397bbc1ea46eaffbc67834ff66e2e6695c1",
+  "pull_request": "https://github.com/maciejkubek-maker/polish-economy-agent/pull/3",
   "tests": {"status": "PASSED", "passed": 57, "failed": 0},
   "files_changed": [
     "docs/SCHEMA_V2_PROPOSAL.md",
