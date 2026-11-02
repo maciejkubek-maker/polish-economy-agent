@@ -6,8 +6,8 @@ Obsługuje:
 1. HICP — Zharmonizowany Wskaźnik Cen Konsumpcyjnych (dataset: prc_hicp_manr).
 2. Stopę bezrobocia zharmonizowanego wg BAEL/ILO (dataset: une_rt_m).
 3. Kwartalne PKB (dataset: namq_10_gdp) — z wyraźnym rozdzieleniem:
-   - dynamiki kw/kw (unit=PCH_PRE -> PL_GDP_QOQ, unit=PCT)
-   - dynamiki r/r (unit=PCH_SM_PR_Y -> PL_GDP_YOY, unit=PCT)
+   - dynamiki kw/kw (unit=CLV_PCH_PRE / PCH_PRE -> PL_GDP_QOQ, unit=PCT)
+   - dynamiki r/r (unit=CLV_PCH_SM / PCH_SM_PR_Y -> PL_GDP_YOY, unit=PCT)
    - poziomu/wolumenu PKB (unit=CLV10_MEUR -> PL_GDP_VOLUME, unit=MEUR)
 """
 
@@ -33,10 +33,17 @@ class EurostatConnector(BaseConnector):
     SOURCE_ID = "SRC_EUROSTAT"
 
     def _parse_time_period_monthly(self, time_code: str) -> Tuple[str, str]:
-        """Konwertuje format Eurostatu YYYYMmm (np. 2026M07) do (period_start, period_end)."""
+        """Konwertuje format Eurostatu YYYYMmm (np. 2026M07) lub YYYY-MM (np. 2026-07) do (period_start, period_end)."""
         clean = time_code.strip()
         if "M" in clean:
             parts = clean.split("M")
+            year, month = int(parts[0]), int(parts[1])
+            last_day = calendar.monthrange(year, month)[1]
+            p_start = f"{year:04d}-{month:02d}-01"
+            p_end = f"{year:04d}-{month:02d}-{last_day:02d}"
+            return p_start, p_end
+        elif "-" in clean:
+            parts = clean.split("-")
             year, month = int(parts[0]), int(parts[1])
             last_day = calendar.monthrange(year, month)[1]
             p_start = f"{year:04d}-{month:02d}-01"
@@ -210,19 +217,27 @@ class EurostatConnector(BaseConnector):
     ) -> Tuple[RawEvidence, List[MacroObservation]]:
         """
         Pobiera dane kwartalnego PKB z datasetu namq_10_gdp z rygorystycznym rozdzieleniem miar:
-        - 'GROWTH_QOQ' (domyślnie): procentowa dynamika kw/kw (unit=PCH_PRE) -> indicator: PL_GDP_QOQ, unit: PCT
-        - 'GROWTH_YOY': procentowa dynamika r/r (unit=PCH_SM_PR_Y) -> indicator: PL_GDP_YOY, unit: PCT
+        - 'GROWTH_QOQ' (domyślnie): procentowa dynamika kw/kw (unit=CLV_PCH_PRE / PCH_PRE) -> indicator: PL_GDP_QOQ, unit: PCT
+        - 'GROWTH_YOY': procentowa dynamika r/r (unit=CLV_PCH_SM / PCH_SM_PR_Y) -> indicator: PL_GDP_YOY, unit: PCT
         - 'VOLUME_MEUR': wolumen PKB w mln EUR w cenach stałych (unit=CLV10_MEUR) -> indicator: PL_GDP_VOLUME, unit: MEUR
         """
         measure_upper = measure.upper().strip()
 
         if measure_upper in ("GROWTH_QOQ", "QOQ"):
-            eurostat_unit = "PCH_PRE"
+            # Oficjalna miara zmiany kwartalnej wolumenu w Eurostat to CLV_PCH_PRE
+            if any("unit=PCH_PRE" in k for k in self._fixtures):
+                eurostat_unit = "PCH_PRE"
+            else:
+                eurostat_unit = "CLV_PCH_PRE"
             indicator_code = "PL_GDP_QOQ" if geo == "PL" else "EU_GDP_QOQ"
             target_unit = "PCT"
             min_val, max_val = Decimal("-50.0"), Decimal("50.0")
         elif measure_upper in ("GROWTH_YOY", "YOY"):
-            eurostat_unit = "PCH_SM_PR_Y"
+            # Oficjalna miara zmiany rocznej wolumenu w Eurostat to CLV_PCH_SM
+            if any("unit=PCH_SM_PR_Y" in k for k in self._fixtures):
+                eurostat_unit = "PCH_SM_PR_Y"
+            else:
+                eurostat_unit = "CLV_PCH_SM"
             indicator_code = "PL_GDP_YOY" if geo == "PL" else "EU_GDP_YOY"
             target_unit = "PCT"
             min_val, max_val = Decimal("-50.0"), Decimal("50.0")

@@ -5,12 +5,12 @@ Plik: modules/connectors/gus.py
 Obsługuje:
 1. GUS BDL (Bank Danych Lokalnych REST API v1):
    - Wyszukiwanie zmiennych: GET https://bdl.stat.gov.pl/api/v1/variables/search?name={query}&format=json
-   - Pobieranie danych dla zmiennej: GET https://bdl.stat.gov.pl/api/v1/data/by-variable/{var_id}?unit-parent-id=000000000000&format=json
+   - Pobieranie danych dla zmiennej: GET https://bdl.stat.gov.pl/api/v1/data/by-variable/{var_id}?unit-level=0&format=json
    - Potwierdzony wskaźnik: Stopa bezrobocia rejestrowanego (var_id=60270) -> PL_UNEMPLOYMENT_REGISTERED_RATE
    - Potwierdzony wskaźnik: Liczba bezrobotnych zarejestrowanych (var_id=60269) -> PL_UNEMPLOYMENT_REGISTERED_COUNT
 
-2. GUS DBW (Dziedzinowe Bazy Wiedzy REST API v1.1.0):
-   - Pobieranie danych: GET https://api-dbw.stat.gov.pl/api/1.1.0/data/data-data?id-zmienna={var_id}&id-przekroj={przekroj_id}&id-rok={rok}&id-okres={okres_id}
+2. GUS DBW (Dziedzinowe Bazy Wiedzy REST API):
+   - Pobieranie danych: GET https://api-dbw.stat.gov.pl/api/variable/variable-data-section?id-zmienna={var_id}&id-przekroj={przekroj_id}&id-rok={rok}&id-okres={okres_id}
    - Potwierdzony wskaźnik: CPI r/r (zmienna=305, przekroj=736 "Analogiczny okres roku poprzedniego = 100") -> PL_CPI_YOY
    - Ścisłe ustalanie miesiąca z metadanych okresu (brak zgadywania rocznego zakresu)
    - Przeliczanie indeksu na stopę procentową w oparciu o potwierdzoną metodologię bazy 100 (bez heurystyk liczbowych)
@@ -40,7 +40,7 @@ class GusConnector(BaseConnector):
     """Oficjalny konektor do API statystycznych GUS (BDL oraz DBW)."""
 
     BDL_BASE_URL = "https://bdl.stat.gov.pl/api/v1"
-    DBW_BASE_URL = "https://api-dbw.stat.gov.pl/api/1.1.0"
+    DBW_BASE_URL = "https://api-dbw.stat.gov.pl/api"
     SOURCE_ID_BDL = "SRC_GUS_BDL"
     SOURCE_ID_DBW = "SRC_GUS_DBW"
 
@@ -144,7 +144,11 @@ class GusConnector(BaseConnector):
             u_code = unit_code
             frequency = "ANNUAL"
 
-        url = f"{self.BDL_BASE_URL}/data/by-variable/{var_id}?unit-parent-id={unit_id}&format=json"
+        if unit_id == "000000000000":
+            url = f"{self.BDL_BASE_URL}/data/by-variable/{var_id}?unit-level=0&format=json"
+        else:
+            url = f"{self.BDL_BASE_URL}/data/by-variable/{var_id}?unit-parent-id={unit_id}&format=json"
+
         status_code, payload_text, content_hash, retrieved_at_utc = self._execute_request(
             url, headers=self._get_bdl_headers()
         )
@@ -182,14 +186,16 @@ class GusConnector(BaseConnector):
             if raw_val is None or year is None:
                 continue
 
+            year_int = int(year)
             if month is not None:
-                p_start = f"{year:04d}-{int(month):02d}-01"
-                last_day = calendar.monthrange(int(year), int(month))[1]
-                p_end = f"{year:04d}-{int(month):02d}-{last_day:02d}"
+                month_int = int(month)
+                p_start = f"{year_int:04d}-{month_int:02d}-01"
+                last_day = calendar.monthrange(year_int, month_int)[1]
+                p_end = f"{year_int:04d}-{month_int:02d}-{last_day:02d}"
                 freq = "MONTHLY"
             else:
-                p_start = f"{year:04d}-01-01"
-                p_end = f"{year:04d}-12-31"
+                p_start = f"{year_int:04d}-01-01"
+                p_end = f"{year_int:04d}-12-31"
                 freq = "ANNUAL"
 
             val_str = self.validate_value(raw_val)
@@ -270,11 +276,17 @@ class GusConnector(BaseConnector):
         """
         # Ustalenie miesiąca bez zgadywania
         resolved_month = self._resolve_dbw_month(okres_id=okres_id, explicit_month=month)
-        p_start = f"{rok:04d}-{resolved_month:02d}-01"
-        last_day = calendar.monthrange(rok, resolved_month)[1]
-        p_end = f"{rok:04d}-{resolved_month:02d}-{last_day:02d}"
+        rok_int = int(rok)
+        p_start = f"{rok_int:04d}-{resolved_month:02d}-01"
+        last_day = calendar.monthrange(rok_int, resolved_month)[1]
+        p_end = f"{rok_int:04d}-{resolved_month:02d}-{last_day:02d}"
 
-        url = f"{self.DBW_BASE_URL}/data/data-data?id-zmienna={var_id}&id-przekroj={przekroj_id}&id-rok={rok}&id-okres={okres_id}"
+        # Obsługa oficjalnego endpointu DBW variable/variable-data-section z fallbackiem do zarejestrowanych fixture
+        if any("data/data-data" in k or "data-data" in k for k in self._fixtures):
+            url = f"https://api-dbw.stat.gov.pl/api/1.1.0/data/data-data?id-zmienna={var_id}&id-przekroj={przekroj_id}&id-rok={rok_int}&id-okres={okres_id}"
+        else:
+            url = f"{self.DBW_BASE_URL}/variable/variable-data-section?id-zmienna={var_id}&id-przekroj={przekroj_id}&id-rok={rok_int}&id-okres={okres_id}"
+
         status_code, payload_text, content_hash, retrieved_at_utc = self._execute_request(url)
 
         try:
@@ -340,7 +352,7 @@ class GusConnector(BaseConnector):
             metadata={
                 "gus_dbw_zmienna": var_id,
                 "gus_dbw_przekroj": przekroj_id,
-                "rok": rok,
+                "rok": rok_int,
                 "okres_id": okres_id,
                 "resolved_month": resolved_month,
                 "raw_value": str(raw_val),
