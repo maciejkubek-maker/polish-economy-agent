@@ -5,7 +5,10 @@ Plik: modules/connectors/eurostat.py
 Obsługuje:
 1. HICP — Zharmonizowany Wskaźnik Cen Konsumpcyjnych (dataset: prc_hicp_manr).
 2. Stopę bezrobocia zharmonizowanego wg BAEL/ILO (dataset: une_rt_m).
-3. Kwartalny realny wzrost / wolumen PKB (dataset: namq_10_gdp).
+3. Kwartalne PKB (dataset: namq_10_gdp) — z wyraźnym rozdzieleniem:
+   - dynamiki kw/kw (unit=PCH_PRE -> PL_GDP_QOQ, unit=PCT)
+   - dynamiki r/r (unit=PCH_SM_PR_Y -> PL_GDP_YOY, unit=PCT)
+   - poziomu/wolumenu PKB (unit=CLV10_MEUR -> PL_GDP_VOLUME, unit=MEUR)
 """
 
 import calendar
@@ -200,11 +203,40 @@ class EurostatConnector(BaseConnector):
 
         return evidence, observations
 
-    def fetch_quarterly_gdp(self, geo: str = "PL") -> Tuple[RawEvidence, List[MacroObservation]]:
+    def fetch_quarterly_gdp(
+        self,
+        geo: str = "PL",
+        measure: str = "GROWTH_QOQ",
+    ) -> Tuple[RawEvidence, List[MacroObservation]]:
         """
-        Pobiera dane kwartalnego PKB z datasetu namq_10_gdp.
+        Pobiera dane kwartalnego PKB z datasetu namq_10_gdp z rygorystycznym rozdzieleniem miar:
+        - 'GROWTH_QOQ' (domyślnie): procentowa dynamika kw/kw (unit=PCH_PRE) -> indicator: PL_GDP_QOQ, unit: PCT
+        - 'GROWTH_YOY': procentowa dynamika r/r (unit=PCH_SM_PR_Y) -> indicator: PL_GDP_YOY, unit: PCT
+        - 'VOLUME_MEUR': wolumen PKB w mln EUR w cenach stałych (unit=CLV10_MEUR) -> indicator: PL_GDP_VOLUME, unit: MEUR
         """
-        url = f"{self.BASE_URL}/namq_10_gdp?format=JSON&lang=en&na_item=B1GQ&s_adj=SCA&unit=CLV10_MEUR&geo={geo}"
+        measure_upper = measure.upper().strip()
+
+        if measure_upper in ("GROWTH_QOQ", "QOQ"):
+            eurostat_unit = "PCH_PRE"
+            indicator_code = "PL_GDP_QOQ" if geo == "PL" else "EU_GDP_QOQ"
+            target_unit = "PCT"
+            min_val, max_val = Decimal("-50.0"), Decimal("50.0")
+        elif measure_upper in ("GROWTH_YOY", "YOY"):
+            eurostat_unit = "PCH_SM_PR_Y"
+            indicator_code = "PL_GDP_YOY" if geo == "PL" else "EU_GDP_YOY"
+            target_unit = "PCT"
+            min_val, max_val = Decimal("-50.0"), Decimal("50.0")
+        elif measure_upper in ("VOLUME_MEUR", "VOLUME", "LEVEL"):
+            eurostat_unit = "CLV10_MEUR"
+            indicator_code = "PL_GDP_VOLUME" if geo == "PL" else "EU_GDP_VOLUME"
+            target_unit = "MEUR"
+            min_val, max_val = Decimal("0.0"), Decimal("100000000.0")
+        else:
+            raise ValidationError(
+                f"Nieobsługiwana miara PKB: '{measure}'. Dopuszczalne: 'GROWTH_QOQ', 'GROWTH_YOY', 'VOLUME_MEUR'"
+            )
+
+        url = f"{self.BASE_URL}/namq_10_gdp?format=JSON&lang=en&na_item=B1GQ&s_adj=SCA&unit={eurostat_unit}&geo={geo}"
         status_code, payload_text, content_hash, retrieved_at_utc = self._execute_request(url)
 
         try:
@@ -214,7 +246,7 @@ class EurostatConnector(BaseConnector):
 
         time_series = self._extract_jsonstat_time_series(data)
         if not time_series:
-            raise DataNotFoundError(f"Brak danych PKB w odpowiedzi Eurostat dla geo={geo}")
+            raise DataNotFoundError(f"Brak danych PKB w odpowiedzi Eurostat dla geo={geo}, measure={measure_upper}")
 
         evidence = self.create_evidence(
             source_id=self.SOURCE_ID,
@@ -229,21 +261,27 @@ class EurostatConnector(BaseConnector):
         observations = []
         for time_code, raw_val in time_series:
             p_start, p_end = self._parse_time_period_quarterly(time_code)
-            val_str = self.validate_value(raw_val, min_plausible=Decimal("0.0"))
+            val_str = self.validate_value(raw_val, min_plausible=min_val, max_plausible=max_val)
 
             obs = MacroObservation(
-                indicator_code="PL_GDP_QOQ",
+                indicator_code=indicator_code,
                 country_code=geo,
                 period_start=p_start,
                 period_end=p_end,
                 frequency="QUARTERLY",
                 value_decimal=val_str,
-                unit_code="INDEX_POINTS",
+                unit_code=self.validate_unit(target_unit),
                 revision_type="FINAL",
                 status="VERIFIED",
                 evidence_id=evidence.evidence_id,
                 publication_date=p_end,
-                metadata={"time_code": time_code, "dataset": "namq_10_gdp", "na_item": "B1GQ"},
+                metadata={
+                    "time_code": time_code,
+                    "dataset": "namq_10_gdp",
+                    "na_item": "B1GQ",
+                    "eurostat_unit": eurostat_unit,
+                    "measure_type": measure_upper,
+                },
             )
             observations.append(obs)
 

@@ -111,7 +111,7 @@ class BaseConnector:
     ALLOWED_FREQUENCIES = {"DAILY", "MONTHLY", "QUARTERLY", "ANNUAL", "IRREGULAR"}
     ALLOWED_UNITS = {
         "PCT", "EUR_PLN", "USD_PLN", "PLN_PER_MONTH", "PLN",
-        "THOUSAND_PERSONS", "PERSONS", "INDEX_POINTS", "RATIO"
+        "THOUSAND_PERSONS", "PERSONS", "INDEX_POINTS", "RATIO", "MEUR"
     }
 
     def __init__(

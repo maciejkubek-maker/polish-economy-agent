@@ -11,13 +11,16 @@ Obsługuje:
 
 2. GUS DBW (Dziedzinowe Bazy Wiedzy REST API v1.1.0):
    - Pobieranie danych: GET https://api-dbw.stat.gov.pl/api/1.1.0/data/data-data?id-zmienna={var_id}&id-przekroj={przekroj_id}&id-rok={rok}&id-okres={okres_id}
-   - Potwierdzony wskaźnik: CPI r/r (zmienna=305, przekroj=736) -> PL_CPI_YOY
+   - Potwierdzony wskaźnik: CPI r/r (zmienna=305, przekroj=736 "Analogiczny okres roku poprzedniego = 100") -> PL_CPI_YOY
+   - Ścisłe ustalanie miesiąca z metadanych okresu (brak zgadywania rocznego zakresu)
+   - Przeliczanie indeksu na stopę procentową w oparciu o potwierdzoną metodologię bazy 100 (bez heurystyk liczbowych)
 
 3. Rygor braku fikcyjnych ID (Rule 8 & 12 AGENTS.md):
    - Wskaźniki wymagające zmapowania (wynagrodzenia, produkcja przemysłowa, PKB) rzucają
      wyjątek VariableNotMappedError, jeśli nie podano zweryfikowanego identyfikatora zmiennej.
 """
 
+import calendar
 from decimal import Decimal
 import json
 from typing import Any, Dict, List, Optional, Tuple
@@ -55,6 +58,17 @@ class GusConnector(BaseConnector):
             "unit_code": "THOUSAND_PERSONS",
             "frequency": "MONTHLY",
         },
+    }
+
+    # Zweryfikowane mapowanie identyfikatorów okresów DBW na miesiące (1-12)
+    # W oficjalnym słowniku okresów DBW dla szeregów miesięcznych stosowane są kody 1-12 lub 247-258
+    DBW_PERIOD_TO_MONTH = {
+        # Standardowy format 1..12
+        1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6,
+        7: 7, 8: 8, 9: 9, 10: 10, 11: 11, 12: 12,
+        # Standardowy słownik miesięczny GUS DBW (kody 247=styczeń ... 258=grudzień)
+        247: 1, 248: 2, 249: 3, 250: 4, 251: 5, 252: 6,
+        253: 7, 254: 8, 255: 9, 256: 10, 257: 11, 258: 12,
     }
 
     # Wskaźniki ze statusem CONFIRMED_API_REQUIRES_VARIABLE_MAPPING, które nie posiadają
@@ -115,7 +129,6 @@ class GusConnector(BaseConnector):
         Pobiera serię danych dla zweryfikowanej zmiennej z GUS BDL dla danego terytorium (domyślnie POLSKA: 000000000000).
         Zwraca parę (RawEvidence, List[MacroObservation]).
         """
-        # Sprawdzenie w rejestrze zweryfikowanych zmiennych
         meta = self.VERIFIED_BDL_VARIABLES.get(var_id)
         if meta:
             ind_code = indicator_code or meta["indicator_code"]
@@ -171,7 +184,6 @@ class GusConnector(BaseConnector):
 
             if month is not None:
                 p_start = f"{year:04d}-{int(month):02d}-01"
-                import calendar
                 last_day = calendar.monthrange(int(year), int(month))[1]
                 p_end = f"{year:04d}-{int(month):02d}-{last_day:02d}"
                 freq = "MONTHLY"
@@ -219,18 +231,49 @@ class GusConnector(BaseConnector):
         """
         return self.fetch_bdl_variable(60269)
 
+    def _resolve_dbw_month(self, okres_id: int, explicit_month: Optional[int] = None) -> int:
+        """
+        Ustala miesiąc (1-12) na podstawie potwierdzonych metadanych okresu GUS DBW.
+        Gdy nie da się go ustalić, zgłasza błąd zamiast zgadywać.
+        """
+        if explicit_month is not None:
+            if 1 <= explicit_month <= 12:
+                return explicit_month
+            raise ValidationError(f"Nieprawidłowy numer miesiąca: {explicit_month}. Oczekiwano wartości 1-12.")
+
+        if okres_id in self.DBW_PERIOD_TO_MONTH:
+            return self.DBW_PERIOD_TO_MONTH[okres_id]
+
+        raise ValidationError(
+            f"Nie można jednoznacznie ustalić miesiąca z GUS DBW okres_id={okres_id}. "
+            "Podaj jawny parametr 'month' (1-12) lub zarejestruj zweryfikowane metadane okresu. Zakaz zgadywania."
+        )
+
     def fetch_cpi_dbw(
         self,
         rok: int,
         okres_id: int,
+        month: Optional[int] = None,
         var_id: int = 305,
         przekroj_id: int = 736,
+        is_index_base_100: bool = True,
+        as_percentage_change: bool = True,
     ) -> Tuple[RawEvidence, MacroObservation]:
         """
         Pobiera wskaźnik CPI (r/r) z bazy GUS DBW dla wskazanego roku i okresu.
-        Domyślnie zmienna 305, przekrój 736 (Analogiczny okres roku poprzedniego = 100).
-        Zwraca parę (RawEvidence, MacroObservation).
+        Domyślnie zmienna 305, przekrój 736: 'Analogiczny okres roku poprzedniego = 100'.
+        
+        Zgodność metodologiczna:
+        - Miesiąc ustalany ściśle z metadanych okresu lub jawnego parametru 'month' (brak zgadywania rocznego zakresu).
+        - Konwersja indeksu bazy 100 na stopę procentową r/r (wartosc - 100.0) wykonywana wyłącznie na podstawie
+          potwierdzonej definicji serii ('is_index_base_100=True'), a nie na podstawie heurystyk numerycznych.
         """
+        # Ustalenie miesiąca bez zgadywania
+        resolved_month = self._resolve_dbw_month(okres_id=okres_id, explicit_month=month)
+        p_start = f"{rok:04d}-{resolved_month:02d}-01"
+        last_day = calendar.monthrange(rok, resolved_month)[1]
+        p_end = f"{rok:04d}-{resolved_month:02d}-{last_day:02d}"
+
         url = f"{self.DBW_BASE_URL}/data/data-data?id-zmienna={var_id}&id-przekroj={przekroj_id}&id-rok={rok}&id-okres={okres_id}"
         status_code, payload_text, content_hash, retrieved_at_utc = self._execute_request(url)
 
@@ -241,7 +284,6 @@ class GusConnector(BaseConnector):
 
         items = data.get("data", [])
         if not items:
-            # W niektórych strukturach DBW węzeł nazywa się 'results'
             items = data.get("results", [])
 
         if not items or len(items) == 0:
@@ -252,15 +294,26 @@ class GusConnector(BaseConnector):
         if raw_val is None:
             raise ValidationError(f"Brak wartości 'wartosc' w odpowiedzi GUS DBW: {item}")
 
-        # Jeśli wartość indeksu podana jest w bazie 100 (np. 104.2 oznacza inflację 4.2% r/r)
-        val_dec = Decimal(str(raw_val).replace(",", "."))
-        if val_dec > Decimal("50.0"):
-            # Indeks bazy 100 -> stopa procentowa r/r
-            pct_val = val_dec - Decimal("100.0")
-        else:
-            pct_val = val_dec
+        raw_val_str = str(raw_val).strip().replace(" ", "").replace(",", ".")
+        try:
+            val_raw_dec = Decimal(raw_val_str)
+        except Exception as e:
+            raise ValidationError(f"Nieprawidłowy format liczbowy z DBW: '{raw_val}'") from e
 
-        val_str = self.validate_value(pct_val, min_plausible=Decimal("-10.0"), max_plausible=Decimal("100.0"))
+        # Konwersja metodologiczna: jeśli seria jest indeksem bazy 100 ("Analogiczny okres roku poprzedniego = 100")
+        # i żądana jest roczna zmiana procentowa, odejmujemy 100.0 zgodnie z definicją GUS.
+        if as_percentage_change:
+            if is_index_base_100:
+                final_val_dec = val_raw_dec - Decimal("100.0")
+                unit_code = "PCT"
+            else:
+                final_val_dec = val_raw_dec
+                unit_code = "PCT"
+        else:
+            final_val_dec = val_raw_dec
+            unit_code = "INDEX_POINTS"
+
+        val_str = self.validate_value(final_val_dec, min_plausible=Decimal("-50.0"), max_plausible=Decimal("150.0"))
 
         evidence = self.create_evidence(
             source_id=self.SOURCE_ID_DBW,
@@ -272,10 +325,6 @@ class GusConnector(BaseConnector):
             retrieved_at_utc=retrieved_at_utc,
         )
 
-        # Ustalenie przybliżonego okresu na podstawie roku i okres_id (miesiące w DBW)
-        p_start = f"{rok:04d}-01-01"
-        p_end = f"{rok:04d}-12-31"
-
         observation = MacroObservation(
             indicator_code="PL_CPI_YOY",
             country_code="PL",
@@ -283,17 +332,20 @@ class GusConnector(BaseConnector):
             period_end=p_end,
             frequency="MONTHLY",
             value_decimal=val_str,
-            unit_code="PCT",
+            unit_code=self.validate_unit(unit_code),
             revision_type="FINAL",
             status="VERIFIED",
             evidence_id=evidence.evidence_id,
-            publication_date=f"{rok:04d}-12-31",
+            publication_date=p_end,
             metadata={
                 "gus_dbw_zmienna": var_id,
                 "gus_dbw_przekroj": przekroj_id,
                 "rok": rok,
                 "okres_id": okres_id,
-                "raw_index_value": str(raw_val),
+                "resolved_month": resolved_month,
+                "raw_value": str(raw_val),
+                "is_index_base_100": is_index_base_100,
+                "as_percentage_change": as_percentage_change,
             },
         )
 
@@ -314,12 +366,12 @@ class GusConnector(BaseConnector):
         if code == "PL_CPI_YOY":
             rok = kwargs.get("rok")
             okres_id = kwargs.get("okres_id")
-            if not rok or not okres_id:
+            month = kwargs.get("month")
+            if not rok or okres_id is None:
                 raise ValidationError("Dla PL_CPI_YOY w GUS DBW wymagane są parametry 'rok' oraz 'okres_id'")
-            return self.fetch_cpi_dbw(rok=rok, okres_id=okres_id)
+            return self.fetch_cpi_dbw(rok=rok, okres_id=okres_id, month=month)
 
         if code in self.UNMAPPED_INDICATORS:
-            # Sprawdzenie, czy użytkownik dostarczył potwierdzone ID zmiennej
             var_id = kwargs.get("var_id")
             if var_id:
                 return self.fetch_bdl_variable(var_id=int(var_id), indicator_code=code, unit_code=kwargs.get("unit_code", "PCT"))

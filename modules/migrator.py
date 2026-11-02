@@ -7,12 +7,14 @@ Zapewnia:
 2. Otwieranie bazy źródłowej wyłącznie w trybie READ-ONLY (mode=ro).
 3. Bezwzględny zakaz nadpisywania bazy źródłowej.
 4. Deterministyczne skróty SHA-256 dowodów źródłowych oraz migawek danych raportów.
-5. Poprawne zachowanie pochodzenia danych (NBP vs GUS) bez arbitralnych założeń.
-6. Rejestrowanie 91 powiązań w legacy_migration_map.
-7. Brak zgadywania w rozstrzyganiu konfliktów (PKB r/r jako CONFLICT, Stopa bezrobocia r/r jako PENDING).
-8. Pełne transakcje z automatycznym rollbackiem w razie błędu.
-9. Idempotencję wielokrotnego uruchomienia.
-10. Domyślny tryb --dry-run oraz czytelny raport podsumowujący.
+5. Poprawne, szczegółowe zachowanie pochodzenia danych (NBP, GUS, Bankier.pl, Trading Economics)
+   bez arbitralnego przypisywania nieznanych źródeł do GUS.
+6. Oznaczanie źródeł niejednoznacznych/kompozytowych jako wymagających weryfikacji.
+7. Rejestrowanie 91 powiązań w legacy_migration_map.
+8. Brak zgadywania w rozstrzyganiu konfliktów (PKB r/r jako CONFLICT, Stopa bezrobocia r/r jako PENDING).
+9. Pełne transakcje z automatycznym rollbackiem w razie błędu.
+10. Idempotencję wielokrotnego uruchomienia.
+11. Domyślny tryb --dry-run oraz czytelny raport podsumowujący.
 """
 
 from dataclasses import dataclass, field
@@ -21,7 +23,7 @@ import os
 import sqlite3
 import sys
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 @dataclass
@@ -84,13 +86,13 @@ class MigrationResult:
 | `generated_reports` | `reports` | **{self.reports_migrated}** | 6 | {'TAK' if self.reports_migrated == 6 else 'NIE'} |
 | `collected_indicators` | `source_evidence` | **{self.evidence_migrated}** | 75 | {'TAK' if self.evidence_migrated == 75 else 'NIE'} |
 | `collected_indicators` | `extracted_candidates` | **{self.candidates_migrated}** | 75 | {'TAK' if self.candidates_migrated == 75 else 'NIE'} |
-| `*` (walidacja) | `quality_events` | **{self.quality_events_created}** (4 CONFLICT + 2 PENDING) | 6 | {'TAK' if self.quality_events_created == 6 else 'NIE'} |
+| `*` (walidacja) | `quality_events` | **{self.quality_events_created}** (4 CONFLICT + 9 PENDING) | 13 | {'TAK' if self.quality_events_created == 13 else 'NIE'} |
 | Wszystkie encje | `legacy_migration_map` | **{self.legacy_map_entries}** (75 + 10 + 6) | 91 | {'TAK' if self.legacy_map_entries == 91 else 'NIE'} |
 
 ## Klasyfikacja Jakościowa Wskaźników:
 - **Jednoznaczne (VERIFIED):** `{self.verified_count}`
-- **Do wyjaśnienia (PENDING):** `{self.pending_count}` (IDs: 33, 35 - stopa bezrobocia r/r)
-- **Konflikty źródeł (CONFLICT):** `{self.conflicts_count}` (IDs: 3, 8, 32, 38 - PKB II kw. 2026: 3.90% vs 3.8%)
+- **Wymagające weryfikacji (PENDING):** `{self.pending_count}` (2 mislabeled nazwy + 6 niejednoznacznych źródeł)
+- **Konflikty danych (CONFLICT):** `{self.conflicts_count}` (IDs: 3, 8, 32, 38 - PKB II kw. 2026: 3.90% vs 3.8%)
 """
 
 
@@ -106,12 +108,34 @@ def normalize_iso_date(date_str: Optional[str]) -> str:
     return clean
 
 
-def resolve_source_id(source_name: Optional[str]) -> str:
-    """Mapuje źródło legacy do identyfikatora w source_registry bez zgadywania."""
-    src = (source_name or "").lower()
-    if "nbp" in src or "narodowy bank polski" in src:
-        return "SRC_LEGACY_2"
-    return "SRC_LEGACY_1"
+def resolve_source_provenance(source_name: Optional[str]) -> Tuple[str, str, str, str, bool]:
+    """
+    Mapuje nazwę źródła z collected_indicators na zarejestrowane źródło v2:
+    Zwraca: (source_id, default_fallback_url, canonical_name, trust_tier, is_ambiguous).
+    Nie przypisuje arbitralnie nieznanych źródeł do GUS.
+    """
+    src = (source_name or "").strip()
+    src_lower = src.lower()
+
+    if src_lower in ("gus", "główny urząd statystyczny (gus)"):
+        return "SRC_LEGACY_1", "https://stat.gov.pl", "Główny Urząd Statystyczny (GUS)", "TIER_A", False
+
+    if src_lower in ("nbp", "narodowy bank polski"):
+        return "SRC_LEGACY_2", "https://www.nbp.pl", "Narodowy Bank Polski (NBP)", "TIER_A", False
+
+    if "bankier.pl" in src_lower and ("gus" in src_lower or "główny urząd" in src_lower):
+        return "SRC_COMPOSITE_GUS_BANKIER", "https://www.bankier.pl", "Główny Urząd Statystyczny / Bankier.pl", "TIER_C", True
+
+    if "bankier.pl" in src_lower and ("nbp" in src_lower or "narodowy bank" in src_lower):
+        return "SRC_COMPOSITE_NBP_BANKIER", "https://www.bankier.pl", "Narodowy Bank Polski / Bankier.pl", "TIER_C", True
+
+    if src_lower == "bankier.pl":
+        return "SRC_EXTERNAL_BANKIER", "https://www.bankier.pl", "Bankier.pl", "TIER_C", False
+
+    if "trading economics" in src_lower:
+        return "SRC_EXTERNAL_TRADING_ECONOMICS", "https://tradingeconomics.com", "Trading Economics", "TIER_C", False
+
+    return "SRC_UNKNOWN_EXTERNAL", "https://example.org", src or "Nieznane źródło", "TIER_C", True
 
 
 class SQLiteV2Migrator:
@@ -128,12 +152,20 @@ class SQLiteV2Migrator:
         ("PL_UNEMPLOYMENT_NEW_REGISTERED_COUNT", "Nowo zarejestrowani bezrobotni", "MONTHLY", "THOUSAND_PERSONS"),
         ("PL_GDP_YOY", "Produkt Krajowy Brutto r/r", "QUARTERLY", "PCT"),
         ("PL_GDP_QOQ", "Produkt Krajowy Brutto kw/kw", "QUARTERLY", "PCT"),
+        ("PL_GDP_VOLUME", "Produkt Krajowy Brutto (wolumen)", "QUARTERLY", "MEUR"),
         ("PL_WAGE_AVERAGE_GROSS", "Przeciętne wynagrodzenie", "MONTHLY", "PLN_PER_MONTH"),
         ("PL_INDUSTRIAL_PRODUCTION_YOY", "Produkcja przemysłowa r/r", "MONTHLY", "PCT"),
         ("PL_RETAIL_SALES_YOY", "Sprzedaż detaliczna r/r", "MONTHLY", "PCT"),
         ("PL_CONSTRUCTION_PRODUCTION_YOY", "Produkcja budowlano-montażowa r/r", "MONTHLY", "PCT"),
         ("PL_NBP_REFERENCE_RATE", "Stopa referencyjna NBP", "IRREGULAR", "PCT"),
         ("PL_PMI_MANUFACTURING", "PMI Polska dla przemysłu", "MONTHLY", "INDEX_POINTS"),
+    ]
+
+    ADDITIONAL_SOURCES = [
+        ("SRC_EXTERNAL_BANKIER", "Bankier.pl", "Bankier.pl", "https://www.bankier.pl", "WEB_SEARCH", "TIER_C"),
+        ("SRC_EXTERNAL_TRADING_ECONOMICS", "Trading Economics", "Trading Economics", "https://tradingeconomics.com", "WEB_SEARCH", "TIER_C"),
+        ("SRC_COMPOSITE_GUS_BANKIER", "Główny Urząd Statystyczny / Bankier.pl", "GUS / Bankier.pl (Composite)", "https://www.bankier.pl", "WEB_SEARCH", "TIER_C"),
+        ("SRC_COMPOSITE_NBP_BANKIER", "Narodowy Bank Polski / Bankier.pl", "NBP / Bankier.pl (Composite)", "https://www.bankier.pl", "WEB_SEARCH", "TIER_C"),
     ]
 
     def __init__(
@@ -145,11 +177,9 @@ class SQLiteV2Migrator:
         self.source_db_path = os.path.abspath(source_db_path)
         self.target_db_path = os.path.abspath(target_db_path)
 
-        # Bezpieczeństwo 1: Baza źródłowa musi istnieć
         if not os.path.exists(self.source_db_path):
             raise FileNotFoundError(f"Baza źródłowa nie istnieje: {self.source_db_path}")
 
-        # Bezpieczeństwo 2: Bezwzględny zakaz nadpisywania bazy źródłowej
         if os.path.normcase(self.source_db_path) == os.path.normcase(self.target_db_path):
             raise ValueError(
                 f"KRYTYCZNE NARUSZENIE BEZPIECZEŃSTWA: Ścieżka docelowa ({self.target_db_path}) "
@@ -160,7 +190,6 @@ class SQLiteV2Migrator:
         if schema_sql_path:
             self.schema_sql_path = os.path.abspath(schema_sql_path)
         else:
-            # Domyślne położenie docs/sql/schema_v2.sql względem bieżącego repo
             project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             self.schema_sql_path = os.path.join(project_root, "docs", "sql", "schema_v2.sql")
 
@@ -179,7 +208,6 @@ class SQLiteV2Migrator:
             dry_run=dry_run,
         )
 
-        # 1. Odczyt danych z bazy źródłowej WYŁĄCZNIE w trybie READ-ONLY
         src_uri = f"file:{self.source_db_path}?mode=ro"
         try:
             src_conn = sqlite3.connect(src_uri, uri=True)
@@ -207,7 +235,6 @@ class SQLiteV2Migrator:
             result.execution_time_seconds = time.time() - start_time
             return result
 
-        # 2. Przygotowanie połączenia docelowego
         target_conn = None
         newly_created_target = False
         try:
@@ -223,13 +250,10 @@ class SQLiteV2Migrator:
 
             target_conn.execute("PRAGMA foreign_keys = ON;")
 
-            # 3. Zastosowanie DDL schema_v2.sql
             with open(self.schema_sql_path, "r", encoding="utf-8") as f:
                 target_conn.executescript(f.read())
 
             target_cur = target_conn.cursor()
-
-            # 4. Inicjalizacja transakcji migracyjnej
             target_cur.execute("BEGIN TRANSACTION;")
 
             # Krok A: Ingestion run
@@ -256,7 +280,15 @@ class SQLiteV2Migrator:
                 """, (s_id, source_key))
                 result.sources_migrated += 1
 
-            # Krok C: Inicjalizacja wpisów katalogowych wskaźników
+            # Dodanie zewnętrznych i kompozytowych źródeł do source_registry
+            for s_id, s_name, s_inst, s_url, s_type, s_tier in self.ADDITIONAL_SOURCES:
+                target_cur.execute("""
+                    INSERT INTO source_registry (source_id, name, institution, base_url, source_type, trust_tier)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(source_id) DO NOTHING;
+                """, (s_id, s_name, s_inst, s_url, s_type, s_tier))
+
+            # Krok C: Inicjalizacja katalogu wskaźników
             for code, name, freq, unit in self.DEFAULT_CATALOG:
                 target_cur.execute("""
                     INSERT INTO indicator_catalog (indicator_code, name_pl, definition_pl, frequency, unit_code)
@@ -264,13 +296,12 @@ class SQLiteV2Migrator:
                     ON CONFLICT(indicator_code) DO NOTHING;
                 """, (code, name, freq, unit))
 
-            # Krok D: Migracja raportów (generated_reports -> reports)
+            # Krok D: Migracja raportów
             for rep in reports:
                 r_id, r_country, r_date, r_sum, r_md, r_created = rep
                 target_rep_id = f"REP_LEGACY_{r_id}"
                 iso_report_date = normalize_iso_date(r_date)
 
-                # Deterministyczny SHA-256 z danych raportu
                 report_payload = f"{r_country}|{iso_report_date}|{r_sum}|{r_md}|{r_created}"
                 snapshot_hash = hashlib.sha256(report_payload.encode("utf-8")).hexdigest()
 
@@ -287,33 +318,47 @@ class SQLiteV2Migrator:
                 """, (r_id, target_rep_id))
                 result.reports_migrated += 1
 
-            # Krok E: Migracja wskaźników (collected_indicators -> source_evidence + extracted_candidates)
+            # Krok E: Migracja wskaźników z precyzyjnym provenance i obsługą źródeł niejednoznacznych
             for ind in indicators:
                 i_id, i_agent, i_country, i_name, i_val, i_period, i_src, i_page, i_created = ind
                 evidence_id = f"EVI_LEGACY_{i_id}"
                 candidate_id = f"CAND_LEGACY_{i_id}"
 
-                assigned_source_id = resolve_source_id(i_src)
-                evidence_payload = f"{i_agent}|{i_country}|{i_name}|{i_val}|{i_period}|{i_src}|{i_page}|{i_created}"
+                # Precyzyjne wyznaczenie źródła bez arbitralnego przypisywania do GUS
+                assigned_source_id, default_fallback_url, source_institution, trust_tier, is_ambiguous = resolve_source_provenance(i_src)
+                actual_url = i_page.strip() if (i_page and i_page.strip()) else default_fallback_url
+
+                evidence_payload = f"{i_agent}|{i_country}|{i_name}|{i_val}|{i_period}|{i_src}|{actual_url}|{i_created}"
                 content_hash = hashlib.sha256(evidence_payload.encode("utf-8")).hexdigest()
 
                 target_cur.execute("""
                     INSERT INTO source_evidence (evidence_id, run_id, source_id, source_url, document_type, content_hash, retrieved_at_utc)
                     VALUES (?, 'RUN_MIGRATION_V2', ?, ?, 'LEGACY_IMPORT', ?, ?)
                     ON CONFLICT(evidence_id) DO NOTHING;
-                """, (evidence_id, assigned_source_id, i_page or "https://stat.gov.pl", content_hash, i_created))
+                """, (evidence_id, assigned_source_id, actual_url, content_hash, i_created))
                 result.evidence_migrated += 1
 
                 target_cur.execute("""
-                    INSERT INTO extracted_candidates (
-                        candidate_id, evidence_id, run_id, agent_name, raw_indicator_name, raw_value, raw_period
+                    INSERT INTO extracted_candidates (\n                        candidate_id, evidence_id, run_id, agent_name, raw_indicator_name, raw_value, raw_period
                     ) VALUES (?, ?, 'RUN_MIGRATION_V2', ?, ?, ?, ?)
                     ON CONFLICT(candidate_id) DO NOTHING;
                 """, (candidate_id, evidence_id, i_agent, i_name, i_val, i_period))
                 result.candidates_migrated += 1
                 result.indicators_migrated += 1
 
-                # Klasyfikacja i obsługa sporów
+                # Rejestracja zdarzenia jakości dla źródeł niejednoznacznych (kompozytowych)
+                if is_ambiguous:
+                    target_cur.execute("""
+                        INSERT INTO quality_events (event_id, entity_type, entity_id, rule_code, severity, message)
+                        VALUES (?, 'CANDIDATE', ?, 'RULE_AMBIGUOUS_SOURCE_PROVENANCE', 'WARNING', ?)
+                        ON CONFLICT(event_id) DO NOTHING;
+                    """, (
+                        f"QEV_AMB_SRC_{i_id}",
+                        candidate_id,
+                        f"Niejednoznaczne źródło '{i_src}' łączące oficjalną instytucję z portalem wtórnym. Wymaga weryfikacji biuletynu pierwotnego."
+                    ))
+
+                # Klasyfikacja merytoryczna i statusy w legacy_migration_map
                 if i_name in ("Produkt Krajowy Brutto r/r", "PKB r/r"):
                     target_cur.execute("""
                         INSERT INTO quality_events (event_id, entity_type, entity_id, rule_code, severity, message)
@@ -322,11 +367,15 @@ class SQLiteV2Migrator:
                         ON CONFLICT(event_id) DO NOTHING;
                     """, (f"QEV_PKB_{i_id}", candidate_id))
 
+                    notes = "PKB 3.8 vs 3.90 discrepancy marked CONFLICT"
+                    if is_ambiguous:
+                        notes += f"; ambiguous source: {i_src}"
+
                     target_cur.execute("""
                         INSERT INTO legacy_migration_map (legacy_id, legacy_table, target_entity, target_id, migration_status, notes)
-                        VALUES (?, 'collected_indicators', 'extracted_candidates', ?, 'MIGRATED_CONFLICT', 'PKB 3.8 vs 3.90 discrepancy marked CONFLICT')
+                        VALUES (?, 'collected_indicators', 'extracted_candidates', ?, 'MIGRATED_CONFLICT', ?)
                         ON CONFLICT(legacy_table, legacy_id, target_entity, target_id) DO NOTHING;
-                    """, (i_id, candidate_id))
+                    """, (i_id, candidate_id, notes))
                     result.conflicts_count += 1
 
                 elif i_name == "Stopa bezrobocia r/r":
@@ -344,15 +393,23 @@ class SQLiteV2Migrator:
                     """, (i_id, candidate_id))
                     result.pending_count += 1
 
+                elif is_ambiguous:
+                    target_cur.execute("""
+                        INSERT INTO legacy_migration_map (legacy_id, legacy_table, target_entity, target_id, migration_status, notes)
+                        VALUES (?, 'collected_indicators', 'extracted_candidates', ?, 'MIGRATED_PENDING', ?)
+                        ON CONFLICT(legacy_table, legacy_id, target_entity, target_id) DO NOTHING;
+                    """, (i_id, candidate_id, f"Ambiguous source provenance '{i_src}' requires verification before promotion"))
+                    result.pending_count += 1
+
                 else:
                     target_cur.execute("""
                         INSERT INTO legacy_migration_map (legacy_id, legacy_table, target_entity, target_id, migration_status, notes)
-                        VALUES (?, 'collected_indicators', 'extracted_candidates', ?, 'MIGRATED_VERIFIED', 'Unambiguous indicator mapping')
+                        VALUES (?, 'collected_indicators', 'extracted_candidates', ?, 'MIGRATED_VERIFIED', 'Unambiguous indicator and source mapping')
                         ON CONFLICT(legacy_table, legacy_id, target_entity, target_id) DO NOTHING;
                     """, (i_id, candidate_id))
                     result.verified_count += 1
 
-            # Krok F: Weryfikacja spójności przed zatwierdzeniem
+            # Krok F: Weryfikacja spójności
             result.legacy_map_entries = target_cur.execute("SELECT count(*) FROM legacy_migration_map").fetchone()[0]
             result.quality_events_created = target_cur.execute("SELECT count(*) FROM quality_events").fetchone()[0]
 
@@ -374,7 +431,6 @@ class SQLiteV2Migrator:
                 target_conn = None
             result.success = False
             result.errors.append(f"Błąd krytyczny podczas migracji: {str(e)}")
-            # Jeśli tworzono nowy plik i nastąpił błąd, usuń uszkodzony plik (po zamknięciu połączenia)
             if newly_created_target and os.path.exists(self.target_db_path):
                 try:
                     os.remove(self.target_db_path)
@@ -417,12 +473,13 @@ class SQLiteV2Migrator:
 
         checks["counts_match"] = (
             legacy_ind_cnt == v2_evi_cnt == v2_cand_cnt == 75
-            and legacy_src_cnt == v2_src_cnt == 10
+            and legacy_src_cnt == 10
+            and v2_src_cnt == 14  # 10 legacy + 4 zarejestrowane źródła zewnętrzne/kompozytowe
             and legacy_rep_cnt == v2_rep_cnt == 6
             and v2_map_cnt == 91
         )
 
-        # 2. Głębokie porównanie każdego wskaźnika (wartość, okres, agent, URL)
+        # 2. Głębokie porównanie każdego wskaźnika
         indicators_matched = 0
         src_rows = src_cur.execute(
             "SELECT id, agent_name, indicator_name, value, period, page_info FROM collected_indicators ORDER BY id"
@@ -439,16 +496,27 @@ class SQLiteV2Migrator:
             ).fetchone()
 
             if cand and cand == (s_agent, s_name, s_val, s_per) and evi:
-                # Sprawdzenie czy hash jest poprawnym 64-znakowym SHA-256
                 if len(evi[1]) == 64 and not evi[1].startswith("hash_"):
                     indicators_matched += 1
 
         checks["all_75_indicators_content_matched"] = (indicators_matched == 75)
 
-        # 3. Sprawdzenie przypisania źródeł (NBP vs GUS)
+        # 3. Sprawdzenie przypisania źródeł (pełny rozkład provenance)
         nbp_count = tgt_cur.execute("SELECT count(*) FROM source_evidence WHERE source_id = 'SRC_LEGACY_2'").fetchone()[0]
         gus_count = tgt_cur.execute("SELECT count(*) FROM source_evidence WHERE source_id = 'SRC_LEGACY_1'").fetchone()[0]
-        checks["nbp_source_assignment_correct"] = (nbp_count == 5 and gus_count == 70)
+        bankier_count = tgt_cur.execute("SELECT count(*) FROM source_evidence WHERE source_id = 'SRC_EXTERNAL_BANKIER'").fetchone()[0]
+        te_count = tgt_cur.execute("SELECT count(*) FROM source_evidence WHERE source_id = 'SRC_EXTERNAL_TRADING_ECONOMICS'").fetchone()[0]
+        comp_gus_count = tgt_cur.execute("SELECT count(*) FROM source_evidence WHERE source_id = 'SRC_COMPOSITE_GUS_BANKIER'").fetchone()[0]
+        comp_nbp_count = tgt_cur.execute("SELECT count(*) FROM source_evidence WHERE source_id = 'SRC_COMPOSITE_NBP_BANKIER'").fetchone()[0]
+
+        checks["source_provenance_distribution_correct"] = (
+            gus_count == 49
+            and nbp_count == 4
+            and bankier_count == 11
+            and te_count == 4
+            and comp_gus_count == 6
+            and comp_nbp_count == 1
+        )
 
         # 4. Sprawdzenie dat raportów (normalizacja do ISO) i hashy raportów
         reports_matched = 0
@@ -470,10 +538,11 @@ class SQLiteV2Migrator:
 
         checks["all_6_reports_content_matched"] = (reports_matched == 6)
 
-        # 5. Sprawdzenie obsługi konfliktów
+        # 5. Sprawdzenie obsługi konfliktów i źródeł niejednoznacznych
         conflicts = tgt_cur.execute("SELECT count(*) FROM quality_events WHERE rule_code = 'RULE_SOURCE_DISCREPANCY'").fetchone()[0]
-        pending = tgt_cur.execute("SELECT count(*) FROM quality_events WHERE rule_code = 'RULE_MISLABELED_INDICATOR_NAME'").fetchone()[0]
-        checks["quality_conflicts_isolated"] = (conflicts == 4 and pending == 2)
+        mislabeled = tgt_cur.execute("SELECT count(*) FROM quality_events WHERE rule_code = 'RULE_MISLABELED_INDICATOR_NAME'").fetchone()[0]
+        ambiguous = tgt_cur.execute("SELECT count(*) FROM quality_events WHERE rule_code = 'RULE_AMBIGUOUS_SOURCE_PROVENANCE'").fetchone()[0]
+        checks["quality_conflicts_isolated"] = (conflicts == 4 and mislabeled == 2 and ambiguous == 7)
 
         src_conn.close()
         tgt_conn.close()
@@ -502,36 +571,44 @@ def main():
     parser.add_argument(
         "--apply",
         action="store_true",
-        help="Wykonaj rzeczywisty zapis do bazy docelowej. Domyślnie migrator działa w trybie --dry-run.",
+        default=False,
+        help="Fizyczne zapisanie zmian do bazy docelowej (domyślnie symulacja dry-run).",
     )
     parser.add_argument(
         "--verify",
         action="store_true",
-        help="Przeprowadź głęboką weryfikację integralności istniejącej bazy docelowej.",
+        default=False,
+        help="Wykonanie audytu integralności bazy docelowej po migracji.",
     )
 
     args = parser.parse_args()
 
-    migrator = SQLiteV2Migrator(
-        source_db_path=args.source,
-        target_db_path=args.target,
-    )
+    try:
+        migrator = SQLiteV2Migrator(source_db_path=args.source, target_db_path=args.target)
 
-    if args.verify:
-        print(f"Rozpoczynam weryfikację bazy docelowej: {args.target}")
-        res = migrator.verify_integrity(args.target)
-        for k, v in res.items():
-            print(f"  [{'OK' if v else 'FAIL'}] {k}: {v}")
-        sys.exit(0 if res.get("overall_integrity_passed") else 1)
+        if args.verify:
+            print(f"[AUDYT] Rozpoczęcie weryfikacji integralności: {args.target}")
+            integrity = migrator.verify_integrity()
+            print("[AUDYT] Wyniki kontroli:", integrity)
+            if integrity["overall_integrity_passed"]:
+                print("[AUDYT] SUKCES: Baza docelowa jest w 100% spójna i bezstratna względem bazy v1.")
+                sys.exit(0)
+            else:
+                print("[AUDYT] BŁĄD: Wykryto rozbieżności w migracji!")
+                sys.exit(1)
 
-    dry_run = not args.apply
-    print(f"Uruchamiam migrację: dry_run={dry_run}, source={args.source}, target={args.target}")
-    result = migrator.migrate(dry_run=dry_run)
-    print("\n" + result.to_markdown_summary())
+        dry_run = not args.apply
+        print(f"[START] Rozpoczęcie migracji (dry_run={dry_run})...")
+        res = migrator.migrate(dry_run=dry_run)
+        print(res.to_markdown_summary())
 
-    if not result.success:
-        print(f"BŁĄD: {result.errors}")
-        sys.exit(1)
+        if not res.success:
+            print("[BŁĄD] Migracja nie powiodła się:", res.errors)
+            sys.exit(1)
+
+    except Exception as exc:
+        print(f"[KRYTYCZNY] Błąd wykonania: {str(exc)}")
+        sys.exit(2)
 
 
 if __name__ == "__main__":

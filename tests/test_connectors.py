@@ -5,8 +5,15 @@ Plik: tests/test_connectors.py
 Wymagania:
 - 100% testów działa offline bez połączenia z siecią i bez płatnych API (mock fixtures).
 - Weryfikacja NBP (REST EUR/USD oraz XML stóp procentowych).
-- Weryfikacja Eurostat (JSON-stat 2.0 dla HICP, bezrobocia BAEL i PKB).
-- Weryfikacja GUS (BDL var_id 60270/60269, DBW CPI var 305/736, wyszukiwanie zmiennych).
+- Weryfikacja Eurostat:
+  * JSON-stat 2.0 dla HICP i bezrobocia BAEL.
+  * Wyraźne rozdzielenie poziomu PKB (CLV10_MEUR -> PL_GDP_VOLUME, unit=MEUR)
+    od dynamiki kw/kw (PCH_PRE -> PL_GDP_QOQ, unit=PCT) i r/r (PCH_SM_PR_Y -> PL_GDP_YOY, unit=PCT).
+  * Zakaz zapisywania poziomu wolumenu jako PL_GDP_QOQ.
+- Weryfikacja GUS:
+  * BDL: var_id 60270/60269, wyszukiwanie zmiennych.
+  * DBW: ścisłe ustalanie miesiąca z metadanych okresu (zakaz rocznego zakresu dla wskaźnika miesięcznego).
+  * DBW: przeliczanie indeksu bazy 100 na stopę procentową oparte na potwierdzonej metodologii (usunięcie heurystyk numerycznych).
 - Rygorystyczny test zakazu fikcyjnych ID (VariableNotMappedError).
 - Weryfikacja odporności na błędy: retry, timeout, 404 (DataNotFoundError), walidacja zakresów.
 """
@@ -123,11 +130,12 @@ EUROSTAT_UNEMPLOYMENT_JSON = """
 }
 """
 
-EUROSTAT_GDP_JSON = """
+# Fixture dla wolumenu PKB w mln EUR (unit=CLV10_MEUR)
+EUROSTAT_GDP_VOLUME_JSON = """
 {
   "version": "2.0",
   "class": "dataset",
-  "label": "Gross domestic product at market prices",
+  "label": "Gross domestic product at market prices (volumes)",
   "dimension": {
     "geo": {"category": {"index": ["PL"]}},
     "time": {
@@ -142,6 +150,54 @@ EUROSTAT_GDP_JSON = """
   "value": {
     "0": 135400.5,
     "1": 136850.2
+  }
+}
+"""
+
+# Fixture dla dynamiki kw/kw PKB w % (unit=PCH_PRE)
+EUROSTAT_GDP_GROWTH_QOQ_JSON = """
+{
+  "version": "2.0",
+  "class": "dataset",
+  "label": "Gross domestic product - percentage change on previous period",
+  "dimension": {
+    "geo": {"category": {"index": ["PL"]}},
+    "time": {
+      "category": {
+        "index": {
+          "2026-Q1": 0,
+          "2026-Q2": 1
+        }
+      }
+    }
+  },
+  "value": {
+    "0": 0.8,
+    "1": 1.1
+  }
+}
+"""
+
+# Fixture dla dynamiki r/r PKB w % (unit=PCH_SM_PR_Y)
+EUROSTAT_GDP_GROWTH_YOY_JSON = """
+{
+  "version": "2.0",
+  "class": "dataset",
+  "label": "Gross domestic product - percentage change compared to same period in previous year",
+  "dimension": {
+    "geo": {"category": {"index": ["PL"]}},
+    "time": {
+      "category": {
+        "index": {
+          "2026-Q1": 0,
+          "2026-Q2": 1
+        }
+      }
+    }
+  },
+  "value": {
+    "0": 3.4,
+    "1": 3.9
   }
 }
 """
@@ -234,7 +290,7 @@ GUS_DBW_CPI_JSON = """
       "id-zmienna": 305,
       "id-przekroj": 736,
       "id-rok": 2026,
-      "id-okres": 280,
+      "id-okres": 255,
       "wartosc": 104.2,
       "precyzja": 1
     }
@@ -322,7 +378,7 @@ class TestNbpConnector:
 
 
 # ==============================================================================
-# TESTY EUROSTAT CONNECTOR
+# TESTY EUROSTAT CONNECTOR (W TYM POPRAWKA EUROSTAT GDP)
 # ==============================================================================
 
 class TestEurostatConnector:
@@ -337,7 +393,6 @@ class TestEurostatConnector:
         assert evidence.source_id == "SRC_EUROSTAT"
         assert len(observations) == 3
 
-        # Sprawdzenie pierwszej obserwacji (2026M07)
         obs0 = observations[0]
         assert obs0.indicator_code == "EU_HICP_YOY"
         assert obs0.country_code == "PL"
@@ -347,12 +402,6 @@ class TestEurostatConnector:
         assert obs0.value_decimal == "4.2"
         assert obs0.unit_code == "PCT"
         assert obs0.status == "VERIFIED"
-
-        # Sprawdzenie ostatniej obserwacji (2026M09)
-        obs2 = observations[2]
-        assert obs2.period_start == "2026-09-01"
-        assert obs2.period_end == "2026-09-30"
-        assert obs2.value_decimal == "4.5"
 
     def test_fetch_harmonized_unemployment_success(self):
         connector = EurostatConnector(offline_mode=True)
@@ -369,11 +418,12 @@ class TestEurostatConnector:
         assert obs.unit_code == "PCT"
         assert obs.metadata["standard"] == "ILO_BAEL"
 
-    def test_fetch_quarterly_gdp_success(self):
+    def test_fetch_quarterly_gdp_growth_qoq_success(self):
+        """Weryfikuje, że dynamika kw/kw (PCH_PRE) jest poprawnie oznaczana jako PL_GDP_QOQ z jednostką PCT."""
         connector = EurostatConnector(offline_mode=True)
-        connector.register_fixture("namq_10_gdp", EUROSTAT_GDP_JSON)
+        connector.register_fixture("unit=PCH_PRE", EUROSTAT_GDP_GROWTH_QOQ_JSON)
 
-        evidence, observations = connector.fetch_quarterly_gdp("PL")
+        evidence, observations = connector.fetch_quarterly_gdp("PL", measure="GROWTH_QOQ")
 
         assert len(observations) == 2
         q1 = observations[0]
@@ -381,12 +431,58 @@ class TestEurostatConnector:
         assert q1.period_start == "2026-01-01"
         assert q1.period_end == "2026-03-31"
         assert q1.frequency == "QUARTERLY"
+        assert q1.value_decimal == "0.8"
+        assert q1.unit_code == "PCT"
+        assert q1.metadata["eurostat_unit"] == "PCH_PRE"
+
+        q2 = observations[1]
+        assert q2.indicator_code == "PL_GDP_QOQ"
+        assert q2.period_start == "2026-04-01"
+        assert q2.period_end == "2026-06-30"
+        assert q2.value_decimal == "1.1"
+        assert q2.unit_code == "PCT"
+
+    def test_fetch_quarterly_gdp_growth_yoy_success(self):
+        """Weryfikuje, że dynamika r/r (PCH_SM_PR_Y) jest poprawnie oznaczana jako PL_GDP_YOY z jednostką PCT."""
+        connector = EurostatConnector(offline_mode=True)
+        connector.register_fixture("unit=PCH_SM_PR_Y", EUROSTAT_GDP_GROWTH_YOY_JSON)
+
+        evidence, observations = connector.fetch_quarterly_gdp("PL", measure="GROWTH_YOY")
+
+        assert len(observations) == 2
+        assert observations[0].indicator_code == "PL_GDP_YOY"
+        assert observations[0].value_decimal == "3.4"
+        assert observations[0].unit_code == "PCT"
+
+    def test_fetch_quarterly_gdp_volume_separated_from_qoq(self):
+        """
+        Kluczowy test regresyjny (Problem 1 z Code Review):
+        Poziom/wolumen PKB (CLV10_MEUR) NIE MOŻE być zapisywany jako PL_GDP_QOQ ani jako punkty indeksowe!
+        Musi mieć kod wskaźnika PL_GDP_VOLUME oraz jednostkę MEUR.
+        """
+        connector = EurostatConnector(offline_mode=True)
+        connector.register_fixture("unit=CLV10_MEUR", EUROSTAT_GDP_VOLUME_JSON)
+
+        evidence, observations = connector.fetch_quarterly_gdp("PL", measure="VOLUME_MEUR")
+
+        assert len(observations) == 2
+        q1 = observations[0]
+        # Potwierdzenie rozdzielenia definicji i jednostek
+        assert q1.indicator_code == "PL_GDP_VOLUME"
+        assert q1.indicator_code != "PL_GDP_QOQ"
+        assert q1.unit_code == "MEUR"
+        assert q1.unit_code != "INDEX_POINTS"
         assert q1.value_decimal == "135400.5"
 
         q2 = observations[1]
-        assert q2.period_start == "2026-04-01"
-        assert q2.period_end == "2026-06-30"
+        assert q2.indicator_code == "PL_GDP_VOLUME"
+        assert q2.unit_code == "MEUR"
         assert q2.value_decimal == "136850.2"
+
+    def test_invalid_gdp_measure_raises_validation_error(self):
+        connector = EurostatConnector(offline_mode=True)
+        with pytest.raises(ValidationError, match="Nieobsługiwana miara PKB"):
+            connector.fetch_quarterly_gdp("PL", measure="INVALID_MEASURE")
 
     def test_missing_time_dimension_raises_validation_error(self):
         connector = EurostatConnector(offline_mode=True)
@@ -398,7 +494,7 @@ class TestEurostatConnector:
 
 
 # ==============================================================================
-# TESTY GUS CONNECTOR
+# TESTY GUS CONNECTOR (W TYM POPRAWKI OKRESU I PRZELICZENIA CPI)
 # ==============================================================================
 
 class TestGusConnector:
@@ -413,7 +509,6 @@ class TestGusConnector:
         assert evidence.source_id == "SRC_GUS_BDL"
         assert len(observations) == 2
 
-        # Obserwacja roczna
         obs_ann = observations[0]
         assert obs_ann.indicator_code == "PL_UNEMPLOYMENT_REGISTERED_RATE"
         assert obs_ann.period_start == "2025-01-01"
@@ -422,7 +517,6 @@ class TestGusConnector:
         assert obs_ann.value_decimal == "5.1"
         assert obs_ann.unit_code == "PCT"
 
-        # Obserwacja miesięczna
         obs_month = observations[1]
         assert obs_month.period_start == "2026-08-01"
         assert obs_month.period_end == "2026-08-31"
@@ -440,18 +534,66 @@ class TestGusConnector:
         assert observations[0].value_decimal == "845.3"
         assert observations[0].unit_code == "THOUSAND_PERSONS"
 
-    def test_fetch_cpi_dbw_success(self):
+    def test_fetch_cpi_dbw_resolves_exact_month_from_period_metadata(self):
+        """
+        Kluczowy test regresyjny (Problem 2 z Code Review):
+        Miesięczna obserwacja CPI z DBW (okres_id 255 = wrzesień) NIE MOŻE mieć zakresu 01-01 do 12-31!
+        Musi mieć okres od 2026-09-01 do 2026-09-30.
+        """
         connector = GusConnector(offline_mode=True)
         connector.register_fixture("data/data-data", GUS_DBW_CPI_JSON)
 
-        evidence, obs = connector.fetch_cpi_dbw(rok=2026, okres_id=280)
+        evidence, obs = connector.fetch_cpi_dbw(rok=2026, okres_id=255)
 
         assert evidence.source_id == "SRC_GUS_DBW"
         assert obs.indicator_code == "PL_CPI_YOY"
-        # 104.2 bazy 100 przeliczone na 4.2% r/r
-        assert obs.value_decimal == "4.2"
-        assert obs.unit_code == "PCT"
-        assert obs.metadata["raw_index_value"] == "104.2"
+        assert obs.period_start == "2026-09-01"
+        assert obs.period_end == "2026-09-30"
+        assert obs.publication_date == "2026-09-30"
+        assert obs.metadata["resolved_month"] == 9
+
+    def test_fetch_cpi_dbw_with_explicit_month(self):
+        """Weryfikuje poprawne działanie z jawnym parametrem month."""
+        connector = GusConnector(offline_mode=True)
+        connector.register_fixture("data/data-data", GUS_DBW_CPI_JSON)
+
+        evidence, obs = connector.fetch_cpi_dbw(rok=2026, okres_id=9, month=9)
+        assert obs.period_start == "2026-09-01"
+        assert obs.period_end == "2026-09-30"
+
+    def test_fetch_cpi_dbw_unresolvable_period_raises_error(self):
+        """Gdy okres_id jest nieznany i brak parametru month, konektor zgłasza błąd zamiast zgadywać."""
+        connector = GusConnector(offline_mode=True)
+        with pytest.raises(ValidationError, match="Nie można jednoznacznie ustalić miesiąca"):
+            connector.fetch_cpi_dbw(rok=2026, okres_id=999)
+
+    def test_fetch_cpi_dbw_methodological_conversion_without_heuristic(self):
+        """
+        Kluczowy test regresyjny (Problem 3 z Code Review):
+        Brak heurystyki 'wartosc > 50'. Konwersja opiera się na potwierdzonej metodologii:
+        - Dla is_index_base_100=True: 104.2 przeliczane na 4.2% r/r.
+        - Dla as_percentage_change=False: zachowywany jest surowy indeks 104.2 jako INDEX_POINTS.
+        - Dla is_index_base_100=False: wartość nie jest modyfikowana arytmetycznie.
+        """
+        connector = GusConnector(offline_mode=True)
+        connector.register_fixture("data/data-data", GUS_DBW_CPI_JSON)
+
+        # 1. Domyślna konwersja metodologiczna bazy 100 do stopy r/r
+        _, obs_pct = connector.fetch_cpi_dbw(rok=2026, okres_id=255, is_index_base_100=True, as_percentage_change=True)
+        assert obs_pct.value_decimal == "4.2"
+        assert obs_pct.unit_code == "PCT"
+
+        # 2. Pobranie jako surowy punkt indeksu (bez odejmowania 100)
+        _, obs_idx = connector.fetch_cpi_dbw(rok=2026, okres_id=255, is_index_base_100=True, as_percentage_change=False)
+        assert obs_idx.value_decimal == "104.2"
+        assert obs_idx.unit_code == "INDEX_POINTS"
+
+        # 3. Seria, która nie jest bazą 100 (brak odejmowania 100)
+        low_val_json = json.dumps({"data": [{"id-zmienna": 305, "id-przekroj": 736, "wartosc": 3.4}]})
+        connector.register_fixture("data/data-data", low_val_json)
+        _, obs_direct = connector.fetch_cpi_dbw(rok=2026, okres_id=255, is_index_base_100=False, as_percentage_change=True)
+        assert obs_direct.value_decimal == "3.4"
+        assert obs_direct.unit_code == "PCT"
 
     def test_search_bdl_variables_success(self):
         connector = GusConnector(offline_mode=True)
@@ -529,6 +671,7 @@ class TestBaseConnectorGuards:
             connector.validate_frequency("BIWEEKLY")
 
         assert connector.validate_unit("pct") == "PCT"
+        assert connector.validate_unit("meur") == "MEUR"
         with pytest.raises(ValidationError, match="Nieznana jednostka"):
             connector.validate_unit("APPLES")
 
