@@ -2,7 +2,7 @@
 
 **Status:** `READY_FOR_REVIEW` (Ostatnie poprawki przed merge PR #3)  
 **Branch:** `design/03-data-contract`  
-**Commit SHA:** `PENDING_COMMIT_SHA`  
+**Commit SHA:** `42c1a60942f9ab8c791b38a865eed113371d7250`  
 **PR:** `https://github.com/maciejkubek-maker/polish-economy-agent/pull/3`  
 **Data:** 2026-11-02  
 
@@ -85,7 +85,7 @@ Wszystkie uwagi i wymagania zostały w pełni wdrożone i zweryfikowane automaty
   "task_id": "TASK-03",
   "status": "READY_FOR_REVIEW",
   "branch": "design/03-data-contract",
-  "commit_sha": "PENDING_COMMIT_SHA",
+  "commit_sha": "42c1a60942f9ab8c791b38a865eed113371d7250",
   "pull_request": "https://github.com/maciejkubek-maker/polish-economy-agent/pull/3",
   "tests": {"status": "PASSED", "passed": 61, "failed": 0},
   "files_changed": [
