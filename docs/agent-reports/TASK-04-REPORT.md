@@ -2,7 +2,7 @@
 
 **Status:** `DONE`  
 **Branch:** `feature/data-platform-v2`  
-**Commit SHA:** `PENDING_COMMIT_SHA`  
+**Commit SHA:** `ac4f7f821a1caa1756d50c114044bb30c3664197`  
 **PR:** `https://github.com/maciejkubek-maker/polish-economy-agent/pull/4`  
 **Data:** 2026-11-02  
 
@@ -93,7 +93,7 @@ Zaimplementowałem produkcyjnej jakości migrator danych ze starszej bazy SQLite
   "task_id": "TASK-04",
   "status": "DONE",
   "branch": "feature/data-platform-v2",
-  "commit_sha": "PENDING_COMMIT_SHA",
+  "commit_sha": "ac4f7f821a1caa1756d50c114044bb30c3664197",
   "pull_request": "https://github.com/maciejkubek-maker/polish-economy-agent/pull/4",
   "tests": {"status": "PASSED", "passed": 76, "failed": 0},
   "files_changed": [
