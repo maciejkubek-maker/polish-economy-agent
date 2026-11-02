@@ -110,6 +110,8 @@ Projekt jest w pełni przystosowany do demonstracji portfolio bez konieczności 
    ```
 3. Otwórz przeglądarkę pod adresem: **`http://127.0.0.1:5000/`** lub przejrzyj wygenerowany plik `report.html`.
 
+Tryb offline jest ustawieniem domyślnym. Powyższe polecenia nie wymagają kluczy API i nie wykonują wywołań do Tavily, Gemini ani OpenAI.
+
 ---
 
 ### B. Tryb Pełny (Live z pobieraniem z oficjalnych API i LLM)
@@ -118,7 +120,7 @@ Aby uruchomić pełne pobieranie z sieci i syntezę przez modele LLM:
 
 1. Skonfiguruj plik `.env` w katalogu głównym projektu:
    ```env
-   # Modele AI (co najmniej jeden wymagany do generowania live)
+   # Modele AI (skonfiguruj dostawców, których chcesz użyć w trybie live)
    GOOGLE_API_KEY=twoj_klucz_gemini_api
    OPENAI_API_KEY=twoj_klucz_openai_api
 

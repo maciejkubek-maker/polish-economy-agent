@@ -332,6 +332,29 @@ def test_flask_serve_report_from_v2(temp_v2_db):
         set_storage_v2(None)
 
 
+def test_demo_import_without_api_keys_is_offline_by_default():
+    """README demo starts without keys and cannot silently enable paid services."""
+    import subprocess
+    import sys
+
+    env = os.environ.copy()
+    env["PYTHON_DOTENV_DISABLED"] = "1"
+    env.pop("GOOGLE_API_KEY", None)
+    env.pop("OPENAI_API_KEY", None)
+    env.pop("TAVILY_API_KEY", None)
+    env.pop("OFFLINE_MODE", None)
+
+    result = subprocess.run(
+        [sys.executable, "-c", "import config; assert config.OFFLINE_MODE is True"],
+        cwd=os.path.dirname(os.path.dirname(__file__)),
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
 # ==============================================================================
 # 7. BEZWZGLĘDNA NIETYKALNOŚĆ ORYGINALNEJ BAZY LEGACY
 # ==============================================================================
