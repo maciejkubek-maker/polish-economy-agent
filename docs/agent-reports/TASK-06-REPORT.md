@@ -313,3 +313,49 @@ TASK-06 został w pełni zrealizowany. Platforma danych v2 jest gotowa do dział
 - Nie zmodyfikowano oryginalnej bazy SQLite ani użytkownikowego raportu HTML.
 - `NOT_RUN`: pełny przebieg live z płatnymi usługami — celowo poza zakresem.
 - `PROPOSED`: code review poprawki w istniejącym PR #4. Merge nie został wykonany.
+
+---
+
+## 9. Finalna poprawka przed merge PR #4
+
+**Data kontroli:** 2026-11-02<br>
+**Status:** `DONE`<br>
+**Commit poprawki:** `5f6ec3280f867bcfdc3dc2e90e106bd56a6083fd`<br>
+**PR:** https://github.com/maciejkubek-maker/polish-economy-agent/pull/4
+
+### DONE
+
+- Dodano bezpieczny `.env.example` z `OFFLINE_MODE=true`, pustymi kluczami API i osobną ścieżką SQLite v2. Lokalny `.env` pozostaje ignorowany przez Git.
+- W obu wersjach językowych README opisano kopiowanie `.env.example` do `.env`, świadome włączenie trybu live oraz możliwość płatnych wywołań zewnętrznych usług.
+- Usunięto nieaktualną deklarację fallbacku Tavily: brak klienta lub wyników w trybie live nie podstawia fixture'ów offline.
+- Usunięto parametr gałęzi z instrukcji klonowania i zaktualizowano audytowany wynik do 134 testów.
+- Walidator wymaga bezpośrednich URL-i tylko dla przypisów faktycznie użytych w raporcie, zachowując kontrolę struktury, obcych liczb, nieznanych przypisów, liczb bez przypisu i surowego HTML.
+- Dodano pozytywny test kompletnej analizy LLM: raport cytujący podzbiór dostępnych źródeł przechodzi walidację, zostaje zapisany jako `LIVE_AI_VALIDATED` i nie uruchamia fallbacku.
+- Nie zmieniono `app.py`, szablonu HTML ani CSS.
+
+### Zmienione pliki
+
+| Ścieżka | Opis |
+|---|---|
+| `.env.example` | Bezpieczna konfiguracja offline bez sekretów. |
+| `README.md` | Instrukcje offline/live EN i PL, aktualne zachowanie Tavily i wynik testów. |
+| `modules/evaluator.py` | URL-e wymagane dla rzeczywiście cytowanych źródeł. |
+| `tests/test_pipeline_v2.py` | Pozytywna regresja `LIVE_AI_VALIDATED`. |
+
+### Testy i kontrole
+
+| Polecenie / kontrola | Status | Wynik |
+|---|---|---|
+| `uv run pytest -q tests/test_pipeline_v2.py` | `PASSED` | 14/14 w 2,17 s. |
+| `uv sync --group dev` | `PASSED` | 72 pakiety rozwiązane, 70 sprawdzonych. |
+| `uv run pytest -q` | `PASSED` | 134/134 w 6,57 s. |
+| `.env` w `.gitignore` | `PASSED` | Reguła `*.env`; plik lokalny nie jest commitowany. |
+| Integralność `instance/economy_agent.db` | `PASSED` | SHA-256 `e6c5f318ffe1eceeb34191a7a74ec9f7f7de6069c4f298850792734277ecde3b`. |
+| Integralność użytkownikowego `report.html` | `PASSED` | Pliku nie nadpisano; SHA-256 `148574ae9c916a3c034c007d34a0b05b1c31bc5533fb2a57d4dbc4d3153e0d84`. |
+
+### Bezpieczeństwo, ryzyka i następny krok
+
+- Nie wykonano płatnych wywołań API ani przebiegu live.
+- Nie zmodyfikowano bazy legacy ani wyglądu raportu HTML.
+- `KNOWN_VULNERABILITY`: brak nowych znanych podatności w zmienionym zakresie; wynik LLM nadal podlega istniejącemu bezpiecznemu rendererowi.
+- `PROPOSED`: końcowy code review i decyzja właściciela dotycząca merge PR #4. Merge nie został wykonany.
