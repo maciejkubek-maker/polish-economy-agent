@@ -79,7 +79,7 @@ CREATE TABLE IF NOT EXISTS data_series (
     query_params_template TEXT,
     response_format TEXT NOT NULL CHECK(response_format IN ('JSON', 'JSON_STAT', 'XML', 'HTML', 'CSV')),
     verification_status TEXT NOT NULL CHECK(verification_status IN (
-        'VERIFIED', 'NOT_VERIFIED', 'REQUIRES_VARIABLE_MAPPING'
+        'VERIFIED', 'NOT_VERIFIED', 'REQUIRES_VARIABLE_MAPPING', 'VERIFIED_STATIC_XML'
     )),
     is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0, 1)),
     created_at_utc TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -148,7 +148,7 @@ CREATE INDEX IF NOT EXISTS idx_candidates_code ON extracted_candidates(candidate
 CREATE INDEX IF NOT EXISTS idx_candidates_evidence ON extracted_candidates(evidence_id);
 
 -- ----------------------------------------------------------------------------
--- 8. WERSJONOWANE OBSERWACJE EKONOMICZNE (observations) - APPEND ONLY
+-- 8. WERSJONOWANE OBSERWACJE EKONOMICZNE (observations) - STRICTLY APPEND-ONLY
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS observations (
     observation_id TEXT PRIMARY KEY,
@@ -165,7 +165,6 @@ CREATE TABLE IF NOT EXISTS observations (
         'FLASH', 'PRELIMINARY', 'FINAL', 'REVISED', 'LEGACY_UNSPECIFIED'
     )),
     version_number INTEGER NOT NULL DEFAULT 1,
-    is_latest INTEGER NOT NULL DEFAULT 1 CHECK(is_latest IN (0, 1)),
     supersedes_id TEXT REFERENCES observations(observation_id),
     evidence_id TEXT NOT NULL REFERENCES source_evidence(evidence_id),
     status TEXT NOT NULL CHECK(status IN (
@@ -176,11 +175,100 @@ CREATE TABLE IF NOT EXISTS observations (
 );
 
 CREATE INDEX IF NOT EXISTS idx_obs_indicator_period ON observations(indicator_code, period_start);
-CREATE INDEX IF NOT EXISTS idx_obs_latest ON observations(indicator_code, is_latest, status);
+CREATE INDEX IF NOT EXISTS idx_obs_status ON observations(indicator_code, status);
 CREATE INDEX IF NOT EXISTS idx_obs_evidence ON observations(evidence_id);
 
+-- TRIGGERS: Egzekwowanie bezwzględnego braku mutacji w observations (STRICT APPEND-ONLY)
+CREATE TRIGGER IF NOT EXISTS trg_observations_prevent_update
+BEFORE UPDATE ON observations
+BEGIN
+    SELECT RAISE(FAIL, 'Tabela observations jest bezwzglednie append-only: modyfikacja (UPDATE) jest zablokowana.');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_observations_prevent_delete
+BEFORE DELETE ON observations
+BEGIN
+    SELECT RAISE(FAIL, 'Tabela observations jest bezwzglednie append-only: usuwanie (DELETE) jest zablokowane.');
+END;
+
 -- ----------------------------------------------------------------------------
--- 9. DZIENNIK JAKOŚCI I KONFLIKTÓW (quality_events)
+-- 9. TABELA WSKAŹNIKÓW AKTUALNEJ WERSJI (current_observations)
+--    Odrębny mechanizm ustalania aktualnej wersji bez modyfikacji tabeli observations.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS current_observations (
+    indicator_code TEXT NOT NULL REFERENCES indicator_catalog(indicator_code),
+    country_code TEXT NOT NULL DEFAULT 'PL',
+    period_start DATE NOT NULL,
+    period_end DATE NOT NULL,
+    frequency TEXT NOT NULL,
+    observation_id TEXT NOT NULL REFERENCES observations(observation_id),
+    value_decimal TEXT NOT NULL,
+    unit_code TEXT NOT NULL,
+    revision_type TEXT NOT NULL,
+    version_number INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('VERIFIED', 'PENDING', 'CONFLICT')),
+    updated_at_utc TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (indicator_code, country_code, period_start)
+);
+
+CREATE TRIGGER IF NOT EXISTS trg_observations_update_current
+AFTER INSERT ON observations
+FOR EACH ROW
+WHEN NEW.status = 'VERIFIED'
+BEGIN
+    INSERT INTO current_observations (
+        indicator_code, country_code, period_start, period_end, frequency,
+        observation_id, value_decimal, unit_code, revision_type, version_number, status, updated_at_utc
+    ) VALUES (
+        NEW.indicator_code, NEW.country_code, NEW.period_start, NEW.period_end, NEW.frequency,
+        NEW.observation_id, NEW.value_decimal, NEW.unit_code, NEW.revision_type, NEW.version_number, NEW.status, CURRENT_TIMESTAMP
+    )
+    ON CONFLICT(indicator_code, country_code, period_start) DO UPDATE SET
+        period_end = excluded.period_end,
+        frequency = excluded.frequency,
+        observation_id = excluded.observation_id,
+        value_decimal = excluded.value_decimal,
+        unit_code = excluded.unit_code,
+        revision_type = excluded.revision_type,
+        version_number = excluded.version_number,
+        status = excluded.status,
+        updated_at_utc = CURRENT_TIMESTAMP
+    WHERE excluded.version_number >= current_observations.version_number;
+END;
+
+-- WIDOK ANALITYCZNY NAJNOWSZYCH OBSERWACJI (deklaratywny, zero-maintenance)
+CREATE VIEW IF NOT EXISTS v_latest_observations AS
+WITH ranked AS (
+    SELECT 
+        o.*,
+        ROW_NUMBER() OVER (
+            PARTITION BY o.indicator_code, o.country_code, o.period_start 
+            ORDER BY o.version_number DESC, o.observed_at_utc DESC
+        ) AS rnk
+    FROM observations o
+    WHERE o.status = 'VERIFIED'
+)
+SELECT 
+    observation_id,
+    indicator_code,
+    country_code,
+    period_start,
+    period_end,
+    frequency,
+    value_decimal,
+    unit_code,
+    revision_type,
+    version_number,
+    supersedes_id,
+    evidence_id,
+    status,
+    observed_at_utc,
+    validated_at_utc
+FROM ranked
+WHERE rnk = 1;
+
+-- ----------------------------------------------------------------------------
+-- 10. DZIENNIK JAKOŚCI I KONFLIKTÓW (quality_events)
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS quality_events (
     event_id TEXT PRIMARY KEY,
@@ -200,7 +288,7 @@ CREATE INDEX IF NOT EXISTS idx_quality_entity ON quality_events(entity_type, ent
 CREATE INDEX IF NOT EXISTS idx_quality_rule ON quality_events(rule_code, severity);
 
 -- ----------------------------------------------------------------------------
--- 10. GENEROWANE RAPORTY I MIGAWKI DANYCH (reports)
+-- 11. GENEROWANE RAPORTY I MIGAWKI DANYCH (reports)
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS reports (
     report_id TEXT PRIMARY KEY,
@@ -216,7 +304,7 @@ CREATE TABLE IF NOT EXISTS reports (
 );
 
 -- ----------------------------------------------------------------------------
--- 11. MAPOWANIE MIGRACJI LEGACY (legacy_migration_map)
+-- 12. MAPOWANIE MIGRACJI LEGACY (legacy_migration_map)
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS legacy_migration_map (
     legacy_id INTEGER NOT NULL,

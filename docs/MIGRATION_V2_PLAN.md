@@ -2,7 +2,7 @@
 
 **Status:** `PROPOSED` (projekt procedury — **BEZ WYKONYWANIA MIGRACJI** na pliku produkcyjnym)  
 **Dokument powiązany:** `tasks/TASK_03_SCHEMA_DESIGN.md`, `docs/MIGRATION.md`, `docs/BASELINE.md`  
-**Data sporządzenia:** 2026-11-02  
+**Data sporządzenia:** 2026-11-02 (Aktualizacja po code review)  
 
 ---
 
@@ -12,66 +12,80 @@ Celem niniejszego dokumentu jest zdefiniowanie kompletnej, deterministycznej i w
 
 ### Żelazne reguły:
 1. **Zero Data Loss (Ani jeden rekord nie ginie):** Wszystkie 75 rekordów z `collected_indicators`, 10 rekordów z `trusted_sources` oraz 6 rekordów z `generated_reports` muszą zostać w całości przeniesione do warstwy dowodowej i kandydatów.
-2. **Brak bezpośrednich modyfikacji bazy źródłowej:** Plik `instance/economy_agent.db` jest traktowany jako baza archiwalna i otwierany wyłącznie w trybie `mode=ro`.
-3. **Rozdzielenie danych pewnych od niepewnych:** Żadna wartość wieloznaczna lub potencjalnie błędna nie może zostać automatycznie „zgadnięta” jako fakt w tabeli `observations`. Trafia do tabeli `extracted_candidates` z powiązanym wpisem w `quality_events` ze statusem `MIGRATED_PENDING` lub `MIGRATED_CONFLICT`.
-4. **Idempotencja i rollback:** Uruchomienie procedury powtórnie musi dać identyczny rezultat bez duplikowania danych. Wycofanie procedury (rollback) polega na usunięciu nowego pliku roboczego bazy.
+2. **Potwierdzenie 75 unikalnych legacy ID:** Baza zawiera dokładnie 75 rekordów w `collected_indicators` o ciągłych kluczach `id` od `1` do `75`. Wszystkie 75 ID muszą posiadać jawny wpis w tabeli `legacy_migration_map`.
+3. **Brak bezpośrednich modyfikacji bazy źródłowej:** Plik `instance/economy_agent.db` jest traktowany jako baza archiwalna i otwierany wyłącznie w trybie `mode=ro`.
+4. **Rozdzielenie danych pewnych od niepewnych (brak zgadywania):** Żadna wartość wieloznaczna lub potencjalnie błędna nie może zostać automatycznie „zgadnięta” jako fakt w tabeli `observations`. Trafia do tabeli `extracted_candidates` z powiązanym wpisem w `quality_events` ze statusem `MIGRATED_PENDING` lub `MIGRATED_CONFLICT`.
+5. **Idempotencja i rollback:** Uruchomienie procedury powtórnie musi dać identyczny rezultat bez duplikowania danych. Wycofanie procedury (rollback) polega na usunięciu nowego pliku roboczego bazy.
 
 ---
 
 ## 2. Inwentaryzacja i Klasyfikacja 75 Rekordów `collected_indicators`
 
-Baza bazowa zawiera 75 wskaźników zebranych przez dwóch agentów (`GPTAgent`: 42, `GeminiAgent`: 33) dla kraju `Polska`. Analiza wykazała występowanie 24 odrębnych wariantów nazw tekstowych, które podzielono na 3 grupy analityczne:
+Baza bazowa zawiera dokładnie **75 unikalnych rekordów** w tabeli `collected_indicators` o identyfikatorach `1..75` (`GPTAgent`: 42 rekordy, `GeminiAgent`: 33 rekordy, kraj: `Polska`). Analiza wykazała występowanie 24 odrębnych wariantów nazw tekstowych, które podzielono na 3 spójne grupy analityczne:
 
-### Grupa 1: Wskaźniki o jednoznacznym mapowaniu (47 rekordów)
+### Podsumowanie bilansu grup:
+- **Grupa 1 (Wskaźniki o jednoznacznym mapowaniu):** **51 rekordów**
+- **Grupa 2 (Synonimy i uogólnienia po weryfikacji kontekstu):** **17 rekordów**
+- **Grupa 3 (Przypadki sporne, konflikty i niejednoznaczności):** **7 rekordów**
+- **Suma całkowita:** **51 + 17 + 7 = 75 rekordów** (100% pokrycia bazy).
+
+---
+
+### Grupa 1: Wskaźniki o jednoznacznym mapowaniu (51 rekordów)
 Wskaźniki, których definicja, jednostka i okres nie budzą wątpliwości metodologicznych:
 
-| Wariant nazwy legacy | Liczba | Proponowany `indicator_code` | Jednostka docelowa | Status migracji |
-|---|---|---|---|---|
-| `Inflacja CPI r/r` | 8 | `PL_CPI_YOY` | `PCT` | `MIGRATED_VERIFIED` |
-| `Inflacja CPI m/m` / `Inflacja m/m` | 2 | `PL_CPI_MOM` | `PCT` | `MIGRATED_VERIFIED` |
-| `Produkcja przemysłowa r/r` | 3 | `PL_INDUSTRIAL_PRODUCTION_YOY` | `PCT` | `MIGRATED_VERIFIED` |
-| `Produkcja budowlano-montażowa r/r` | 2 | `PL_CONSTRUCTION_PRODUCTION_YOY` | `PCT` | `MIGRATED_VERIFIED` |
-| `Sprzedaż detaliczna r/r` | 2 | `PL_RETAIL_SALES_YOY` | `PCT` | `MIGRATED_VERIFIED` |
-| `Produkt Krajowy Brutto kw/kw` | 1 | `PL_GDP_QOQ` | `PCT` | `MIGRATED_VERIFIED` |
-| `Przeciętne wynagrodzenia` / `Przeciętne Wynagrodzenia` | 3 | `PL_WAGE_AVERAGE_GROSS` | `PLN_PER_MONTH` | `MIGRATED_VERIFIED` |
-| `Stopa referencyjna NBP` | 1 | `PL_NBP_REFERENCE_RATE` | `PCT` | `MIGRATED_VERIFIED` |
-| `Purchasing Managers' Index (PMI) Polska` | 1 | `PL_PMI_MANUFACTURING` | `INDEX_POINTS` | `MIGRATED_VERIFIED` |
-| `Stopa bezrobocia rejestrowanego` | 13 | `PL_UNEMPLOYMENT_REGISTERED_RATE` | `PCT` | `MIGRATED_VERIFIED` |
-| `Stopa bezrobocia rejestrowanego (GUS)` | 6 | `PL_UNEMPLOYMENT_REGISTERED_RATE` | `PCT` | `MIGRATED_VERIFIED` |
-| `Liczba zarejestrowanych bezrobotnych` | 9 | `PL_UNEMPLOYMENT_REGISTERED_COUNT` | `THOUSAND_PERSONS` | `MIGRATED_VERIFIED` |
-| **Razem** | **51** | | | |
+| Wariant nazwy legacy | Liczba | Identyfikatory Legacy ID | Proponowany `indicator_code` | Jednostka docelowa | Status migracji |
+|---|---|---|---|---|---|
+| `Stopa bezrobocia rejestrowanego` | 13 | 1, 27, 29, 39, 41, 42, 53, 54, 55, 56, 57, 72, 74 | `PL_UNEMPLOYMENT_REGISTERED_RATE` | `PCT` | `MIGRATED_VERIFIED` |
+| `Liczba zarejestrowanych bezrobotnych` | 9 | 40, 43, 47, 50, 67, 70, 71, 73, 75 | `PL_UNEMPLOYMENT_REGISTERED_COUNT` | `THOUSAND_PERSONS` | `MIGRATED_VERIFIED` |
+| `Inflacja CPI r/r` | 8 | 2, 7, 21, 31, 37, 44, 52, 68 | `PL_CPI_YOY` | `PCT` | `MIGRATED_VERIFIED` |
+| `Stopa bezrobocia rejestrowanego (GUS)` | 6 | 59, 60, 61, 62, 63, 66 | `PL_UNEMPLOYMENT_REGISTERED_RATE` | `PCT` | `MIGRATED_VERIFIED` |
+| `Produkcja przemysłowa r/r` | 3 | 5, 11, 23 | `PL_INDUSTRIAL_PRODUCTION_YOY` | `PCT` | `MIGRATED_VERIFIED` |
+| `Przeciętne wynagrodzenia` | 2 | 10, 17 | `PL_WAGE_AVERAGE_GROSS` | `PLN_PER_MONTH` | `MIGRATED_VERIFIED` |
+| `Przeciętne Wynagrodzenia` | 1 | 22 | `PL_WAGE_AVERAGE_GROSS` | `PLN_PER_MONTH` | `MIGRATED_VERIFIED` |
+| `Produkcja budowlano-montażowa r/r` | 2 | 12, 19 | `PL_CONSTRUCTION_PRODUCTION_YOY` | `PCT` | `MIGRATED_VERIFIED` |
+| `Sprzedaż detaliczna r/r` | 2 | 13, 25 | `PL_RETAIL_SALES_YOY` | `PCT` | `MIGRATED_VERIFIED` |
+| `Inflacja CPI m/m` | 1 | 24 | `PL_CPI_MOM` | `PCT` | `MIGRATED_VERIFIED` |
+| `Inflacja m/m` | 1 | 15 | `PL_CPI_MOM` | `PCT` | `MIGRATED_VERIFIED` |
+| `Produkt Krajowy Brutto kw/kw` | 1 | 16 | `PL_GDP_QOQ` | `PCT` | `MIGRATED_VERIFIED` |
+| `Stopa referencyjna NBP` | 1 | 4 | `PL_NBP_REFERENCE_RATE` | `PCT` | `MIGRATED_VERIFIED` |
+| `Purchasing Managers' Index (PMI) Polska` | 1 | 26 | `PL_PMI_MANUFACTURING` | `INDEX_POINTS` | `MIGRATED_VERIFIED` |
+| **Razem Grupa 1** | **51** | **(51 unikalnych ID)** | | | |
 
 ---
 
-### Grupa 2: Synonimy i uogólnienia wymagające weryfikacji kontekstowej (15 rekordów)
-Wpisy, w których nazwa ogólna w rzeczywistości reprezentuje wskaźnik rejestrowany:
+### Grupa 2: Synonimy i uogólnienia po weryfikacji kontekstu (17 rekordów)
+Wpisy, w których nazwa ogólna w rzeczywistości reprezentuje wskaźnik rejestrowany lub tożsamą inflację bazową:
 
-| Wariant nazwy legacy | Rekordy ID | Kontekst wartości i źródła | Proponowany `indicator_code` | Status migracji |
-|---|---|---|---|---|
-| `Stopa bezrobocia` | 6, 14, 20, 46, 48, 49, 51 | Wartości (5,8%, 6,1%, 5,6%, 6,0%), źródło GUS/Bankier. Dotyczy bezrobocia rejestrowanego, a nie BAEL. | `PL_UNEMPLOYMENT_REGISTERED_RATE` | `MIGRATED_VERIFIED` (z notatką audytową) |
-| `Liczba bezrobotnych` | 28, 30, 34, 36 | Wartości (956,2 tys., 906,4 tys.), źródło GUS. Odpowiada liczbie bezrobotnych zarejestrowanych. | `PL_UNEMPLOYMENT_REGISTERED_COUNT` | `MIGRATED_VERIFIED` (z notatką audytową) |
-| `Bezrobotni zarejestrowani` | 9, 18 | Wartość 906,40 tys. za VII 2026. Synonim liczby zarejestrowanych. | `PL_UNEMPLOYMENT_REGISTERED_COUNT` | `MIGRATED_VERIFIED` |
-| `Inflacja bazowa (...)` (3 warianty pisowni) | 45, 58, 64, 69 | Wartość 3,1% za VII 2026, źródło NBP. Tożsamy wskaźnik. | `PL_CORE_INFLATION_YOY` | `MIGRATED_VERIFIED` |
-| **Razem** | **17** | | | |
+| Wariant nazwy legacy | Liczba | Identyfikatory Legacy ID | Kontekst wartości i źródła | Proponowany `indicator_code` | Status migracji |
+|---|---|---|---|---|---|
+| `Stopa bezrobocia` | 7 | 6, 14, 20, 46, 48, 49, 51 | Wartości (5,8%, 6,1%, 5,6%, 6,0%), źródło GUS/Bankier. Dotyczy bezrobocia rejestrowanego, a nie BAEL. | `PL_UNEMPLOYMENT_REGISTERED_RATE` | `MIGRATED_VERIFIED` |
+| `Liczba bezrobotnych` | 4 | 28, 30, 34, 36 | Wartości (956,2 tys., 906,4 tys.), źródło GUS. Odpowiada liczbie bezrobotnych zarejestrowanych. | `PL_UNEMPLOYMENT_REGISTERED_COUNT` | `MIGRATED_VERIFIED` |
+| `Bezrobotni zarejestrowani` | 2 | 9, 18 | Wartość 906,40 tys. za VII 2026. Synonim liczby zarejestrowanych. | `PL_UNEMPLOYMENT_REGISTERED_COUNT` | `MIGRATED_VERIFIED` |
+| `Inflacja bazowa (wyłączenie cen żywności i energii)` | 2 | 45, 58 | Wartość 3,1% za VII 2026, źródło NBP. Tożsamy wskaźnik. | `PL_CORE_INFLATION_YOY` | `MIGRATED_VERIFIED` |
+| `Inflacja bazowa (z wyłączeniem cen żywności i energii)` | 1 | 64 | Wartość 3,1% za VII 2026, źródło NBP. Tożsamy wskaźnik. | `PL_CORE_INFLATION_YOY` | `MIGRATED_VERIFIED` |
+| `Inflacja bazowa (po wyłączeniu cen żywności i energii)` | 1 | 69 | Wartość 3,1% za VII 2026, źródło NBP. Tożsamy wskaźnik. | `PL_CORE_INFLATION_YOY` | `MIGRATED_VERIFIED` |
+| **Razem Grupa 2** | **17** | **(17 unikalnych ID)** | | | |
 
 ---
 
-### Grupa 3: Przypadki sporne, konflikty rewizyjne i niejednoznaczności (7 rekordów)
+### Grupa 3: Przypadki sporne, konflikty i niejednoznaczności (7 rekordów)
 Wymagają utworzenia zdarzenia w `quality_events` i statusu `MIGRATED_PENDING` lub `MIGRATED_CONFLICT`:
 
 1. **Konflikt szacunku PKB r/r za II kw. 2026 (4 rekordy):**
    - Rekordy 3 i 8 (`Produkt Krajowy Brutto r/r`): wartość `3,90%`, źródło Bankier.pl / GUS.
    - Rekordy 32 i 38 (`PKB r/r`): wartość `3,8%`, źródło Główny Urząd Statystyczny (GUS).
-   - **Diagnoza:** Klasyczny konflikt typu flash estimate (szybki szacunek 3,9%) vs szacunek wstępny/skorygowany (3,8%).
-   - **Postępowanie:** Oba odczyty zostają zapisane w `extracted_candidates`. W `observations` wartość 3,8% zostaje oznaczona jako wersja nowsza (`is_latest=1`, `revision_type='PRELIMINARY'`), a 3,9% jako `SUPERSEDED` (`revision_type='FLASH'`), z wpisem w `quality_events` (`RULE_REVISION_DETECTED`).
+   - **Poprawka po code review:** **Nie wolno arbitralnie zakładać, że 3,8% jest nowszą rewizją niż 3,90%** bez potwierdzonego źródłowo znacznika czasu publikacji (release vintage bulletin).
+   - **Postępowanie:** Wszystkie 4 rekordy zostają zachowane w `extracted_candidates`. W tabeli `observations` (lub kwarantannie) oba odczyty otrzymują status `CONFLICT` (z powiązaniem w `quality_events` o kodzie `RULE_SOURCE_DISCREPANCY`), dopóki człowiek lub potwierdzona metadana źródłowa nie rozstrzygnie relacji rewizyjnej. Status migracji w mapie: `MIGRATED_CONFLICT`.
 2. **Błędna etykieta „r/r” dla poziomu stopy bezrobocia (2 rekordy):**
    - Rekordy 33 i 35 (`Stopa bezrobocia r/r`): wartości `6,1%` (luty 2026) oraz `5,8%` (lipiec 2026), zgłoszone przez `GPTAgent`.
    - **Diagnoza:** Agent błędnie dodał przyrostek "r/r" do stopy rejestrowanej, która jest wskaźnikiem poziomu, a nie dynamiki.
    - **Postępowanie:** Zapisanie w `extracted_candidates` z flagą `MIGRATED_PENDING`, wpis w `quality_events` (`RULE_MISLABELED_INDICATOR_NAME`).
-3. **Odrębny wskaźnik strumienia: nowo zarejestrowani (1 rekord):**
+3. **Odrębny wskaźnik strumienia: nowo zarejestrowani bezrobotni (1 rekord):**
    - Rekord 65 (`Liczba nowo zarejestrowanych bezrobotnych`): wartość `93,0 tys.` za XI 2025.
-   - **Diagnoza:** Jest to napływ do bezrobocia (flow), a nie stan zasobu bezrobotnych (stock). Próba scalenia z liczbą ogólną bezrobotnych sfałszowałaby dane o 90%.
+   - **Diagnoza:** Jest to napływ do bezrobocia (flow), a nie stan zasobu bezrobotnych (stock). Próba scalenia z liczbą ogólną bezrobotnych sfałszowałaby dane o rząd wielkości.
    - **Postępowanie:** Przypisanie dedykowanego kodu `PL_UNEMPLOYMENT_NEW_REGISTERED_COUNT`, status `MIGRATED_VERIFIED`.
+- **Razem Grupa 3:** **7 rekordów** (IDs: 3, 8, 32, 33, 35, 38, 65).
 
 ---
 
@@ -143,8 +157,8 @@ sequenceDiagram
     DEV->>NEW: 5. Import reports (6)
     DEV->>NEW: 6. Import source_evidence + extracted_candidates (75)
     DEV->>NEW: 7. Walidacja i zapis observations + quality_events
-    DEV->>NEW: 8. Zapis legacy_migration_map (91 powiązań)
-    DEV->>NEW: 9. Weryfikacja bilansu rekordów: 75 wejść == 75 kandydatów
+    DEV->>NEW: 8. Zapis legacy_migration_map (91 powiązań: 75 wskaźników + 10 źródeł + 6 raportów)
+    DEV->>NEW: 9. Weryfikacja bilansu rekordów: 75 unikalnych ID wejściowych == 75 kandydatów
     Note over DEV,NEW: Dry-run zakończony. Raport gotowy do akceptacji.
 ```
 

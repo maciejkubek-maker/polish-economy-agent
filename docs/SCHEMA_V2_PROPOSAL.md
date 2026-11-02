@@ -3,7 +3,7 @@
 **Status:** `PROPOSED` (do zatwierdzenia przez właściciela)  
 **Dokument powiązany:** `tasks/TASK_03_SCHEMA_DESIGN.md`, `docs/DATA_CONTRACT.md`, `docs/ARCHITECTURE.md`  
 **DDL demonstracyjny:** [`docs/sql/schema_v2.sql`](file:///E:/Programy/PycharmProjects/polish-economy-agent/docs/sql/schema_v2.sql)  
-**Data sporządzenia:** 2026-11-02  
+**Data sporządzenia:** 2026-11-02 (Aktualizacja po code review)  
 
 ---
 
@@ -39,13 +39,15 @@ flowchart TD
 
     subgraph VALIDATION["3. Warstwa Walidacji i Jakości (VALIDATED)"]
         CAND --> VAL{Walidator Reguł i Słowników}
-        VAL -->|Weryfikacja pozytywna| OBS[(observations: wersjonowane, append-only)]
+        VAL -->|Weryfikacja pozytywna| OBS[(observations: STRICT APPEND-ONLY)]
         VAL -->|Konflikt / Niejednoznaczność| CONF[quality_events: audyt, PENDING / CONFLICT]
         CONF --> REVIEW[Kolejka weryfikacji / decyzji]
+        OBS -.->|Trigger po INSERT| CUR[(current_observations: wskaźniki wersji)]
+        OBS -.-> VVIEW[v_latest_observations: widok analityczny]
     end
 
     subgraph PRESENTATION["4. Warstwa Prezentacji"]
-        OBS --> REP[reports: powiązane z snapshot hash i evidence_id]
+        VVIEW --> REP[reports: powiązane z snapshot hash i evidence_id]
         WEB -.->|Kontekst jakościowy| REP
     end
 ```
@@ -112,11 +114,11 @@ Definiuje techniczne punkty dostępu do danych w poszczególnych systemach źró
 | `series_id` | `TEXT` | `PRIMARY KEY` | Identyfikator serii, np. `SERIES_NBP_TABLE_A_EUR`. |
 | `indicator_code` | `TEXT` | `REFERENCES indicator_catalog` | Powiązany wskaźnik. |
 | `source_id` | `TEXT` | `REFERENCES source_registry` | Źródło danych. |
-| `external_series_id`| `TEXT` | `NOT NULL` | Zewnętrzny identyfikator (np. symbol waluty `EUR`, kod zmiennej GUS `id-zmienna=123`). |
+| `external_series_id`| `TEXT` | `NOT NULL` | Zewnętrzny identyfikator (np. symbol waluty `EUR`, kod datasetu Eurostat `prc_hicp_manr`). |
 | `endpoint_url` | `TEXT` | `NOT NULL` | Wzorzec URL zapytania API. |
 | `query_params_template`| `TEXT`| `NULLABLE` | Szablon parametrów zapytania (np. format JSON, filtry). |
 | `response_format` | `TEXT` | `CHECK('JSON', 'JSON_STAT', 'XML', 'HTML', 'CSV')` | Oczekiwany format odpowiedzi. |
-| `verification_status`| `TEXT` | `CHECK(...)` | Status weryfikacji: `VERIFIED`, `NOT_VERIFIED`, `REQUIRES_VARIABLE_MAPPING`. |
+| `verification_status`| `TEXT` | `CHECK(...)` | Status: `VERIFIED`, `NOT_VERIFIED`, `REQUIRES_VARIABLE_MAPPING`, `VERIFIED_STATIC_XML`. |
 | `is_active` | `INTEGER` | `CHECK(0, 1) DEFAULT 1` | Czy seria jest aktywna w odpytywaniu. |
 | `created_at_utc` | `TIMESTAMP`| `DEFAULT CURRENT_TIMESTAMP` | Data konfiguracji. |
 
@@ -172,8 +174,10 @@ Wyniki wstępnego przetworzenia przez dedykowane parsery API lub agenty LLM (Gem
 | `extraction_notes` | `TEXT` | `NULLABLE` | Informacje o wątpliwościach lub kontekście. |
 | `extracted_at_utc` | `TIMESTAMP`| `DEFAULT CURRENT_TIMESTAMP` | Czas ekstrakcji. |
 
-### 3.8. `observations` — Obserwacje Zweryfikowane (VALIDATED) — APPEND-ONLY
-Jedyna tabela, z której raport AI i prezentacja mogą pobierać zatwierdzone wartości liczbowe. Obowiązuje absolutny zakaz niszczącego `UPDATE` danych ekonomicznych.
+### 3.8. `observations` — Obserwacje Zweryfikowane (VALIDATED) — STRICTLY APPEND-ONLY
+Jedyna tabela, z której raport AI i prezentacja mogą pobierać zatwierdzone wartości liczbowe.
+**Rygor Append-Only egzekwowany w bazie:** Tabela posiada triggery `trg_observations_prevent_update` oraz `trg_observations_prevent_delete`, które rzucają błąd SQLite przy jakiejkolwiek próbie wykonania `UPDATE` lub `DELETE`.
+Nie zawiera mutowalnej kolumny `is_latest` — aktualna wersja jest ustalana przez odrębny mechanizm (tabelę wskaźników `current_observations` oraz widok `v_latest_observations`).
 
 | Kolumna | Typ SQLite | Ograniczenia | Opis |
 |---|---|---|---|
@@ -187,14 +191,21 @@ Jedyna tabela, z której raport AI i prezentacja mogą pobierać zatwierdzone wa
 | `unit_code` | `TEXT` | `NOT NULL` | Jednostka miary zweryfikowana z katalogiem. |
 | `revision_type` | `TEXT` | `CHECK(...) DEFAULT 'FINAL'` | Typ publikacji: `FLASH`, `PRELIMINARY`, `FINAL`, `REVISED`, `LEGACY_UNSPECIFIED`. |
 | `version_number` | `INTEGER` | `NOT NULL DEFAULT 1` | Kolejny numer wersji obserwacji dla danej serii i okresu. |
-| `is_latest` | `INTEGER` | `CHECK(0, 1) DEFAULT 1` | Flaga wskazująca najnowszą obowiązującą rewizję. |
-| `supersedes_id` | `TEXT` | `REFERENCES observations` | Identyfikator wcześniejszej wersji, którą ta obserwacja zastępuje. |
+| `supersedes_id` | `TEXT` | `REFERENCES observations` | Identyfikator wcześniejszej wersji, jeśli rewizja jest potwierdzona źródłowo. |
 | `evidence_id` | `TEXT` | `REFERENCES source_evidence` | Dowód źródłowy stanowiący podstawę wpisu. |
 | `status` | `TEXT` | `NOT NULL`, `CHECK(...)` | Status jakościowy: `VERIFIED`, `PENDING`, `CONFLICT`, `REJECTED`, `SUPERSEDED`. |
 | `observed_at_utc`| `TIMESTAMP`| `DEFAULT CURRENT_TIMESTAMP` | Czas wstawienia rekordu w UTC. |
 | `validated_at_utc`| `TIMESTAMP`| `NULLABLE` | Czas przejścia walidacji. |
 
-### 3.9. `quality_events` — Dziennik Zdarzeń Jakościowych i Konfliktów
+### 3.9. `current_observations` oraz `v_latest_observations` — Odrębny Mechanizm Ustalania Aktualnej Wersji
+Aby zachować bezwzględny charakter append-only tabeli `observations` i nie wykonywać `UPDATE is_latest = 0` na wcześniejszych wierszach, wprowadzono dwa uzupełniające się mechanizmy:
+
+1. **Zmaterializowana tabela wskaźników `current_observations`:**
+   Zawiera unikalny klucz główny `(indicator_code, country_code, period_start)` wskazujący bieżący `observation_id`. Aktualizacja wskaźnika następuje automatycznie za pośrednictwem triggera `trg_observations_update_current` po operacji `INSERT INTO observations` (wyłącznie dla rekordów ze statusem `VERIFIED`).
+2. **Deklaratywny widok SQL `v_latest_observations`:**
+   Wykorzystuje funkcję analityczną `ROW_NUMBER() OVER (PARTITION BY indicator_code, country_code, period_start ORDER BY version_number DESC, observed_at_utc DESC)` do dynamicznego wyłaniania najnowszego rekordu. Gwarantuje 100% spójności bez naruszania niemutowalności warstwy bazowej.
+
+### 3.10. `quality_events` — Dziennik Zdarzeń Jakościowych i Konfliktów
 Rejestruje każdy incydent walidacyjny, odrzucenie kandydata, niespójność jednostek lub konflikt między źródłami.
 
 | Kolumna | Typ SQLite | Ograniczenia | Opis |
@@ -211,7 +222,7 @@ Rejestruje każdy incydent walidacyjny, odrzucenie kandydata, niespójność jed
 | `resolved_at_utc`| `TIMESTAMP`| `NULLABLE` | Czas rozwiązania / akceptacji przez człowieka. |
 | `resolution_notes`| `TEXT` | `NULLABLE` | Notatka audytowa z decyzją o sposobie rozwiązania. |
 
-### 3.10. `reports` — Raporty Analityczne i Migawki Danych
+### 3.11. `reports` — Raporty Analityczne i Migawki Danych
 Zapewnia 100% odtwarzalność raportów makroekonomicznych. Każdy wygenerowany raport przechowuje hash stanu danych, na podstawie których powstał.
 
 | Kolumna | Typ SQLite | Ograniczenia | Opis |
@@ -227,7 +238,7 @@ Zapewnia 100% odtwarzalność raportów makroekonomicznych. Każdy wygenerowany 
 | `model_metadata_json`| `TEXT`| `NULLABLE` | Metadane modeli (nazwy, temperatury, tokeny, prompt-version). |
 | `created_at_utc` | `TIMESTAMP`| `DEFAULT CURRENT_TIMESTAMP` | Czas wygenerowania raportu w UTC. |
 
-### 3.11. `legacy_migration_map` — Śledzenie Migracji Danych Legacy
+### 3.12. `legacy_migration_map` — Śledzenie Migracji Danych Legacy
 Gwarantuje ścisłe powiązanie każdego z 75 rekordów historycznych z nową strukturą.
 
 | Kolumna | Typ SQLite | Ograniczenia | Opis |
@@ -242,49 +253,9 @@ Gwarantuje ścisłe powiązanie każdego z 75 rekordów historycznych z nową st
 
 ---
 
-## 4. Reprezentacja Typów Danych i Reguły Integralności
+## 4. Zasada Rozstrzygania Konfliktów (Brak Zgadywania)
 
-### 4.1. Reprezentacja Wartości Numerycznych (`value_decimal`)
-- **Format:** Kanoniczny ciąg znaków w formacie dziesiętnym `[-]?[0-9]+(\.[0-9]+)?` (np. `'5.80'`, `'-2.40'`, `'906.40'`).
-- **Dlaczego nie standardowy `REAL` (IEEE 754 float):** Binarne liczby zmiennoprzecinkowe wprowadzają błędy zaokrągleń (np. `0.1 + 0.2 = 0.30000000000000004`), co jest niedopuszczalne w statystyce makroekonomicznej i testach regresyjnych.
-- **Dlaczego kanoniczny `TEXT` zamiast skalowanego integera:** Kanoniczny ciąg tekstowy jest natywnie parsowany przez pythonowy moduł standardowy `decimal.Decimal` z zachowaniem dokładności, a w SQLite umożliwia precyzyjne porównania ciągów i indeksowanie.
-
-### 4.2. Reprezentacja Dat i Czasu
-- **Czas systemowy:** Bezwzględnie w formacie ISO 8601 UTC z sufiksem `Z` lub przesunięciem (np. `2026-11-02T12:00:00Z`).
-- **Okresy statystyczne:** Rozbicie na jednoznaczne granice przedziału:
-  - `period_start DATE` (np. `2026-07-01`)
-  - `period_end DATE` (np. `2026-07-31`)
-  - `frequency TEXT` (`MONTHLY`, `QUARTERLY`, `ANNUAL`)
-- Eliminacja niejednoznaczności: Miesiąc lipiec 2026 to przedział `[2026-07-01, 2026-07-31]`, a II kwartał 2026 to `[2026-04-01, 2026-06-30]`. Notacje rzymskie są rozwiązywane do dat kalendarzowych dopiero po zweryfikowaniu kontekstu.
-
-### 4.3. Maszyna Stanów Jakościowych Obserwacji
-
-```mermaid
-stateDiagram-v2
-    [*] --> RAW: Pobranie przez API / Tavily
-    RAW --> PENDING: Ekstrakcja kandydata
-    PENDING --> VERIFIED: Sukces reguł walidacji + zaufane źródło
-    PENDING --> CONFLICT: Wykryto rozbieżność danych / źródeł
-    PENDING --> REJECTED: Naruszenie granic / błędny format
-    VERIFIED --> SUPERSEDED: Wpłynęła nowa rewizja (FINAL/REVISED)
-    CONFLICT --> VERIFIED: Rozstrzygnięcie manualne / regułą pierwszeństwa
-```
-
----
-
-## 5. Indeksy i Wydajność SQLite
-
-W celu zapewnienia natychmiastowej obsługi zapytań analitycznych i raportowych zaprojektowano następujące indeksy:
-1. `idx_obs_indicator_period`: `observations(indicator_code, period_start)` — szybkie budowanie szeregów czasowych.
-2. `idx_obs_latest`: `observations(indicator_code, is_latest, status)` — błyskawiczne pobieranie bieżącego zestawu wskaźników do raportu.
-3. `idx_source_evidence_hash`: `source_evidence(content_hash)` — natychmiastowa idempotencja pobrań RAW (deduplikacja identycznych odpowiedzi).
-4. `idx_quality_entity`: `quality_events(entity_type, entity_id)` — pobieranie historii audytowej danego rekordu.
-5. `idx_indicator_aliases_norm`: `indicator_aliases(normalized_alias)` — szybkie wyszukiwanie w słowniku aliasów.
-
-Konfiguracja zalecana w środowisku produkcyjnym:
-```sql
-PRAGMA foreign_keys = ON;
-PRAGMA journal_mode = WAL;
-PRAGMA synchronous = NORMAL;
-PRAGMA busy_timeout = 5000;
-```
+Zgodnie z wytycznymi code review:
+- **Zakaz automatycznego ustalania pierwszeństwa rewizji:** Gdy w danych występują dwie różne wartości dla tego samego okresu i wskaźnika (np. PKB r/r za II kw. 2026 o wartościach `3,90%` i `3,8%`), system **nie zakłada**, że wartość 3,8% jest nowsza lub poprawna bez potwierdzonego źródłowego znacznika czasu publikacji (vintage/release bulletin).
+- **Zachowanie statusu `CONFLICT` / `PENDING`:** Obie wartości są archiwizowane w `extracted_candidates`. W tabeli `observations` obie otrzymują status `CONFLICT` lub pozostają w kwarantannie `extracted_candidates` ze statusem `PENDING`, a w `quality_events` generowany jest wpis `RULE_SOURCE_DISCREPANCY`.
+- **Prezentacja w raporcie:** Raport prezentuje przedział lub jawnie wymienia rozbieżność, uniemożliwiając modelom LLM zgadywanie jednej „prawdziwej” liczby.

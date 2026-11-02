@@ -20,35 +20,41 @@ Antigravity aktualizuje ten plik na branchu zadania, publikuje commit i wskazuje
 
 ---
 
-## Otwarte decyzje (TASK-03)
+## Otwarte decyzje (TASK-03 — Aktualizacja po Code Review)
 
-### DR-001 — Reprezentacja wartości numerycznych w SQLite v2 (value_decimal)
+### DR-001 — Reprezentacja wartości numerycznych (value_decimal) i egzekwowanie append-only w SQLite v2
 - **Zadanie:** TASK-03
 - **Status:** `PENDING_REVIEW`
 - **Blokuje pracę:** NIE
-- **Problem:** Wartości makroekonomiczne (stopy procentowe, dynamiki r/r, kwoty w PLN) wymagają precyzji dziesiętnej bez zniekształceń zmiennoprzecinkowych.
-- **Opcja A (Rekomendowana):** Kanoniczny typ `TEXT` (np. `'5.80'`, `'-2.40'`) z walidacją za pomocą `decimal.Decimal` w Pythonie oraz `CHECK(value_decimal GLOB '[-0-9]*')` w SQLite. Zero błędów zaokrągleń IEEE 754, natywna obsługa dowolnej precyzji, czytelność w SQL.
-- **Opcja B:** Skalowany `INTEGER` (np. punkty bazowe, mnożnik 10^4). Ryzyko: wymaga znajomości skali per wskaźnik przy każdym zapytaniu i uniemożliwia proste zapytania ad-hoc.
-- **Opcja C:** `REAL` (float). Niedopuszczalne: błędy precyzji binarnej w testach regresyjnych i agregacjach.
-- **Rekomendacja agenta:** Opcja A (kanoniczny `TEXT` + `decimal.Decimal`).
-- **Wpływ na kod / dane / bezpieczeństwo:** Spójność numeryczna, pełna testowalność offline.
+- **Problem:** Wartości makroekonomiczne wymagają precyzji dziesiętnej bez błędów zmiennoprzecinkowych IEEE 754, a tabela `observations` musi być ściśle append-only na poziomie silnika bazy danych, z osobnym mechanizmem ustalania aktualnej wersji (brak destrukcyjnych UPDATE `is_latest`).
+- **Opcja A (Rekomendowana):**
+  1. Typ `TEXT` dla `value_decimal` z walidacją pythonowym modułem `decimal.Decimal` oraz regułami `CHECK`.
+  2. Bezwzględna ochrona niemutowalności `observations` triggerami SQLite `trg_observations_prevent_update` i `trg_observations_prevent_delete`, które blokują jakiekolwiek `UPDATE` i `DELETE`.
+  3. Odrębny mechanizm ustalania aktualnej wersji: zmaterializowana tabela wskaźników `current_observations` (aktualizowana triggerem po INSERT zweryfikowanej obserwacji) oraz deklaratywny widok analityczny `v_latest_observations` bazujący na funkcji analitycznej `ROW_NUMBER() OVER (...)`.
+- **Opcja B:** Skalowany `INTEGER` lub `REAL` z flagą `is_latest` aktualizowaną w miejscu w tabeli `observations`. Ryzyko: błędy float lub łamanie gwarancji append-only poprzez UPDATE na historycznych rekordach.
+- **Rekomendacja agenta:** Opcja A (czysty podział: `observations` w 100% niemutowalne + dedykowany mechanizm wyznaczania wersji najnowszej).
+- **Wpływ na kod / dane / bezpieczeństwo:** Gwarancja braku zacierania historii, pełna audytowalność, spójność numeryczna.
 
-### DR-002 — Rozstrzygnięcie konfliktów rewizyjnych w danych legacy (PKB II kw. 2026 i Stopa bezrobocia r/r)
+### DR-002 — Obsługa rozbieżności PKB za II kw. 2026 (3,90% vs 3,8%) i anomalii etykiet w legacy
 - **Zadanie:** TASK-03
 - **Status:** `PENDING_REVIEW`
 - **Blokuje pracę:** NIE
-- **Problem:** W 75 rekordach legacy zidentyfikowano dwie sprzeczności: (1) PKB r/r za II kw. 2026 ma wartości `3.90%` (Bankier/GUS) oraz `3.8%` (GUS); (2) Rekordy 33 i 35 mają nazwę `Stopa bezrobocia r/r` i wartości `6.1%`, `5.8%` (błędna etykieta GPTAgent dla bezrobocia rejestrowanego).
-- **Opcja A (Rekomendowana):** Zastosowanie zasady *Zero Data Loss*: zachowanie wszystkich odczytów w `extracted_candidates`. W `observations` oznaczenie PKB 3.8% jako `PRELIMINARY` (`is_latest=1`), a 3.90% jako `SUPERSEDED` (`revision_type='FLASH'`). Dla `Stopa bezrobocia r/r` nadanie statusu `MIGRATED_PENDING` w `quality_events` do akceptacji człowieka.
-- **Opcja B:** Nadpisanie wartości 3.9% wartością 3.8% i arbitralne usunięcie etykiety `r/r`. Ryzyko: utrata historii rewizji i zacieranie błędów agenta.
+- **Problem:** W 75 rekordach legacy zidentyfikowano dwie sprzeczności:
+  1. PKB r/r za II kw. 2026 ma wartości `3,90%` (Bankier/GUS) oraz `3,8%` (GUS) wprowadzone przez obu agentów w odstępie kilkunastu minut.
+  2. Rekordy 33 i 35 mają surową nazwę `Stopa bezrobocia r/r` i wartości `6,1%`, `5,8%` (błędna etykieta poziomu nadana przez GPTAgent).
+- **Opcja A (Rekomendowana):**
+  1. Zgodnie z wytycznymi code review: **nie zakładać arbitralnie, że 3,8% jest nowszą rewizją niż 3,90%** bez potwierdzonego źródłowo znacznika czasu publikacji (release bulletin). Obie wartości zachować w `extracted_candidates`, a w mapie migracji oznaczyć jako `MIGRATED_CONFLICT`, z wpisem w `quality_events` (`RULE_SOURCE_DISCREPANCY`). Żadna z wartości nie staje się automatycznie pojedynczą prawdą w `observations` do czasu autoryzacji przez człowieka.
+  2. Dla `Stopa bezrobocia r/r` nadać status `MIGRATED_PENDING` z wpisem `RULE_MISLABELED_INDICATOR_NAME` w `quality_events`.
+- **Opcja B:** Zgadnięcie, że 3,8% zastępuje 3,90% lub usunięcie rozbieżnego rekordu. Niedopuszczalne: naruszenie zasad rzetelności analitycznej i zacieranie danych.
 - **Rekomendacja agenta:** Opcja A.
-- **Wpływ na kod / dane / bezpieczeństwo:** Zgodność z audytowalnością i brakiem destrukcyjnych zmian.
+- **Wpływ na kod / dane / bezpieczeństwo:** Całkowite wyeliminowanie halucynacji i arbitralnego wyboru danych przez system.
 
-### DR-003 — Oficjalne źródło dla stóp procentowych NBP (brak REST API w api.nbp.pl)
+### DR-003 — Oficjalne źródło dla stóp procentowych NBP (potwierdzenie braku REST API w api.nbp.pl)
 - **Zadanie:** TASK-03
 - **Status:** `PENDING_REVIEW`
 - **Blokuje pracę:** NIE
-- **Problem:** Analiza wykazała, że publiczne REST API `api.nbp.pl` obsługuje wyłącznie kursy walut i ceny złota. Stopy procentowe NBP nie mają endpointu REST w tym portalu.
-- **Opcja A (Rekomendowana):** Wykorzystanie oficjalnego, otwartego pliku XML udostępnianego przez NBP: `https://static.nbp.pl/dane/stopy/stopy_procentowe.xml` (oraz archiwum `stopy_procentowe_archiwum.xml`).
-- **Opcja B:** Pozyskiwanie stóp referencyjnych wyłącznie przez Tavily Web Search z komunikatów RPP. Ryzyko: podatność na błędy interpretacji tekstu, brak natychmiastowej precyzji w formacie maszynowym.
-- **Rekomendacja agenta:** Opcja A jako Tier A z Tavily Web Search jako kanałem uzupełniającym (kontekst uzasadnienia decyzji RPP).
-- **Wpływ na kod / dane / bezpieczeństwo:** Pewne, oficjalne źródło danych instytucjonalnych.
+- **Problem:** Publiczne REST API `api.nbp.pl` obsługuje wyłącznie kursy walut i ceny złota (zapytanie o stopy zwraca HTTP 404).
+- **Opcja A (Rekomendowana):** Zastosowanie oficjalnego, otwartego pliku maszynowego XML NBP: `https://static.nbp.pl/dane/stopy/stopy_procentowe.xml` (oraz archiwum `stopy_procentowe_archiwum.xml`) jako źródła Tier A ze statusem `VERIFIED_STATIC_XML`, parsowanego wbudowanym modułem `xml.etree.ElementTree`.
+- **Opcja B:** Web scraping stron HTML NBP lub wyłącznie Tavily Web Search. Ryzyko: kruchość selektorów HTML i niepotrzebna zależność od tekstu nieustrukturyzowanego.
+- **Rekomendacja agenta:** Opcja A.
+- **Wpływ na kod / dane / bezpieczeństwo:** Stabilne, deterministyczne i bezpieczne pozyskiwanie stóp procentowych NBP.
