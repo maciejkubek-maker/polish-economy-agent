@@ -1,8 +1,8 @@
 # TASK-02 — raport Antigravity / Codex
 
-**Status:** `DONE`  
+**Status:** `READY_FOR_REVIEW`  
 **Branch:** `refactor/02-html-security`  
-**Commit SHA:** `1a3e5a0179a6132644267675c96030da6ae7117e`  
+**Commit SHA:** `TO_BE_UPDATED`  
 **PR:** `https://github.com/maciejkubek-maker/polish-economy-agent/pull/2`  
 **Data:** 2026-11-02  
 
@@ -27,18 +27,21 @@
      - Dodano test `test_flask_endpoint_fallback_to_file_when_db_has_no_report` weryfikujący poprawne serwowanie pliku statycznego, gdy baza nie zawiera raportu.
      - Dodano test `test_flask_endpoint_404_when_db_and_file_missing` weryfikujący czystą odpowiedź 404 w przypadku braku raportu w bazie i braku pliku na dysku.
      - Dodano test `test_save_report_to_html_produces_sanitized_file` potwierdzający, że statyczny eksport do pliku HTML generuje oczyszczony, bezpieczny kod.
+- **Synchronizacja z bazą `main`:**
+  - Po scaleniu PR #1 (`6d4b568`), branch `refactor/02-html-security` został zsynchronizowany z nowym `main`.
+  - Zakres zmian PR #2 względem `main` obejmuje wyłącznie 3 pliki: `app.py`, `tests/test_html_security.py` i `docs/agent-reports/TASK-02-REPORT.md`.
 
 ## Zmienione pliki
 | Ścieżka | Opis |
 |---|---|
 | `app.py` | Leniwa inicjalizacja bazy SQLite (`get_db`, `set_db`), sanityzacja HTML (`html.escape`), walidacja schematów URL w `format_report_html` i `build_html_template`. |
 | `tests/test_html_security.py` | 17 testów bezpieczeństwa: bezpośrednie testy funkcji produkcyjnych, testy w osobnym procesie, testy fallbacku do pliku i 404, fixture przywracająca stan bazy. |
-| `docs/agent-reports/TASK-02-REPORT.md` | Raport wykonawczy uwzględniający poprawki po code review. |
+| `docs/agent-reports/TASK-02-REPORT.md` | Raport wykonawczy uwzględniający poprawki po code review i synchronizację z `main`. |
 
 ## Testy i kontrole
 | Polecenie | Status PASSED/FAILED/NOT_RUN | Wynik |
 |---|---|---|
-| `uv run pytest -q` | **PASSED** | 52 passed w 1.15s (100% testów zielonych, w tym 17 testów bezpieczeństwa HTML i izolacji). |
+| `uv run pytest -v` | **PASSED** | 52 passed w 4.08s (100% testów zielonych, w tym 17 testów bezpieczeństwa HTML i izolacji). |
 
 ## Stan danych i bezpieczeństwa
 - Czy zmodyfikowano `instance/economy_agent.db`? **NIE**. Baza produkcyjna pozostała nienaruszona (75 wskaźników, 10 źródeł, 6 raportów, 73 728 bajtów).
@@ -48,14 +51,14 @@
 
 ## Ryzyka / regresje / ograniczenia
 - Parser Markdown w `app.format_report_html` celowo nie obsługuje zaawansowanych tabel ani zagnieżdżonych list (skupia się na nagłówkach, pogrubieniach, przypisach numerycznych i bezpiecznych linkach URL). Jest to zgodne z zakresem i zapobiega wprowadzaniu zewnętrznych zależności.
-- Zależność bazowa: PR #2 bazuje na commitach z PR #1 (będącego w stanie Draft). Po zmergowaniu PR #1 do `main`, PR #2 zostanie płynnie zintegrowany.
+- Zależność bazowa: PR #1 został pomyślnie scalony do `main` (commit `6d4b568`). Branch `refactor/02-html-security` został zsynchronizowany z aktualnym `main`, a diff PR #2 obejmuje wyłącznie 3 dedykowane pliki TASK-02 (`app.py`, `tests/test_html_security.py`, `docs/agent-reports/TASK-02-REPORT.md`).
 
 ## Decyzje wymagane
-- Brak nowych decyzji blokujących. Gotowość do ponownego review PR #2.
+- Brak nowych decyzji blokujących. Gotowość do ponownego review PR #2 przez ChatGPT.
 
 ## Następny sugerowany krok
 - Ponowne code review PR #2 i zatwierdzenie.
-- Po akceptacji: przejście do **TASK-03** — Projekt katalogu wskaźników i nowego schematu bazy danych.
+- Po scaleniu PR #2 do `main`: rozpoczęcie **TASK-03** — Projekt katalogu wskaźników i nowego schematu bazy danych (`design/03-data-contract`).
 
 ## JSON status
 ```json
@@ -63,7 +66,7 @@
   "task_id": "TASK-02",
   "status": "READY_FOR_REVIEW",
   "branch": "refactor/02-html-security",
-  "commit_sha": "1a3e5a0179a6132644267675c96030da6ae7117e",
+  "commit_sha": "TO_BE_UPDATED",
   "pull_request": "https://github.com/maciejkubek-maker/polish-economy-agent/pull/2",
   "tests": {"status": "PASSED", "passed": 52, "failed": 0},
   "files_changed": [
