@@ -194,6 +194,7 @@ END;
 -- ----------------------------------------------------------------------------
 -- 9. TABELA WSKAŹNIKÓW AKTUALNEJ WERSJI (current_observations)
 --    Odrębny mechanizm ustalania aktualnej wersji bez modyfikacji tabeli observations.
+--    Zasada: Równe numery wersji nie mogą arbitralnie zastępować istniejącego wskaźnika.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS current_observations (
     indicator_code TEXT NOT NULL REFERENCES indicator_catalog(indicator_code),
@@ -233,17 +234,18 @@ BEGIN
         version_number = excluded.version_number,
         status = excluded.status,
         updated_at_utc = CURRENT_TIMESTAMP
-    WHERE excluded.version_number >= current_observations.version_number;
+    WHERE excluded.version_number > current_observations.version_number;
 END;
 
--- WIDOK ANALITYCZNY NAJNOWSZYCH OBSERWACJI (deklaratywny, zero-maintenance)
+-- WIDOK ANALITYCZNY NAJNOWSZYCH OBSERWACJI (deklaratywny, spójny z current_observations)
+-- W przypadku identycznego numeru wersji pierwszeństwo ma pierwsza zarejestrowana obserwacja.
 CREATE VIEW IF NOT EXISTS v_latest_observations AS
 WITH ranked AS (
     SELECT 
         o.*,
         ROW_NUMBER() OVER (
             PARTITION BY o.indicator_code, o.country_code, o.period_start 
-            ORDER BY o.version_number DESC, o.observed_at_utc DESC
+            ORDER BY o.version_number DESC, o.observed_at_utc ASC, o.observation_id ASC
         ) AS rnk
     FROM observations o
     WHERE o.status = 'VERIFIED'

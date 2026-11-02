@@ -1,16 +1,16 @@
 # TASK-03 — raport Antigravity / Codex
 
-**Status:** `READY_FOR_REVIEW` (Aktualizacja po Code Review: CHANGES REQUESTED)  
+**Status:** `READY_FOR_REVIEW` (Ostatnie poprawki przed merge PR #3)  
 **Branch:** `design/03-data-contract`  
-**Commit SHA:** `dd5514de13a375f4d8a59960ffbb700fe85bc516`  
+**Commit SHA:** `PENDING_COMMIT_SHA`  
 **PR:** `https://github.com/maciejkubek-maker/polish-economy-agent/pull/3`  
 **Data:** 2026-11-02  
 
 ---
 
-## Odpowiedź na uwagi Code Review (CHANGES REQUESTED)
+## Odpowiedź na uwagi Code Review oraz ostatnie poprawki przed merge
 
-Wszystkie 6 punktów zgłoszonych w recenzji zostało w pełni wdrożonych i zweryfikowanych testami:
+Wszystkie uwagi i wymagania zostały w pełni wdrożone i zweryfikowane automatycznymi testami offline:
 
 1. **Ujednolicenie bilansu grup migracji i potwierdzenie 75 unikalnych legacy ID:**
    - Poprawiono nagłówki grup i sumy kontrolne w [`docs/MIGRATION_V2_PLAN.md`](file:///E:/Programy/PycharmProjects/polish-economy-agent/docs/MIGRATION_V2_PLAN.md):
@@ -21,19 +21,20 @@ Wszystkie 6 punktów zgłoszonych w recenzji zostało w pełni wdrożonych i zwe
 2. **Rozstrzyganie konfliktu PKB r/r za II kw. 2026 (3,90% vs 3,8%):**
    - Wyeliminowano nieuzasadnione założenie, że 3,8% jest nowszą rewizją.
    - Zgodnie z zasadą braku zgadywania: oba odczyty trafiają do `extracted_candidates`, w mapie migracji otrzymują status `MIGRATED_CONFLICT`, a w `quality_events` generowany jest incydent `RULE_SOURCE_DISCREPANCY`. Żadna wartość nie zostaje arbitralnie zatwierdzona jako jedyna prawda w `observations` bez potwierdzonego źródłowo znacznika czasu publikacji (release bulletin).
-3. **Rzeczywiście egzekwowalna historia append-only w SQLite v2:**
+3. **Rzeczywiście egzekwowalna historia append-only w SQLite v2 oraz spójność wskaźników:**
    - Z tabeli `observations` usunięto mutowalną kolumnę `is_latest` (której aktualizacja wymagałaby `UPDATE` na wierszach historycznych).
    - Wdrożono triggery SQLite: `trg_observations_prevent_update` oraz `trg_observations_prevent_delete`, które rzucają błąd przy jakiejkolwiek próbie modyfikacji lub usunięcia wiersza z `observations`.
-   - Wprowadzono odrębny mechanizm ustalania bieżącej wersji:
-     - Zmaterializowaną tabelę wskaźników `current_observations` (aktualizowaną triggerem po `INSERT` zweryfikowanej obserwacji).
-     - Deklaratywny widok SQL `v_latest_observations` oparty o funkcję `ROW_NUMBER() OVER (...)`.
+   - **Poprawka reguły wyboru najnowszej wersji w `current_observations`:** warunek w triggerze `trg_observations_update_current` zaostrzono do ścisłej nierówności:
+     `WHERE excluded.version_number > current_observations.version_number`
+     Dzięki temu równy numer wersji (`version_number`) nie nadpisuje arbitralnie istniejącego wskaźnika.
+   - **Spójność widoku `v_latest_observations`:** dostosowano klauzulę `ORDER BY o.version_number DESC, o.observed_at_utc ASC, o.observation_id ASC`, zapewniając pełną zgodność widoku i tabeli pointerów przy jednakowych wersjach.
 4. **Rozbudowa testów walidacji i procedury migracji:**
-   - W [`tests/test_schema_v2_design.py`](file:///E:/Programy/PycharmProjects/polish-economy-agent/tests/test_schema_v2_design.py) dodano testy:
+   - W [`tests/test_schema_v2_design.py`](file:///E:/Programy/PycharmProjects/polish-economy-agent/tests/test_schema_v2_design.py) przetestowano:
      - `test_observations_strict_append_only_triggers`: dowód, że UPDATE i DELETE są blokowane przez triggery.
-     - `test_current_observations_pointer_and_view`: dowód prawidłowego wyznaczania nowej wersji bez mutacji wiersza pierwotnego.
+     - `test_current_observations_pointer_and_view`: dowód, że wstawienie kolejnej obserwacji o równej wersji nie nadpisuje wskaźnika, a wyższa wersja poprawnie aktualizuje wskaźnik i widok.
      - `test_dry_run_migration_full_pipeline_simulation`: pełna symulacja potoku migracyjnego na rzeczywistych danych legacy (read-only): przetworzenie 75 wskaźników, 10 źródeł, 6 raportów, zarejestrowanie 91 powiązań w `legacy_migration_map`, wykrycie konfliktu PKB i flagi PENDING dla bezrobocia r/r.
-     - `test_dry_run_migration_idempotency`: potwierdzenie idempotencji procedury mapowania.
-   - Liczba testów w zestawie wzrosła z 5 do 9 (łącznie 61 testów w repozytorium, 100% PASSED).
+     - `test_dry_run_migration_idempotency`: rozszerzono na ponowne wykonanie pełnej symulacji migracji całego zestawu 75 wskaźników, 10 źródeł i 6 raportów na tej samej bazie. Zweryfikowano zerowy przyrost rekordów we wszystkich tabelach (`source_registry`: 10, `reports`: 6, `source_evidence`: 75, `extracted_candidates`: 75, `quality_events`: 6, `legacy_migration_map`: 91).
+   - Łącznie 61 testów w całym repozytorium (100% PASSED).
 5. **Uzupełnienie katalogu API o dowody weryfikacji i parametry:**
    - [`docs/API_SOURCE_CATALOG.md`](file:///E:/Programy/PycharmProjects/polish-economy-agent/docs/API_SOURCE_CATALOG.md) uzupełniono o:
      - **NBP Kursy walut:** dowód odpowiedzi JSON z `https://api.nbp.pl/api/exchangerates/rates/A/{code}/?format=json`.
@@ -49,13 +50,13 @@ Wszystkie 6 punktów zgłoszonych w recenzji zostało w pełni wdrożonych i zwe
 
 | Ścieżka | Opis zmian |
 |---|---|
-| `docs/SCHEMA_V2_PROPOSAL.md` | Dodano opis egzekwowania append-only triggerami, pointer tabeli `current_observations`, widoku `v_latest_observations` oraz zasadę braku zgadywania dla konfliktów. |
-| `docs/sql/schema_v2.sql` | Zaktualizowano DDL: triggery blokujące UPDATE/DELETE, tabela `current_observations`, trigger aktualizujący wskaźniki, widok `v_latest_observations`. |
-| `docs/MIGRATION_V2_PLAN.md` | Poprawiono bilans grup (51 + 17 + 7 = 75), potwierdzono 75 unikalnych ID, usunięto arbitralne pierwszeństwo PKB 3,8% nad 3,90%. |
+| `docs/SCHEMA_V2_PROPOSAL.md` | Dodano opis egzekwowania append-only triggerami, pointer tabeli `current_observations` (ochrona przed nadpisaniem przy równej wersji), widoku `v_latest_observations` oraz zasadę braku zgadywania dla konfliktów. |
+| `docs/sql/schema_v2.sql` | Zaktualizowano DDL: triggery blokujące UPDATE/DELETE, tabela `current_observations`, trigger aktualizujący wskaźniki (warunek `>` zamiast `>=`), spójny widok `v_latest_observations`. |
+| `docs/MIGRATION_V2_PLAN.md` | Poprawiono bilans grup (51 + 17 + 7 = 75), potwierdzono 75 unikalnych ID, usunięto arbitralne pierwszeństwo PKB 3,8% nad 3,90%, opisano pełną idempotencję migracji. |
 | `docs/API_SOURCE_CATALOG.md` | Dodano dowody odpowiedzi (JSON, XML), parametry wymiarów Eurostat (HICP, une_rt_m, namq_10_gdp), dowód 404 dla stóp w REST NBP. |
-| `tests/test_schema_v2_design.py` | Rozbudowano z 5 do 9 testów: testy triggerów append-only, testy pointerów i widoku, pełna symulacja potoku migracyjnego (91 encji w mapie). |
+| `tests/test_schema_v2_design.py` | Rozbudowano testy: triggery append-only, ochrona równej wersji w pointerach i widoku, pełna symulacja potoku migracyjnego (91 encji w mapie), pełna idempotencja powtórzonego przebiegu 75/10/6. |
 | `docs/agent-reports/DECISION_REQUESTS.md` | Zaktualizowano wnioski DR-001 (append-only), DR-002 (brak zgadywania w PKB) oraz DR-003 (XML stóp NBP). |
-| `docs/agent-reports/TASK-03-REPORT.md` | Niniejszy zaktualizowany raport wykonawczy z odpowiedziami na review. |
+| `docs/agent-reports/TASK-03-REPORT.md` | Niniejszy zaktualizowany raport wykonawczy z opisem wszystkich wprowadzonych poprawek. |
 
 ---
 
@@ -63,8 +64,8 @@ Wszystkie 6 punktów zgłoszonych w recenzji zostało w pełni wdrożonych i zwe
 
 | Polecenie | Status PASSED/FAILED/NOT_RUN | Wynik |
 |---|---|---|
-| `uv run pytest -v` | **PASSED** | 61 passed w 3.76s (100% testów zielonych, brak internetu, brak płatnych API). |
-| `uv run pytest -v tests/test_schema_v2_design.py` | **PASSED** | 9 passed w 0.14s (triggery append-only, pointery, widok, symulacja potoku 75/75, bilans mapy 91/91). |
+| `uv run pytest -v` | **PASSED** | 61 passed w 4.60s (100% testów zielonych, brak internetu, brak płatnych API). |
+| `uv run pytest -v tests/test_schema_v2_design.py` | **PASSED** | 9 passed w 0.17s (triggery append-only, równe wersje, spójność widoku, symulacja potoku 75/75, pełna idempotencja 75/10/6). |
 
 ---
 
@@ -84,7 +85,7 @@ Wszystkie 6 punktów zgłoszonych w recenzji zostało w pełni wdrożonych i zwe
   "task_id": "TASK-03",
   "status": "READY_FOR_REVIEW",
   "branch": "design/03-data-contract",
-  "commit_sha": "dd5514de13a375f4d8a59960ffbb700fe85bc516",
+  "commit_sha": "PENDING_COMMIT_SHA",
   "pull_request": "https://github.com/maciejkubek-maker/polish-economy-agent/pull/3",
   "tests": {"status": "PASSED", "passed": 61, "failed": 0},
   "files_changed": [

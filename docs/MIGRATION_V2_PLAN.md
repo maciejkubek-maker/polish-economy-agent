@@ -162,5 +162,16 @@ sequenceDiagram
     Note over DEV,NEW: Dry-run zakończony. Raport gotowy do akceptacji.
 ```
 
-### Plan Wycofania (Rollback):
+### 5.1. Weryfikacja Idempotencji Pełnego Potoku (Full Pipeline Idempotency)
+Zgodnie z wymogami projektu, ponowne uruchomienie całego procesu migracji (dla wszystkich 75 wskaźników, 10 źródeł i 6 raportów) na tej samej bazie docelowej nie tworzy żadnych nowych rekordów ani powiązań. Zastosowanie klauzul `ON CONFLICT DO NOTHING` gwarantuje, że:
+- `source_registry`: niezmiennie 10 rekordów,
+- `reports`: niezmiennie 6 rekordów,
+- `source_evidence`: niezmiennie 75 rekordów,
+- `extracted_candidates`: niezmiennie 75 rekordów,
+- `quality_events`: niezmiennie 6 rekordów (4 dla rozbieżności PKB + 2 dla błędnej etykiety r/r w bezrobociu),
+- `legacy_migration_map`: niezmiennie 91 wierszy powiązań.
+
+Idempotencja jest w 100% testowalna i weryfikowana automatycznym testem `test_dry_run_migration_idempotency`.
+
+### 5.2. Plan Wycofania (Rollback):
 W przypadku jakichkolwiek problemów podczas testów migracji, baza docelowa jest kasowana. Plik `instance/economy_agent.db` nie ulega zmianie w żadnej fazie procesu.
