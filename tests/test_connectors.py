@@ -731,7 +731,7 @@ class TestGusConnector:
         # Rygor: status musi być NOT_VERIFIED!
         assert obs.status == "NOT_VERIFIED"
         assert obs.status != "VERIFIED"
-        assert obs.metadata["status_reason"] == "UNVERIFIED_VARIABLE_MAPPING"
+        assert obs.metadata["status_reason"] in ("UNVERIFIED_VARIABLE_MAPPING", "VARIABLE_NOT_FOUND_IN_OFFICIAL_GUS_API")
 
     def test_fetch_registered_unemployment_count_incomplete_mapping_raises_validation_error(self):
         """Przekazanie niekompletnego mapowania (np. bez częstotliwości) rzuca ValidationError."""
@@ -745,29 +745,90 @@ class TestGusConnector:
         with pytest.raises(ValidationError, match="Niekompletne mapowanie"):
             connector.fetch_registered_unemployment_count(verified_mapping=incomplete_mapping)
 
-    def test_fetch_registered_unemployment_count_complete_verified_mapping_succeeds_as_verified(self):
+    def test_fetch_registered_unemployment_count_fictitious_mapping_cannot_grant_verified(self):
         """
-        Przekazanie kompletnego, zweryfikowanego mapowania (ID, definicja, jednostka, częstotliwość)
-        rejestruje zmienną i zwraca obserwację ze statusem VERIFIED.
+        Kluczowy test bezpieczeństwa danych:
+        Kompletny, ale fikcyjny słownik metadanych przekazany przez wywołującego
+        NIE MOŻE nadać statusu VERIFIED.
+        Status musi pozostać NOT_VERIFIED (lub PENDING), dopóki nie zostanie zweryfikowany
+        w oficjalnych metadanych GUS API lub osobnym rejestrze zatwierdzonych mapowań.
         """
         connector = GusConnector(offline_mode=True)
         connector.register_fixture("by-variable/999999", GUS_BDL_COUNT_JSON)
 
-        complete_mapping = {
+        fictitious_mapping = {
             "var_id": 999999,
-            "name": "Bezrobotni zarejestrowani w urzędach pracy",
+            "name": "Fikcyjna liczba bezrobotnych zarejestrowanych",
             "unit_code": "THOUSAND_PERSONS",
             "frequency": "MONTHLY",
         }
 
-        evidence, observations = connector.fetch_registered_unemployment_count(verified_mapping=complete_mapping)
+        evidence, observations = connector.fetch_registered_unemployment_count(verified_mapping=fictitious_mapping)
+
+        assert len(observations) == 1
+        obs = observations[0]
+        assert obs.indicator_code == "PL_UNEMPLOYMENT_REGISTERED_COUNT"
+        # Rygor bezpieczeństwa danych: status NIE MOŻE być VERIFIED!
+        assert obs.status == "NOT_VERIFIED"
+        assert obs.status != "VERIFIED"
+        assert "VARIABLE_NOT_FOUND_IN_OFFICIAL_GUS_API" in obs.metadata["status_reason"]
+
+    def test_fetch_registered_unemployment_count_preapproved_registry_succeeds_as_verified(self):
+        """
+        Wskaźnik znajdujący się w osobnym, wcześniej zatwierdzonym rejestrze mapowań
+        (APPROVED_BDL_REGISTRY) uzyskuje status VERIFIED.
+        """
+        connector = GusConnector(offline_mode=True)
+        connector.register_fixture("by-variable/777777", GUS_BDL_COUNT_JSON)
+        connector.APPROVED_BDL_REGISTRY[777777] = {
+            "indicator_code": "PL_UNEMPLOYMENT_REGISTERED_COUNT",
+            "name": "Liczba bezrobotnych zarejestrowanych (zatwierdzony rejestr)",
+            "unit_code": "THOUSAND_PERSONS",
+            "frequency": "MONTHLY",
+            "status": "VERIFIED",
+        }
+
+        evidence, observations = connector.fetch_registered_unemployment_count(var_id=777777)
 
         assert len(observations) == 1
         obs = observations[0]
         assert obs.indicator_code == "PL_UNEMPLOYMENT_REGISTERED_COUNT"
         assert obs.status == "VERIFIED"
         assert obs.unit_code == "THOUSAND_PERSONS"
-        assert obs.metadata["status_reason"] == "VERIFIED_CATALOG"
+        assert obs.metadata["status_reason"] == "VERIFIED_PREAPPROVED_REGISTRY"
+
+    def test_fetch_registered_unemployment_count_verified_via_official_gus_api_metadata(self):
+        """
+        Gdy identyfikator, definicja, jednostka i częstotliwość zostaną potwierdzone
+        w rzeczywistych metadanych oficjalnego API GUS (GET /variables/{id}),
+        obserwacja uzyskuje status VERIFIED.
+        """
+        connector = GusConnector(offline_mode=True)
+        gus_var_meta = json.dumps({
+            "id": 888888,
+            "subjectId": "P2437",
+            "n1": "Liczba zarejestrowanych bezrobotnych",
+            "level": 3,
+            "measureUnitName": "tys. osób",
+        })
+        connector.register_fixture("variables/888888", gus_var_meta)
+        connector.register_fixture("by-variable/888888", GUS_BDL_COUNT_JSON)
+
+        valid_candidate_mapping = {
+            "var_id": 888888,
+            "name": "Liczba zarejestrowanych bezrobotnych",
+            "unit_code": "THOUSAND_PERSONS",
+            "frequency": "MONTHLY",
+        }
+
+        evidence, observations = connector.fetch_registered_unemployment_count(candidate_mapping=valid_candidate_mapping)
+
+        assert len(observations) == 1
+        obs = observations[0]
+        assert obs.indicator_code == "PL_UNEMPLOYMENT_REGISTERED_COUNT"
+        assert obs.status == "VERIFIED"
+        assert obs.unit_code == "THOUSAND_PERSONS"
+        assert obs.metadata["status_reason"] == "VERIFIED_OFFICIAL_API_METADATA"
 
     def test_fetch_cpi_dbw_resolves_exact_month_from_period_metadata(self):
         """

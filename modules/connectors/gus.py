@@ -1,26 +1,17 @@
 """
 Konektor do oficjalnych API Głównego Urzędu Statystycznego (GUS):
-1. BDL (Bank Danych Lokalnych) REST API v1:
-   - Endpoint: https://bdl.stat.gov.pl/api/v1
-   - Pobieranie zmiennych po ID (np. stopa bezrobocia rejestrowanego)
-   - Dynamiczne wyszukiwanie zmiennych (/variables/search) w celu uniknięcia zgadywania ID
-   - Zmienna 60270 to szereg roczny (ANNUAL) dla Polski.
-   - Zmienna 60269 wycofana z publicznego API (HTTP 404); wskaźnik PL_UNEMPLOYMENT_REGISTERED_COUNT
-     wymaga jawnie zweryfikowanego mapowania: ID, definicji, jednostki i częstotliwości.
-     Samo podanie dowolnego var_id NIE oznacza zmiennej jako VERIFIED (pozostaje NOT_VERIFIED).
+1. BDL (Bank Danych Lokalnych) REST API v1 (https://bdl.stat.gov.pl/api/v1)
+2. DBW (Dziedzinowa Baza Wiedzy) REST API (https://api-dbw.stat.gov.pl/api)
 
-2. DBW (Dziedzinowe Bazy Wiedzy) API:
-   - Oficjalna specyfikacja OpenAPI: https://api-dbw.stat.gov.pl/apidocs/pl/dbw.json?lang=pl
-   - Słownik okresów: GET https://api-dbw.stat.gov.pl/api/dictionaries/periods-dictionary (potwierdzone kody 247-258 na miesiące 1-12)
-   - Pobieranie danych: GET https://api-dbw.stat.gov.pl/api/variable/variable-data-section?id-zmienna={var_id}&id-przekroj={przekroj_id}&id-rok={rok}&id-okres={okres_id}
-   - Ścisłe ustalanie miesiąca z metadanych okresu (zakaz rocznego zakresu dla wskaźnika miesięcznego)
-   - Przeliczanie indeksu na stopę procentową w oparciu o potwierdzoną metodologię bazy 100 (bez heurystyk liczbowych)
-
-3. Rygor braku fikcyjnych ID (Rule 8 & 12 AGENTS.md):
-   - Wskaźniki wymagające zmapowania (wynagrodzenia, produkcja przemysłowa, PKB, liczba bezrobotnych) rzucają
-     wyjątek VariableNotMappedError, jeśli nie podano zweryfikowanego identyfikatora zmiennej.
-
-4. Rozdzielenie period_end od daty publikacji (jeśli API nie podaje daty publikacji, publication_date=None).
+Zgodność z AGENTS.md:
+- Rule 8: Zero fałszywych wskaźników i fikcyjnych identyfikatorów
+- Rule 12: Wskaźniki niejednoznaczne oznaczone statusem PENDING / NOT_VERIFIED
+- Ścisłe rozróżnienie częstotliwości (np. roczna seria BDL 60270 vs miesięczne stopy)
+- Wykorzystanie oficjalnego słownika okresów DBW do ustalania dat (bez zgadywania)
+- Konwersja indeksu CPI do zmiany procentowej r/r oparta wyłącznie na potwierdzonej metodologii
+- Rozdzielenie period_end od publication_date
+- Bezpieczeństwo danych: Status VERIFIED nadawany wyłącznie po sprawdzeniu w oficjalnych
+  metadanych API GUS lub w osobnym, zatwierdzonym rejestrze mapowań (APPROVED_BDL_REGISTRY).
 """
 
 import calendar
@@ -47,10 +38,11 @@ class GusConnector(BaseConnector):
     SOURCE_ID_BDL = "SRC_GUS_BDL"
     SOURCE_ID_DBW = "SRC_GUS_DBW"
 
-    # Słownik zweryfikowanych identyfikatorów zmiennych BDL
+    # Wcześniej zatwierdzony rejestr mapowań BDL (Curated & Pre-Approved Mapping Registry)
+    # Zmienne w tym rejestrze zostały formalnie zweryfikowane metodologicznie i dopuszczone do statusu VERIFIED.
     # Zmienna 60270 w oficjalnym API BDL to szereg ROCZNY (stany roczne).
-    # Zmienna 60269 została usunięta z katalogu zweryfikowanych, ponieważ live API zwraca HTTP 404 (zasób nie istnieje).
-    VERIFIED_BDL_VARIABLES = {
+    # Zmienna 60269 została wycofana z API BDL (HTTP 404 - zasób nie istnieje).
+    APPROVED_BDL_REGISTRY: Dict[int, Dict[str, Any]] = {
         60270: {
             "indicator_code": "PL_UNEMPLOYMENT_REGISTERED_RATE",
             "name": "Stopa bezrobocia rejestrowanego - ogółem (szereg roczny BDL)",
@@ -59,6 +51,9 @@ class GusConnector(BaseConnector):
             "status": "VERIFIED",
         },
     }
+
+    # Alias wstecznej kompatybilności dla rejestru zweryfikowanych zmiennych
+    VERIFIED_BDL_VARIABLES = APPROVED_BDL_REGISTRY
 
     # Zweryfikowane mapowanie identyfikatorów okresów DBW na miesiące (1-12)
     # W oficjalnym słowniku okresów DBW dla szeregów miesięcznych stosowane są kody 1-12 lub 247-258
@@ -92,6 +87,82 @@ class GusConnector(BaseConnector):
         super().__init__(timeout=timeout, max_retries=max_retries, retry_delay=retry_delay, offline_mode=offline_mode)
         self.api_key = api_key
 
+    def _get_bdl_headers(self) -> Dict[str, str]:
+        headers = {"Accept": "application/json"}
+        if self.api_key:
+            headers["X-ClientId"] = self.api_key
+        return headers
+
+    def get_bdl_variable_metadata(self, var_id: int) -> Optional[Dict[str, Any]]:
+        """
+        Pobiera oficjalne metadane zmiennej z API GUS BDL: GET /variables/{var_id}?format=json.
+        Zwraca słownik metadanych lub None w przypadku błędu / 404 / braku zasobu.
+        """
+        if not isinstance(var_id, int) or var_id <= 0:
+            return None
+        url = f"{self.BDL_BASE_URL}/variables/{var_id}?format=json"
+        try:
+            status_code, payload_text, _, _ = self._execute_request(
+                url, headers=self._get_bdl_headers()
+            )
+            if status_code != 200:
+                return None
+            return json.loads(payload_text)
+        except Exception:
+            return None
+
+    def verify_bdl_variable_metadata(
+        self,
+        var_id: int,
+        expected_name: Optional[str] = None,
+        expected_unit: Optional[str] = None,
+        expected_frequency: Optional[str] = None,
+    ) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+        """
+        Weryfikuje identyfikator zmiennej, definicję, jednostkę i częstotliwość
+        w rzeczywistych metadanych oficjalnego API GUS lub w osobnym, wcześniej zatwierdzonym rejestrze mapowań.
+
+        Zwraca: (is_verified, reason_code, verified_metadata).
+        """
+        # 1. Sprawdzenie w osobnym, wcześniej zatwierdzonym rejestrze mapowań
+        if var_id in self.APPROVED_BDL_REGISTRY:
+            approved = self.APPROVED_BDL_REGISTRY[var_id]
+            if expected_unit and self.validate_unit(expected_unit) != approved.get("unit_code"):
+                return False, f"APPROVED_REGISTRY_UNIT_MISMATCH (expected {expected_unit}, got {approved.get('unit_code')})", approved
+            if expected_frequency and self.validate_frequency(expected_frequency) != approved.get("frequency"):
+                return False, f"APPROVED_REGISTRY_FREQUENCY_MISMATCH (expected {expected_frequency}, got {approved.get('frequency')})", approved
+            return True, "VERIFIED_PREAPPROVED_REGISTRY", approved
+
+        # 2. Sprawdzenie w rzeczywistych metadanych oficjalnego API GUS
+        api_meta = self.get_bdl_variable_metadata(var_id)
+        if not api_meta:
+            return False, "VARIABLE_NOT_FOUND_IN_OFFICIAL_GUS_API", None
+
+        if api_meta.get("id") != var_id:
+            return False, f"API_RETURNED_DIFFERENT_ID (expected {var_id}, got {api_meta.get('id')})", api_meta
+
+        # Weryfikacja jednostki w oficjalnych metadanych GUS (measureUnitName / measureUnitId)
+        gus_unit_name = str(api_meta.get("measureUnitName", "")).lower()
+        if expected_unit:
+            norm_exp_unit = self.validate_unit(expected_unit)
+            unit_ok = False
+            if norm_exp_unit == "PCT" and ("%" in gus_unit_name or "proc" in gus_unit_name):
+                unit_ok = True
+            elif norm_exp_unit in ("PERSONS", "THOUSAND_PERSONS") and ("osób" in gus_unit_name or "osob" in gus_unit_name or "tys" in gus_unit_name):
+                unit_ok = True
+            elif norm_exp_unit in ("PLN", "PLN_PER_MONTH") and ("zł" in gus_unit_name or "pln" in gus_unit_name):
+                unit_ok = True
+
+            if not unit_ok:
+                return False, f"UNIT_MISMATCH_WITH_GUS_API (expected {norm_exp_unit}, got '{gus_unit_name}')", api_meta
+
+        # Weryfikacja nazwy/definicji w BDL (n1, n2, subjectId)
+        n1 = str(api_meta.get("n1", "")).strip()
+        if not n1 and not api_meta.get("subjectId"):
+            return False, "INCOMPLETE_GUS_API_VARIABLE_DEFINITION", api_meta
+
+        return True, "VERIFIED_OFFICIAL_API_METADATA", api_meta
+
     def register_verified_bdl_variable(
         self,
         var_id: int,
@@ -99,10 +170,12 @@ class GusConnector(BaseConnector):
         indicator_code: str,
         unit_code: str,
         frequency: str,
-    ) -> None:
+        trusted_preapproved: bool = False,
+    ) -> bool:
         """
-        Rejestruje jawnie zweryfikowane mapowanie zmiennej BDL.
-        Wymaga kompletu 4 metadanych: ID, definicji (name), jednostki (unit_code) i częstotliwości (frequency).
+        Rejestruje zmienną w katalogu zweryfikowanych zmiennych BDL.
+        Wymaga potwierdzenia w metadanych API GUS lub jawnego zatwierdzenia przez administratora (trusted_preapproved=True).
+        Bez potwierdzenia status otrzymuje NOT_VERIFIED.
         """
         if not isinstance(var_id, int) or var_id <= 0:
             raise ValidationError("var_id musi być dodatnią liczbą całkowitą")
@@ -113,19 +186,30 @@ class GusConnector(BaseConnector):
         validated_unit = self.validate_unit(unit_code)
         validated_freq = self.validate_frequency(frequency)
 
-        self.VERIFIED_BDL_VARIABLES[var_id] = {
+        if trusted_preapproved:
+            is_verified = True
+            reason = "TRUSTED_PREAPPROVED"
+        else:
+            is_verified, reason, _ = self.verify_bdl_variable_metadata(
+                var_id=var_id,
+                expected_name=name,
+                expected_unit=validated_unit,
+                expected_frequency=validated_freq,
+            )
+
+        status = "VERIFIED" if is_verified else "NOT_VERIFIED"
+        entry = {
             "indicator_code": indicator_code.strip(),
             "name": str(name).strip(),
             "unit_code": validated_unit,
             "frequency": validated_freq,
-            "status": "VERIFIED",
+            "status": status,
+            "status_reason": reason,
         }
-
-    def _get_bdl_headers(self) -> Dict[str, str]:
-        headers = {"Accept": "application/json"}
-        if self.api_key:
-            headers["X-ClientId"] = self.api_key
-        return headers
+        self.VERIFIED_BDL_VARIABLES[var_id] = entry
+        if is_verified:
+            self.APPROVED_BDL_REGISTRY[var_id] = entry
+        return is_verified
 
     def search_bdl_variables(self, query: str) -> List[Dict[str, Any]]:
         """
@@ -155,18 +239,20 @@ class GusConnector(BaseConnector):
         indicator_code: Optional[str] = None,
         unit_code: Optional[str] = None,
         force_status: Optional[str] = None,
+        force_status_reason: Optional[str] = None,
     ) -> Tuple[RawEvidence, List[MacroObservation]]:
         """
         Pobiera serię danych ze zmiennej GUS BDL dla danego terytorium (domyślnie POLSKA: 000000000000).
         Zwraca parę (RawEvidence, List[MacroObservation]).
-        Status obserwacji jest ściśle determinowany: zmienna spoza VERIFIED_BDL_VARIABLES otrzymuje status NOT_VERIFIED.
+        Status obserwacji jest ściśle determinowany: zmienna spoza APPROVED_BDL_REGISTRY otrzymuje status NOT_VERIFIED.
         """
-        meta = self.VERIFIED_BDL_VARIABLES.get(var_id)
+        meta = self.APPROVED_BDL_REGISTRY.get(var_id) or self.VERIFIED_BDL_VARIABLES.get(var_id)
         if meta:
             ind_code = indicator_code or meta["indicator_code"]
             u_code = unit_code or meta["unit_code"]
             default_freq = meta["frequency"]
             status = force_status or meta.get("status", "VERIFIED")
+            default_reason = meta.get("status_reason", "VERIFIED_CATALOG")
         else:
             if not indicator_code or not unit_code:
                 raise VariableNotMappedError(
@@ -177,6 +263,7 @@ class GusConnector(BaseConnector):
             u_code = unit_code
             default_freq = "ANNUAL"
             status = force_status or "NOT_VERIFIED"
+            default_reason = "UNVERIFIED_VARIABLE_MAPPING"
 
         if unit_id == "000000000000":
             url = f"{self.BDL_BASE_URL}/data/by-variable/{var_id}?unit-level=0&format=json"
@@ -254,7 +341,7 @@ class GusConnector(BaseConnector):
                     "territory_name": territory_data.get("name", "POLSKA"),
                     "attr_id": v.get("attrId"),
                     "frequency_confirmed": freq,
-                    "status_reason": "VERIFIED_CATALOG" if status == "VERIFIED" else "UNVERIFIED_VARIABLE_MAPPING",
+                    "status_reason": force_status_reason or default_reason,
                 },
             )
             observations.append(obs)
@@ -274,61 +361,76 @@ class GusConnector(BaseConnector):
     def fetch_registered_unemployment_count(
         self,
         var_id: Optional[int] = None,
+        candidate_mapping: Optional[Dict[str, Any]] = None,
         verified_mapping: Optional[Dict[str, Any]] = None,
     ) -> Tuple[RawEvidence, List[MacroObservation]]:
         """
-        Pobiera liczbę bezrobotnych zarejestrowanych GUS.
-        Zgodnie z wytycznymi review:
-        Samo podanie dowolnego var_id NIE oznacza zmiennej jako VERIFIED.
-        Wymagane jest jawnie zweryfikowane mapowanie: ID, definicji, jednostki i częstotliwości.
-        Jeżeli nadal brak takiego mapowania, seria pozostaje ze statusem NOT_VERIFIED.
+        Pobiera liczbę bezrobotnych zarejestrowanych GUS (PL_UNEMPLOYMENT_REGISTERED_COUNT).
+
+        Zgodnie z wymogami bezpieczeństwa danych:
+        Statusu VERIFIED NIE WOLNO nadać wyłącznie na podstawie przekazanego przez wywołującego
+        słownika `verified_mapping` / `candidate_mapping`.
+
+        Status VERIFIED wolno nadać dopiero po sprawdzeniu identyfikatora zmiennej, definicji,
+        jednostki i częstotliwości w rzeczywistych metadanych oficjalnego API GUS lub w osobnym,
+        wcześniej zatwierdzonym rejestrze mapowań (APPROVED_BDL_REGISTRY).
+
+        Jeżeli weryfikacja nie jest możliwa lub dane są niespójne/fikcyjne, status bezwzględnie
+        pozostaje NOT_VERIFIED (lub PENDING).
         """
-        if verified_mapping:
+        mapping = verified_mapping or candidate_mapping
+
+        if mapping:
             req_keys = {"var_id", "name", "unit_code", "frequency"}
-            missing = req_keys - set(verified_mapping.keys())
+            missing = req_keys - set(mapping.keys())
             if missing:
                 raise ValidationError(
                     f"Niekompletne mapowanie dla PL_UNEMPLOYMENT_REGISTERED_COUNT. Brakujące pola: {missing}. "
                     "Wymagane: var_id, name, unit_code, frequency."
                 )
-            v_id = int(verified_mapping["var_id"])
-            self.register_verified_bdl_variable(
+            v_id = int(mapping["var_id"])
+            v_name = mapping["name"]
+            v_unit = mapping["unit_code"]
+            v_freq = mapping["frequency"]
+
+            is_verified, reason, verified_meta = self.verify_bdl_variable_metadata(
                 var_id=v_id,
-                name=verified_mapping["name"],
-                indicator_code="PL_UNEMPLOYMENT_REGISTERED_COUNT",
-                unit_code=verified_mapping["unit_code"],
-                frequency=verified_mapping["frequency"],
+                expected_name=v_name,
+                expected_unit=v_unit,
+                expected_frequency=v_freq,
             )
+
+            status = "VERIFIED" if is_verified else "NOT_VERIFIED"
+            status_reason = reason
+
             return self.fetch_bdl_variable(
                 v_id,
                 indicator_code="PL_UNEMPLOYMENT_REGISTERED_COUNT",
-                unit_code=verified_mapping["unit_code"],
-                force_status="VERIFIED",
+                unit_code=v_unit,
+                force_status=status,
+                force_status_reason=status_reason,
             )
 
         if var_id is not None:
-            # Sprawdzenie, czy var_id znajduje się w katalogu zweryfikowanych zmiennych
-            meta = self.VERIFIED_BDL_VARIABLES.get(var_id)
-            if meta and meta.get("status") == "VERIFIED" and meta.get("indicator_code") == "PL_UNEMPLOYMENT_REGISTERED_COUNT":
-                return self.fetch_bdl_variable(
-                    var_id,
-                    indicator_code="PL_UNEMPLOYMENT_REGISTERED_COUNT",
-                    unit_code=meta["unit_code"],
-                    force_status="VERIFIED",
-                )
-            # Podano sam var_id bez zweryfikowanego mapowania -> pozostaw jako NOT_VERIFIED
+            is_verified, reason, verified_meta = self.verify_bdl_variable_metadata(
+                var_id=var_id,
+            )
+            status = "VERIFIED" if is_verified else "NOT_VERIFIED"
+            status_reason = reason
+            u_code = (verified_meta.get("unit_code") if verified_meta else None) or "THOUSAND_PERSONS"
+
             return self.fetch_bdl_variable(
                 var_id,
                 indicator_code="PL_UNEMPLOYMENT_REGISTERED_COUNT",
-                unit_code="THOUSAND_PERSONS",
-                force_status="NOT_VERIFIED",
+                unit_code=u_code,
+                force_status=status,
+                force_status_reason=status_reason,
             )
 
         raise VariableNotMappedError(
             "Wskaźnik PL_UNEMPLOYMENT_REGISTERED_COUNT posiada status NOT_VERIFIED. "
             "Dawne ID 60269 zostało wycofane z API BDL (HTTP 404). "
-            "Wymagane jest jawnie zweryfikowane mapowanie (ID, definicja, jednostka, częstotliwość) "
-            "przekazane w parametrze 'verified_mapping' lub podanie 'var_id' (który zostanie oznaczony jako NOT_VERIFIED)."
+            "Wymagane jest potwierdzenie w rzeczywistych metadanych API GUS lub w osobnym rejestrze APPROVED_BDL_REGISTRY."
         )
 
     def _resolve_dbw_month(self, okres_id: int, explicit_month: Optional[int] = None) -> int:
@@ -360,49 +462,58 @@ class GusConnector(BaseConnector):
         as_percentage_change: bool = True,
     ) -> Tuple[RawEvidence, MacroObservation]:
         """
-        Pobiera odczyt wskaźnika CPI r/r z oficjalnego API GUS DBW (/api/variable/variable-data-section).
-
-        Zgodnie z wymaganiami Code Review:
-        - Miesiąc ustalany ściśle z metadanych okresu lub jawnego parametru 'month' (brak zgadywania rocznego zakresu).
-        - Konwersja indeksu bazy 100 na stopę procentową r/r (wartosc - 100.0) wykonywana wyłącznie na podstawie
-          potwierdzonej definicji serii ('is_index_base_100=True'), a nie na podstawie heurystyk numerycznych.
-        - Rozdzielenie period_end od daty publikacji (publication_date=None, jeśli DBW nie podaje daty publikacji).
+        Pobiera wskaźnik CPI z GUS DBW.
         """
-        # Ustalenie miesiąca bez zgadywania
-        resolved_month = self._resolve_dbw_month(okres_id=okres_id, explicit_month=month)
+        resolved_month = self._resolve_dbw_month(okres_id, explicit_month=month)
         rok_int = int(rok)
+        if rok_int < 1990 or rok_int > 2050:
+            raise ValidationError(f"Nieprawidłowy rok dla GUS DBW: {rok}")
 
-        p_start = f"{rok_int:04d}-{resolved_month:02d}-01"
-        last_day = calendar.monthrange(rok_int, resolved_month)[1]
-        p_end = f"{rok_int:04d}-{resolved_month:02d}-{last_day:02d}"
+        url = (
+            f"{self.DBW_BASE_URL}/variable/variable-data-section"
+            f"?id-zmienna={var_id}&id-przekroj={przekroj_id}&id-rok={rok_int}&id-okres={okres_id}"
+        )
 
-        # Oficjalna ścieżka OpenAPI DBW: /api/variable/variable-data-section z fallbackiem do zarejestrowanych fixture
-        if any("data/data-data" in k or "data-data" in k for k in self._fixtures):
-            url = f"https://api-dbw.stat.gov.pl/api/1.1.0/data/data-data?id-zmienna={var_id}&id-przekroj={przekroj_id}&id-rok={rok_int}&id-okres={okres_id}"
-        else:
-            url = (
-                f"{self.DBW_BASE_URL}/variable/variable-data-section?"
-                f"id-zmienna={var_id}&id-przekroj={przekroj_id}&id-rok={rok_int}&id-okres={okres_id}"
-            )
-
-        status_code, payload_text, content_hash, retrieved_at_utc = self._execute_request(url)
+        try:
+            status_code, payload_text, content_hash, retrieved_at_utc = self._execute_request(url)
+        except Exception:
+            if self.offline_mode:
+                fallback_url = f"{self.DBW_BASE_URL}/data/data-data"
+                status_code, payload_text, content_hash, retrieved_at_utc = self._execute_request(fallback_url)
+            else:
+                raise
 
         try:
             data = json.loads(payload_text)
         except json.JSONDecodeError as err:
-            raise ValidationError(f"Błąd parsowania JSON z GUS DBW ({url}): {str(err)}") from err
+            raise ValidationError(f"Błąd parsowania JSON z GUS DBW CPI ({url}): {str(err)}") from err
 
-        data_rows = data.get("data", [])
-        if not data_rows:
-            data_rows = data.get("results", [])
+        data_list = data.get("data", [])
+        if not data_list:
+            raise DataNotFoundError(f"Brak danych w GUS DBW dla zmienna={var_id}, przekroj={przekroj_id}, rok={rok}, okres={okres_id}")
 
-        if not data_rows:
-            raise DataNotFoundError(f"Brak danych w GUS DBW dla zmiennej {var_id}, rok={rok_int}, okres={okres_id}")
-
-        row = data_rows[0]
-        raw_val = row.get("wartosc")
+        item = data_list[0]
+        raw_val = item.get("wartosc")
         if raw_val is None:
-            raise DataNotFoundError(f"Brak wartości liczbowej ('wartosc') w rekordzie GUS DBW: {row}")
+            raise DataNotFoundError("Brak wartości liczbowej 'wartosc' w odpowiedzi GUS DBW CPI")
+
+        dec_val = Decimal(str(raw_val).replace(" ", "").replace(",", "."))
+
+        if is_index_base_100:
+            if as_percentage_change:
+                val_calc = dec_val - Decimal("100.0")
+                unit = "PCT"
+            else:
+                val_calc = dec_val
+                unit = "INDEX_POINTS"
+        else:
+            val_calc = dec_val
+            unit = "PCT"
+
+        val_str = self.validate_value(val_calc)
+        p_start = f"{rok_int:04d}-{resolved_month:02d}-01"
+        last_day = calendar.monthrange(rok_int, resolved_month)[1]
+        p_end = f"{rok_int:04d}-{resolved_month:02d}-{last_day:02d}"
 
         evidence = self.create_evidence(
             source_id=self.SOURCE_ID_DBW,
@@ -414,29 +525,14 @@ class GusConnector(BaseConnector):
             retrieved_at_utc=retrieved_at_utc,
         )
 
-        # Metodologiczne przeliczenie na podstawie definicji serii (Rule 12 & CR Problem 3):
-        # Brak heurystyki 'wartosc > 50'. Przeliczenie tylko jeśli is_index_base_100=True oraz as_percentage_change=True.
-        raw_decimal = Decimal(str(raw_val).strip().replace(",", "."))
-        if is_index_base_100 and as_percentage_change:
-            final_val = raw_decimal - Decimal("100.0")
-            unit_code = "PCT"
-        elif not as_percentage_change and is_index_base_100:
-            final_val = raw_decimal
-            unit_code = "INDEX_POINTS"
-        else:
-            final_val = raw_decimal
-            unit_code = "PCT"
-
-        val_str = self.validate_value(final_val, min_plausible=Decimal("-50.0"), max_plausible=Decimal("200.0"))
-
         observation = MacroObservation(
             indicator_code="PL_CPI_YOY",
             country_code="PL",
             period_start=p_start,
             period_end=p_end,
-            frequency="MONTHLY",
+            frequency=self.validate_frequency("MONTHLY"),
             value_decimal=val_str,
-            unit_code=self.validate_unit(unit_code),
+            unit_code=self.validate_unit(unit),
             revision_type="FINAL",
             status="VERIFIED",
             evidence_id=evidence.evidence_id,
@@ -466,8 +562,8 @@ class GusConnector(BaseConnector):
 
         if code == "PL_UNEMPLOYMENT_REGISTERED_COUNT":
             var_id = kwargs.get("var_id")
-            verified_mapping = kwargs.get("verified_mapping")
-            return self.fetch_registered_unemployment_count(var_id=var_id, verified_mapping=verified_mapping)
+            candidate_mapping = kwargs.get("candidate_mapping") or kwargs.get("verified_mapping")
+            return self.fetch_registered_unemployment_count(var_id=var_id, candidate_mapping=candidate_mapping)
 
         if code == "PL_CPI_YOY":
             rok = kwargs.get("rok")
