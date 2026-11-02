@@ -220,3 +220,39 @@ TASK-06 został w pełni zrealizowany. Platforma danych v2 jest gotowa do dział
 - `PROPOSED`: code review i decyzja właściciela dotycząca PR #4.
 - `NOT_RUN`: testy live i płatne API — celowo, zgodnie z zakresem finalnego audytu offline.
 - TASK-07 pozostaje poza zakresem.
+
+---
+
+## 7. Dwujęzyczny README portfolio
+
+**Data aktualizacji:** 2026-11-02<br>
+**Status:** `DONE`<br>
+**Commit README:** `ba6ffe86962e9cafc8d8365f246881826a584912`<br>
+**PR:** https://github.com/maciejkubek-maker/polish-economy-agent/pull/4
+
+### DONE
+
+- Przebudowano `README.md` na pełną wersję dwujęzyczną: angielski jako pierwszy, polski jako drugi, z nawigacją na początku.
+- Opisano wyłącznie funkcje i technologie obecne w kodzie: Python, Flask, SQLite v2, NBP, GUS, Eurostat, Tavily, LangChain, Gemini, OpenAI GPT, pytest i uv.
+- Dodano dwa zgodne z implementacją diagramy Mermaid oraz faktycznie wyrenderowano je do SVG w zewnętrznym rendererze: 23 852 B (EN) i 23 568 B (PL).
+- Zweryfikowano kotwice, domknięcie bloków kodu, link lokalny do `docs/INDEX.md` oraz brak niedziałających odnośników do obrazów.
+- Dodano dokładnie dwa miejsca na przyszłe zrzuty ekranu, bez linków do nieistniejących plików.
+- Zaktualizowano wynik audytu do 130 testów i wyraźnie oznaczono fixture'y offline jako przykładowe, nieaktualne dane demonstracyjne.
+- Nie zmieniono kodu aplikacji, nie dodano funkcji ani wykresów i nie rozpoczęto TASK-07.
+
+### Testy i kontrole
+
+| Polecenie / kontrola | Status | Wynik |
+|---|---|---|
+| `uv sync --group dev` | `PASSED` | 72 pakiety rozwiązane, 70 sprawdzonych. |
+| `uv run pytest -q` | `PASSED` | 130/130 w 6,36 s. |
+| Render Mermaid EN/PL | `PASSED` | Oba diagramy wyrenderowane do poprawnego SVG. |
+| Linki i struktura Markdown | `PASSED` | Brak brakujących linków lokalnych; fence'y i kotwice poprawne. |
+| Integralność `report.html` | `PASSED` | SHA-256 `e2ff86aa8d7031af94b4836ea6b4f35cade73c1321db38f73323b98a40d16ab3`. |
+| Integralność `instance/economy_agent.db` | `PASSED` | SHA-256 `e6c5f318ffe1eceeb34191a7a74ec9f7f7de6069c4f298850792734277ecde3b`. |
+
+### PROPOSED / NOT_RUN
+
+- `PROPOSED`: przegląd treści README przez właściciela w PR #4.
+- `NOT_RUN`: tryb live i płatne API — poza zakresem zmiany dokumentacyjnej.
+- Merge nie został wykonany.
