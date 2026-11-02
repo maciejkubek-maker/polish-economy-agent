@@ -463,7 +463,7 @@ class EconomyEvaluator:
       if code in obs_by_code:
         o = obs_by_code[code]
         c_num = obs_citation_map.get(code)
-        ref = f" <sup style='color:#2980b9; font-weight:bold;'>[{c_num}]</sup>" if c_num else ""
+        ref = f" [{c_num}]" if c_num else ""
         return f"{o['value_decimal']}{o.get('unit_symbol', '')}{ref}", o['period_start']
       return default, ""
 
@@ -494,7 +494,7 @@ class EconomyEvaluator:
     if citations:
       for c in citations:
         if not c["is_official"]:
-          media_refs.append(f"<sup style='color:#2980b9; font-weight:bold;'>[{c['idx']}]</sup>")
+          media_refs.append(f" [{c['idx']}]")
     m_ref_1 = media_refs[0] if len(media_refs) > 0 else ""
     m_ref_2 = media_refs[1] if len(media_refs) > 1 else ""
 
@@ -554,8 +554,7 @@ class EconomyEvaluator:
     for c in citations:
       prefix = "Oficjalne API / Rejestr" if c["is_official"] else "Analiza / Komentarz medialny"
       sources_lines.append(
-          f"[{c['idx']}] {c['institution']}, {c['indicator_name']}, okres: {c['period']} [{prefix}], "
-          f"<a href=\"{c['url']}\" target=\"_blank\" rel=\"noopener noreferrer\" style=\"color: #3498db; text-decoration: underline;\">{c['url']}</a>"
+          f"[{c['idx']}] {c['institution']}, {c['indicator_name']}, okres: {c['period']} [{prefix}], {c['url']}"
       )
 
     sec6 = "\n".join(sources_lines)
