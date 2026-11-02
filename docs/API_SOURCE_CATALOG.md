@@ -66,7 +66,7 @@ Poniższa tabela stanowi bazę dla tabeli `indicator_catalog` w schemacie v2:
       {
         "no": "212/A/NBP/2026",
         "effectiveDate": "2026-10-30",
-        "mid": 4.3450
+        "mid": 4.3955
       }
     ]
   }

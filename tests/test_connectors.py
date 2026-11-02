@@ -59,7 +59,7 @@ NBP_EUR_JSON = """
     {
       "no": "212/A/NBP/2026",
       "effectiveDate": "2026-10-30",
-      "mid": 4.3450
+      "mid": 4.3955
     }
   ]
 }
@@ -74,7 +74,7 @@ NBP_USD_JSON = """
     {
       "no": "212/A/NBP/2026",
       "effectiveDate": "2026-10-30",
-      "mid": 4.0215
+      "mid": 3.9251
     }
   ]
 }
@@ -391,7 +391,7 @@ class TestNbpConnector:
         assert obs.period_start == "2026-10-30"
         assert obs.period_end == "2026-10-30"
         assert obs.frequency == "DAILY"
-        assert obs.value_decimal == "4.345"
+        assert obs.value_decimal == "4.3955"
         assert obs.unit_code == "EUR_PLN"
         assert obs.revision_type == "FINAL"
         assert obs.status == "VERIFIED"
@@ -405,7 +405,7 @@ class TestNbpConnector:
         evidence, obs = connector.fetch_exchange_rate("usd")
 
         assert obs.indicator_code == "PL_FX_USD_PLN"
-        assert obs.value_decimal == "4.0215"
+        assert obs.value_decimal == "3.9251"
         assert obs.unit_code == "USD_PLN"
 
     def test_fetch_reference_rate_xml_success(self):

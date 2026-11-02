@@ -146,8 +146,8 @@ class WebSearchService:
         """
         use_offline = self.offline_mode if offline_mode is None else offline_mode
 
-        if use_offline or self.client is None:
-            # Deterministyczny, bezpieczny tryb offline
+        if use_offline:
+            # Deterministyczny, jawnie wybrany tryb offline.
             results = []
             now_utc = datetime.now(timezone.utc).isoformat()
             for item in OFFLINE_ECONOMIC_NEWS:
@@ -155,6 +155,10 @@ class WebSearchService:
                 entry["retrieved_at_utc"] = now_utc
                 results.append(entry)
             return results
+
+        if self.client is None:
+            # Tryb live nie może cicho podstawiać treści demonstracyjnych.
+            return []
 
         all_results: List[Dict[str, Any]] = []
         seen_urls = set()
@@ -189,14 +193,6 @@ class WebSearchService:
                         })
             except Exception as err:
                 print(f"[Tavily Warning] Błąd zapytania dla tematu '{topic}' ('{query}'): {err}")
-
-        # Jeśli wyszukiwanie live zwróciło puste wyniki z powodu limitu/błędu, bezpieczny fallback do fixture
-        if not all_results:
-            now_utc = datetime.now(timezone.utc).isoformat()
-            for item in OFFLINE_ECONOMIC_NEWS:
-                entry = dict(item)
-                entry["retrieved_at_utc"] = now_utc
-                all_results.append(entry)
 
         return all_results
 

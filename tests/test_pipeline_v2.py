@@ -16,6 +16,7 @@ Weryfikuje:
 
 import hashlib
 import os
+import re
 import sqlite3
 import pytest
 
@@ -66,6 +67,8 @@ def test_pipeline_v2_full_run_offline(temp_v2_db, tmp_path):
     assert result.search_news_count > 0
     assert result.report_id is not None
     assert result.report_id.startswith("REP_V2_")
+    assert "demo offline" in result.report_markdown
+    assert "dane przykładowe, nie dane bieżące" in result.report_markdown
 
     # 2. Weryfikacja bazy SQLite v2
     assert temp_v2_db.count_table("ingestion_runs") >= 1
@@ -88,8 +91,8 @@ def test_pipeline_v2_full_run_offline(temp_v2_db, tmp_path):
     assert "## 6. Źródła danych i Metodologia" in md
 
     # 4. Weryfikacja liczb makroekonomicznych w raporcie
-    assert "4.345" in md  # EUR/PLN
-    assert "4.0215" in md  # USD/PLN
+    assert "4.3955" in md  # EUR/PLN, tabela A NBP 212/A/NBP/2026
+    assert "3.9251" in md  # USD/PLN, tabela A NBP 212/A/NBP/2026
     assert "5.75%" in md  # Stopa referencyjna NBP
     assert "4.0%" in md or "4.0" in md  # HICP
     assert "2.9%" in md  # Bezrobocie zharmonizowane
@@ -104,6 +107,10 @@ def test_pipeline_v2_full_run_offline(temp_v2_db, tmp_path):
     assert "Narodowy Bank Polski" in md or "NBP" in md
     assert "GUS" in md
     assert "Eurostat" in md
+    assert "https://api.nbp.pl" in md
+    assert "https://api-dbw.stat.gov.pl" in md
+    citation_numbers = [int(value) for value in re.findall(r"\[(\d+)\]", md)]
+    assert max(citation_numbers) <= result.observations_count + result.search_news_count
 
     # 6. Weryfikacja pliku HTML na dysku
     assert report_html_file.exists()
@@ -303,6 +310,139 @@ def test_tavily_search_offline_results_stored_as_evidence(temp_v2_db):
     assert snippets >= len(news)
 
 
+def test_live_search_never_falls_back_to_offline_fixtures(monkeypatch):
+    """Brak klienta Tavily w live oznacza brak kontekstu, nie dane demo."""
+    monkeypatch.setattr(config, "OFFLINE_MODE", False)
+    service = WebSearchService(api_key="mock-live-key", offline_mode=False)
+
+    assert service.client is None
+    assert service.search_economic_news(country="Polska") == []
+
+    class EmptyClient:
+        def search(self, **kwargs):
+            return {"results": []}
+
+    service.client = EmptyClient()
+    assert service.search_economic_news(country="Polska") == []
+
+
+def test_report_uses_only_latest_observations_from_its_run(temp_v2_db):
+    """Raport live nie może odziedziczyć fixture'ów ani pełnej historii."""
+    offline_run = temp_v2_db.start_ingestion_run(provider="MANUAL", run_type="TRIGGERED")
+    offline_evidence = RawEvidence(
+        evidence_id="EVI_DEMO_EUR",
+        source_id="SRC_NBP",
+        source_url="https://api.nbp.pl/demo",
+        document_type="API_RESPONSE",
+        content_hash="demo-eur",
+        payload_text="demo",
+        status_code=200,
+        retrieved_at_utc="2026-10-30T12:00:00Z",
+    )
+    temp_v2_db.save_evidence(offline_evidence, run_id=offline_run)
+    temp_v2_db.save_observation(MacroObservation(
+        indicator_code="PL_FX_EUR_PLN",
+        country_code="PL",
+        period_start="2026-10-30",
+        period_end="2026-10-30",
+        frequency="DAILY",
+        value_decimal="4.3450",
+        unit_code="EUR_PLN",
+        revision_type="FINAL",
+        status="VERIFIED",
+        evidence_id=offline_evidence.evidence_id,
+    ), run_id=offline_run)
+
+    live_run = temp_v2_db.start_ingestion_run(provider="MANUAL", run_type="TRIGGERED")
+    live_evidence = RawEvidence(
+        evidence_id="EVI_LIVE_EUR",
+        source_id="SRC_NBP",
+        source_url="https://api.nbp.pl/api/exchangerates/rates/A/EUR/2026-10-30/",
+        document_type="API_RESPONSE",
+        content_hash="live-eur",
+        payload_text="official",
+        status_code=200,
+        retrieved_at_utc="2026-10-30T12:05:00Z",
+    )
+    temp_v2_db.save_evidence(live_evidence, run_id=live_run)
+    temp_v2_db.save_observation(MacroObservation(
+        indicator_code="PL_FX_EUR_PLN",
+        country_code="PL",
+        period_start="2026-10-30",
+        period_end="2026-10-30",
+        frequency="DAILY",
+        value_decimal="4.3955",
+        unit_code="EUR_PLN",
+        revision_type="FINAL",
+        status="VERIFIED",
+        evidence_id=live_evidence.evidence_id,
+    ), run_id=live_run)
+
+    latest = temp_v2_db.get_latest_verified_observations("PL", run_id=live_run)
+
+    assert len(latest) == 1
+    assert latest[0]["value_decimal"] == "4.3955"
+    assert latest[0]["run_id"] == live_run
+
+
+def test_invalid_live_ai_report_falls_back_with_integrity_notice(
+    temp_v2_db,
+    monkeypatch,
+):
+    """Obce liczby/przypisy i brak URL wymuszają jawny fallback v2."""
+    monkeypatch.setattr(config, "OFFLINE_MODE", False)
+    run_id = temp_v2_db.start_ingestion_run(provider="MANUAL", run_type="TRIGGERED")
+    evidence = RawEvidence(
+        evidence_id="EVI_LIVE_REPORT",
+        source_id="SRC_NBP",
+        source_url="https://api.nbp.pl/api/exchangerates/rates/A/EUR/2026-10-30/",
+        document_type="API_RESPONSE",
+        content_hash="live-report",
+        payload_text="official",
+        status_code=200,
+        retrieved_at_utc="2026-10-30T12:05:00Z",
+    )
+    temp_v2_db.save_evidence(evidence, run_id=run_id)
+    temp_v2_db.save_observation(MacroObservation(
+        indicator_code="PL_FX_EUR_PLN",
+        country_code="PL",
+        period_start="2026-10-30",
+        period_end="2026-10-30",
+        frequency="DAILY",
+        value_decimal="4.3955",
+        unit_code="EUR_PLN",
+        revision_type="FINAL",
+        status="VERIFIED",
+        evidence_id=evidence.evidence_id,
+    ), run_id=run_id)
+
+    evaluator = EconomyEvaluator()
+    monkeypatch.setattr(
+        evaluator,
+        "_run_llm_synthesis",
+        lambda *args, **kwargs: "# Raport\nCPI 4,1% [775]\n## 6. Źródła\n[775] GUS",
+    )
+
+    report = evaluator.evaluate_from_v2(
+        country="Polska",
+        storage=temp_v2_db,
+        search_news=[],
+        offline_mode=False,
+        run_id=run_id,
+    )
+
+    citations = [int(value) for value in re.findall(r"\[(\d+)\]", report)]
+    assert "deterministyczny fallback trybu live" in report
+    assert "Kontekst Tavily" in report
+    assert "4.3955" in report
+    assert "4.345" not in report
+    assert "[775]" not in report
+    assert "realna stopa procentowa pozostaje dodatnia" not in report
+    assert "dowodem przyszłej stabilności walut" in report
+    assert max(citations) == 1
+    assert evidence.source_url in report
+
+
 # ==============================================================================
 # 6. INTEGRACJA Z APLIKACJĄ FLASK (SERVE_REPORT Z V2)
 # ==============================================================================
@@ -326,7 +466,7 @@ def test_flask_serve_report_from_v2(temp_v2_db):
             assert "<!DOCTYPE html>" in html_text
             assert "<title>Raport Kondycji Gospodarczej: Polska</title>" in html_text
             assert "Analiza Trendów w Dostępnym Okresie" in html_text
-            assert "4.345" in html_text
+            assert "4.3955" in html_text
             assert "5.75%" in html_text
     finally:
         set_storage_v2(None)

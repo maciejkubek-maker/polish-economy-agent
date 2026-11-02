@@ -5,6 +5,7 @@ import json
 import os
 import re
 import sqlite3
+from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional, Tuple
 
 import config
@@ -196,6 +197,7 @@ class EconomyEvaluator:
       report_date: str,
       periods_summary: str,
       chronological_context: str,
+      allow_fallback: bool = True,
   ) -> str:
     prompt = ChatPromptTemplate.from_messages([
         (
@@ -210,11 +212,10 @@ class EconomyEvaluator:
                 " kwartalnie, koniunktura, inflacja i rynek pracy miesięcznie)"
                 " – synteza polega na łączeniu najświeższych dostępnych"
                 " odczytów.\n"
-                "2. KORELACJA CYKLU INWESTYCYJNEGO: Bezwzględnie syntetyzuj"
-                " fakty. Zbieżność spadku PMI (poniżej progu równowagi 50 pkt)"
-                " z ujemną dynamiką produkcji budowlano-montażowej oraz"
-                " narastającą liczbą bezrobotnych traktuj jako twardy dowód"
-                " wygasania cyklu inwestycyjnego w sekcjach 1, 2 i 4.\n"
+                "2. KORELACJA CYKLU INWESTYCYJNEGO: Syntetyzuj wyłącznie"
+                " fakty obecne w przekazanych, zweryfikowanych obserwacjach."
+                " Kontekst prasowy może uzasadniać hipotezę lub scenariusz,"
+                " ale nie stanowi oficjalnej obserwacji liczbowej ani dowodu.\n"
                 "3. METODOLOGIA RYNKU PRACY I PŁAC:\n"
                 "   - DIVERGENCE TEST (WOLUMEN VS STOPA): Zawsze weryfikuj"
                 " relację stopy bezrobocia (%) do wolumenu bezrobotnych (tys."
@@ -236,15 +237,14 @@ class EconomyEvaluator:
                 " (stopa referencyjna minus inflacja CPI). Wskaż, czy bank"
                 " centralny ma przestrzeń do stymulacji fiskalno-monetarnej"
                 " przy obecnej dynamice cen.\n"
-                "5. ZAKAZ BANALNYCH PODSUMOWAŃ: W Sekcji 5 kategorycznie zakazuje"
-                " się urzędniczych komunałów (np. 'wymaga uwagi decydentów',"
-                " 'należy bacznie obserwować', 'czas pokaże'). Wymagany jest"
-                " asertywny, twardy werdykt koniunkturalny: diagnoza ryzyka"
-                " stagflacyjnego, stan inwestycji prywatnych oraz perspektywa"
-                " rynku pracy na najbliższy kwartał.\n"
+                "5. KALIBRACJA WNIOSKÓW: Oddziel fakty od interpretacji i"
+                " scenariuszy. Nie formułuj kategorycznych prognoz ani nowych"
+                " wartości liczbowych. Używaj języka warunkowego i jawnie"
+                " wskazuj ograniczenia wynikające z braków oraz lagów danych.\n"
                 "6. DYSCYPLINA ŹRÓDEŁ: Każda pojedyncza liczba w tekście MUSI"
                 " posiadać odnośnik numeryczny (np. [1], [2]), w 100% spójny z"
-                " wykazem w sekcji 6.\n"
+                " wykazem w sekcji 6. Sekcja 6 MUSI zawierać bezpośredni URL"
+                " dla każdego wykorzystanego źródła.\n"
                 "7. Całkowity zakaz odwołań do AI, promptów, modeli czy"
                 " skryptów.\n\n"
                 "STRUKTURA RAPORTU:\n"
@@ -302,7 +302,9 @@ class EconomyEvaluator:
         return chain_gpt.invoke(inputs)
       except Exception as gpt_err:
         print(f"\n[Evaluator Notice] Modele online niedostępne, przejście do syntezy deterministycznej: {gpt_err}\n")
-        return self._generate_deterministic_report(country, report_date, periods_summary, chronological_context)
+        if allow_fallback:
+          return self._generate_deterministic_report(country, report_date, periods_summary, chronological_context)
+        raise RuntimeError("Modele online są niedostępne") from gpt_err
 
   # -------------------------------------------------------------------------
   # Nowa integracja z SQLite v2 (TASK-06)
@@ -313,6 +315,7 @@ class EconomyEvaluator:
       storage: Optional[SQLiteV2Storage] = None,
       search_news: Optional[List[Dict[str, Any]]] = None,
       offline_mode: bool = False,
+      run_id: Optional[str] = None,
   ) -> str:
     """
     Generuje kompletny raport makroekonomiczny w oparciu o zweryfikowane obserwacje v2
@@ -330,8 +333,14 @@ class EconomyEvaluator:
     now = datetime.datetime.now()
     report_date = now.strftime("%d.%m.%Y")
 
-    verified_obs = storage.get_verified_current_observations(country_code="PL")
-    unverified_obs = storage.get_unverified_observations(country_code="PL")
+    verified_obs = storage.get_latest_verified_observations(
+        country_code="PL",
+        run_id=run_id,
+    )
+    unverified_obs = storage.get_unverified_observations(
+        country_code="PL",
+        run_id=run_id,
+    )
 
     # Przygotowanie kontekstu wskaźników
     raw_periods = [o["period_start"] for o in verified_obs]
@@ -341,8 +350,15 @@ class EconomyEvaluator:
     obs_by_code = {o["indicator_code"]: o for o in verified_obs}
 
     # Budowa aparatu źródłowego (Footnotes / Źródła)
-    citations: List[Dict[str, str]] = []
-    def add_citation(institution: str, indicator_name: str, period: str, url: str, is_official: bool = True) -> int:
+    citations: List[Dict[str, Any]] = []
+    def add_citation(
+        institution: str,
+        indicator_name: str,
+        period: str,
+        url: str,
+        is_official: bool = True,
+        value_decimal: Optional[str] = None,
+    ) -> int:
       idx = len(citations) + 1
       citations.append({
           "idx": idx,
@@ -351,6 +367,7 @@ class EconomyEvaluator:
           "period": period,
           "url": url or "https://stat.gov.pl",
           "is_official": is_official,
+          "value_decimal": value_decimal,
       })
       return idx
 
@@ -366,6 +383,7 @@ class EconomyEvaluator:
           period=f"{o['period_start']} – {o['period_end']}",
           url=o.get("source_url") or ("https://api.nbp.pl" if inst == "NBP" else "https://stat.gov.pl"),
           is_official=True,
+          value_decimal=o.get("value_decimal"),
       )
       obs_citation_map[o["indicator_code"]] = c_idx
 
@@ -416,8 +434,15 @@ class EconomyEvaluator:
 
     # Sprawdzenie trybu offline / bezpłatnego
     is_offline = offline_mode or getattr(config, "OFFLINE_MODE", False)
+    search_notice = ""
+    if not search_news:
+      search_notice = (
+          "**Kontekst Tavily:** niedostępny; raport nie zawiera zastępczych "
+          "fixture'ów ani niezweryfikowanych treści demonstracyjnych.\n\n"
+      )
+
     if is_offline:
-      return self._build_deterministic_v2_report(
+      report = self._build_deterministic_v2_report(
           country=country,
           report_date=report_date,
           periods_summary=periods_summary,
@@ -426,13 +451,30 @@ class EconomyEvaluator:
           unverified_obs=unverified_obs,
           search_news=search_news,
           citations=citations,
+      )
+      return (
+          "**Tryb generowania:** demo offline — deterministyczne dane "
+          "przykładowe, nie dane bieżące.\n\n"
+          f"{report}"
       )
 
     # Próba generowania przez LLM
     try:
-      return self._run_llm_synthesis(country, report_date, periods_summary, chronological_context)
+      candidate = self._run_llm_synthesis(
+          country,
+          report_date,
+          periods_summary,
+          chronological_context,
+          allow_fallback=False,
+      )
+      self._validate_v2_report(candidate, citations, verified_obs)
+      return (
+          "**Tryb generowania:** analiza online zweryfikowana przez kontrolę "
+          "integralności liczb, przypisów i URL.\n\n"
+          f"{search_notice}{candidate}"
+      )
     except Exception:
-      return self._build_deterministic_v2_report(
+      report = self._build_deterministic_v2_report(
           country=country,
           report_date=report_date,
           periods_summary=periods_summary,
@@ -442,6 +484,84 @@ class EconomyEvaluator:
           search_news=search_news,
           citations=citations,
       )
+      return (
+          "**Tryb generowania:** deterministyczny fallback trybu live — "
+          "wynik modelu był niedostępny albo nie przeszedł kontroli "
+          "integralności.\n\n"
+          f"{search_notice}{report}"
+      )
+
+  @staticmethod
+  def _normalize_numeric_claim(value: Any) -> str:
+    try:
+      number = Decimal(str(value).replace(" ", "").replace(",", "."))
+    except (InvalidOperation, ValueError):
+      return str(value)
+    return format(number.normalize(), "f")
+
+  def _validate_v2_report(
+      self,
+      report_text: str,
+      citations: List[Dict[str, Any]],
+      verified_obs: List[Dict[str, Any]],
+  ) -> None:
+    """Odrzuca raport AI z obcymi liczbami, przypisami lub bez URL-i."""
+    required_sections = [
+        "## 1. Analiza Trendów w Dostępnym Okresie",
+        "## 2. Zagrożenia i Ryzyka Makroekonomiczne",
+        "## 3. Co to oznacza dla Kowalskiego? (Perspektywa Obywatela)",
+        "## 4. Co to oznacza dla Przedsiębiorców?",
+        "## 5. Podsumowanie i Realistyczny Werdykt",
+        "## 6. Źródła danych i Metodologia",
+    ]
+    if any(section not in report_text for section in required_sections):
+      raise ValueError("Raport nie zachowuje wymaganej struktury sześciu sekcji")
+    if re.search(r"<\/?[a-zA-Z][^>]*>", report_text):
+      raise ValueError("Raport AI zawiera nieoczekiwany surowy HTML")
+
+    valid_indices = {int(c["idx"]) for c in citations}
+    used_indices = {int(value) for value in re.findall(r"\[(\d+)\]", report_text)}
+    invalid_indices = used_indices - valid_indices
+    if invalid_indices:
+      raise ValueError(f"Nieznane numery przypisów: {sorted(invalid_indices)}")
+
+    missing_urls = [
+        str(c["url"])
+        for c in citations
+        if c.get("url") and str(c["url"]) not in report_text
+    ]
+    if missing_urls:
+      raise ValueError("Raport nie zawiera bezpośrednich URL-i wszystkich źródeł")
+
+    allowed_values = {
+        self._normalize_numeric_claim(o["value_decimal"])
+        for o in verified_obs
+        if o.get("value_decimal") is not None
+    }
+    numeric_claims = re.findall(
+        r"(?<![\w\[])\-?\d+(?:[.,]\d+)?\s*(?:%|zł/EUR|zł/USD|PLN|mln\s+EUR|pkt)",
+        report_text,
+        flags=re.IGNORECASE,
+    )
+    unsupported = []
+    for claim in numeric_claims:
+      match = re.search(r"\-?\d+(?:[.,]\d+)?", claim)
+      if match and self._normalize_numeric_claim(match.group(0)) not in allowed_values:
+        unsupported.append(claim.strip())
+    if unsupported:
+      raise ValueError(f"Niezweryfikowane twierdzenia liczbowe: {unsupported}")
+
+    claim_pattern = re.compile(
+        r"(?<![\w\[])\-?\d+(?:[.,]\d+)?\s*(?:%|zł/EUR|zł/USD|PLN|mln\s+EUR|pkt)",
+        flags=re.IGNORECASE,
+    )
+    uncited_lines = [
+        line
+        for line in report_text.splitlines()
+        if claim_pattern.search(line) and not re.search(r"\[\d+\]", line)
+    ]
+    if uncited_lines:
+      raise ValueError("Twierdzenie liczbowe bez przypisu źródłowego")
 
   def _build_deterministic_v2_report(
       self,
@@ -452,7 +572,7 @@ class EconomyEvaluator:
       obs_citation_map: Dict[str, int],
       unverified_obs: List[Dict[str, Any]],
       search_news: Optional[List[Dict[str, Any]]],
-      citations: List[Dict[str, str]],
+      citations: List[Dict[str, Any]],
   ) -> str:
     """
     Deterministyczny, w 100% zgodny ze standardem ekonometrycznym generator raportu
@@ -513,40 +633,38 @@ class EconomyEvaluator:
 
     # Sekcja 2
     sec2 = (
-        f"Kluczowym zagrożeniem makroekonomicznym pozostaje ryzyko zbieżności osłabienia popytu inwestycyjnego "
-        f"z uporczywą inflacją bazową i kosztową. Przy stopie referencyjnej {ref_rate_val} oraz inflacji CPI {cpi_val}, "
-        f"realna stopa procentowa pozostaje dodatnia, co stabilizuje kurs walutowy ({eur_pln_val}), "
-        f"lecz równocześnie podwyższa koszt kapitału dla przedsiębiorstw i konsumentów {m_ref_1}. "
-        f"Dodatkowym czynnikiem ryzyka jest spowolnienie u głównych partnerów handlowych w strefie euro, "
-        f"co może rzutować na dynamikę eksportu i wolumen produkcji przemysłowej w nadchodzących kwartałach."
+        f"Dostępne odczyty stopy referencyjnej ({ref_rate_val}), inflacji CPI ({cpi_val}) i kursu EUR/PLN "
+        f"({eur_pln_val}) należy interpretować łącznie, bez wyprowadzania prognozy kursowej lub decyzji RPP {m_ref_1}. "
+        f"Ryzyka dla aktywności obejmują możliwe osłabienie popytu inwestycyjnego, utrzymywanie się presji cenowej "
+        f"oraz słabszą koniunkturę u partnerów handlowych. Materiał źródłowy nie przesądza, który z tych "
+        f"scenariuszy zrealizuje się w kolejnych kwartałach."
     )
 
     # Sekcja 3
     sec3 = (
-        f"- **Kredyty i Raty:** Utrzymanie stopy referencyjnej NBP na poziomie {ref_rate_val} oznacza stabilizację "
-        f"stawek WIBOR i rat kredytów hipotecznych na podwyższonym poziomie. Brak przestrzeni do natychmiastowych obniżek "
-        f"stóp procentowych wymusza ostrożność przy zaciąganiu nowych zobowiązań finansowych.\n"
-        f"- **Ceny i Zakupy:** Poziom inflacji CPI wynoszący {cpi_val} (oraz HICP {hicp_val}) wskazuje na umiarkowaną, "
-        f"lecz wciąż odczuwalną dynamikę wzrostu cen koszyka dóbr konsumpcyjnych, szczególnie w obszarze usług i nośników energii.\n"
+        f"- **Kredyty i Raty:** Odczyt stopy referencyjnej NBP wynosi {ref_rate_val}. Sam ten odczyt nie pozwala "
+        f"przewidzieć kolejnych decyzji RPP ani poziomu rat kredytów.\n"
+        f"- **Ceny i Zakupy:** Odczyty CPI ({cpi_val}) i HICP ({hicp_val}) opisują dynamikę cen w swoich "
+        f"odrębnych definicjach i okresach; nie należy ich traktować zamiennie.\n"
         f"- **Praca i Zarobki:** Stopa bezrobocia rejestrowanego na poziomie {unemp_rate_val} (zharmonizowane: {unemp_harm_val}) "
-        f"potwierdza stabilność zatrudnienia, jednak dynamika wynagrodzeń wykazuje oznaki normalizacji po okresie silnej presji płacowej."
+        f"pochodzi z innej metodologii niż BAEL/Eurostat. Te dwa odczyty nie wystarczają do prognozy zatrudnienia lub wynagrodzeń."
     )
 
     # Sekcja 4
     sec4 = (
-        f"Dla przedsiębiorców obecny układ makroekonomiczny oznacza konieczność zarządzania podwyższonymi kosztami finansowania "
-        f"oraz presją na marże operacyjne. Realna dynamika PKB ({gdp_qoq_val} kw/kw oraz {gdp_yoy_val} r/r) wskazuje na selektywny "
-        f"popyt rynkowy. Stabilne notowania walutowe ({eur_pln_val} i {usd_pln_val}) ułatwiają planowanie kontraktów importowych "
-        f"i rozliczeń surowcowych, jednak wygasanie cyklu inwestycyjnego w budownictwie nakazuje ostrożność w nakładach kapitałowych {m_ref_2}."
+        f"Dla przedsiębiorców odczyty PKB ({gdp_qoq_val} kw/kw oraz {gdp_yoy_val} r/r) opisują aktywność w różnych "
+        f"ujęciach i okresach. Kursy EUR/PLN ({eur_pln_val}) oraz USD/PLN ({usd_pln_val}) są obserwacjami dla wskazanych "
+        f"dat, a nie dowodem przyszłej stabilności walut. Decyzje o finansowaniu, imporcie i nakładach kapitałowych "
+        f"powinny uwzględniać ryzyko zmian stóp, kursów i popytu; dostępne dane nie przesądzają kierunku tych zmian {m_ref_2}."
     )
 
     # Sekcja 5
     sec5 = (
-        f"Gospodarka znajduje się w fazie dojrzałego cyklu o umiarkowanym tempie wzrostu gospodarczego ({gdp_yoy_val} r/r). "
-        f"Utrzymanie stabilności monetarnej przez NBP przy stopie {ref_rate_val} ogranicza ryzyko wtórnej fali inflacji. "
-        f"Jednocześnie kondycja rynku pracy ({unemp_harm_val}) chroni gospodarkę przed załamaniem popytu konsumpcyjnego. "
-        f"W perspektywie najbliższego kwartału decydujące znaczenie będzie miało ożywienie inwestycji współfinansowanych "
-        f"ze środków unijnych oraz trajektoria kosztów energii dla sektora wytwórczego."
+        f"Bieżący obraz opiera się na odczycie PKB ({gdp_yoy_val} r/r), stopie referencyjnej ({ref_rate_val}) i rynku "
+        f"pracy ({unemp_harm_val}), publikowanych z różną częstotliwością i opóźnieniem. Dane te opisują stan na wskazane "
+        f"okresy, lecz nie stanowią samodzielnej prognozy kolejnego kwartału. Scenariusz poprawy wymagałby m.in. mocniejszego "
+        f"popytu i inwestycji, natomiast scenariusz słabszy wiązałby się z utrzymaniem presji kosztowej lub pogorszeniem "
+        f"koniunktury zewnętrznej."
     )
 
     # Sekcja 6: Wykaz źródeł

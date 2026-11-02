@@ -45,13 +45,13 @@ OFFLINE_FIXTURES = {
       "table": "A",
       "currency": "euro",
       "code": "EUR",
-      "rates": [{"no": "212/A/NBP/2026", "effectiveDate": "2026-10-30", "mid": 4.3450}]
+      "rates": [{"no": "212/A/NBP/2026", "effectiveDate": "2026-10-30", "mid": 4.3955}]
     }""",
     "NBP_USD": """{
       "table": "A",
       "currency": "dolar amerykański",
       "code": "USD",
-      "rates": [{"no": "212/A/NBP/2026", "effectiveDate": "2026-10-30", "mid": 4.0215}]
+      "rates": [{"no": "212/A/NBP/2026", "effectiveDate": "2026-10-30", "mid": 3.9251}]
     }""",
     "NBP_RATES": """<?xml version="1.0" encoding="utf-8"?>
     <stopy_procentowe>
@@ -406,6 +406,7 @@ class MacroPipelineV2:
             storage=self.db,
             search_news=search_news,
             offline_mode=self.offline_mode,
+            run_id=run_id,
         )
 
         report_html = build_html_template(report_markdown, country)
@@ -414,7 +415,10 @@ class MacroPipelineV2:
         report_date = now.strftime("%Y-%m-%d")
 
         # Ustalenie horyzontu analizy
-        verified = self.db.get_verified_current_observations(country_code="PL")
+        verified = self.db.get_latest_verified_observations(
+            country_code="PL",
+            run_id=run_id,
+        )
         raw_periods = [o["period_start"] for o in verified]
         from modules.evaluator import build_executive_horizon
         exec_horizon = build_executive_horizon(raw_periods)
@@ -428,6 +432,20 @@ class MacroPipelineV2:
             "run_id": run_id,
             "offline_mode": self.offline_mode,
             "verified_indicators_count": len(verified),
+            "generation_mode": (
+                "OFFLINE_DEMO"
+                if self.offline_mode
+                else (
+                    "LIVE_DETERMINISTIC_FALLBACK"
+                    if "deterministyczny fallback trybu live" in report_markdown
+                    else "LIVE_AI_VALIDATED"
+                )
+            ),
+            "search_context": (
+                "OFFLINE_DEMO_FIXTURES"
+                if self.offline_mode
+                else ("LIVE" if search_news else "UNAVAILABLE_NO_FALLBACK")
+            ),
         }
 
         self.db.save_report(
@@ -474,6 +492,16 @@ class MacroPipelineV2:
             # 3. Wyszukiwanie Tavily i wzbogacenie kontekstu
             search_news = self.search_enrichment(country, run_id)
             print(f"[PipelineV2] Zebrano {len(search_news)} analiz i komunikatów rynkowych.")
+            if not self.offline_mode and not search_news:
+                message = "Kontekst Tavily niedostępny; nie użyto fixture'ów offline."
+                errors.append(message)
+                q_events.append(self.db.record_quality_event(
+                    "INGESTION",
+                    run_id,
+                    "LIVE_SEARCH_UNAVAILABLE",
+                    "WARNING",
+                    message,
+                ))
 
             # 4 i 5. Analiza AI i archiwizacja raportu
             report_id, report_md, report_html = self.generate_and_archive_report(

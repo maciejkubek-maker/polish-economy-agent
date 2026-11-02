@@ -431,7 +431,68 @@ class SQLiteV2Storage:
         all_obs = self.get_current_observations(country_code)
         return [o for o in all_obs if o.get("status") == "VERIFIED"]
 
-    def get_unverified_observations(self, country_code: str = "PL") -> List[Dict[str, Any]]:
+    def get_latest_verified_observations(
+        self,
+        country_code: str = "PL",
+        run_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Zwraca po jednym najnowszym zweryfikowanym odczycie na wskaźnik.
+
+        Gdy przekazano ``run_id``, raport nie pobiera obserwacji z wcześniejszych
+        przebiegów, w szczególności fixture'ów offline.
+        """
+        codes = ("PL", "Polska") if country_code in ("PL", "Polska", "Poland") else (country_code, country_code)
+        conn = self.get_connection()
+        try:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute("""
+                WITH ranked AS (
+                    SELECT
+                        o.observation_id,
+                        o.indicator_code,
+                        ic.name_pl,
+                        o.country_code,
+                        o.period_start,
+                        o.period_end,
+                        o.frequency,
+                        o.value_decimal,
+                        o.unit_code,
+                        uc.symbol AS unit_symbol,
+                        o.revision_type,
+                        o.version_number,
+                        o.status,
+                        o.evidence_id,
+                        o.observed_at_utc,
+                        se.source_id,
+                        se.source_url,
+                        se.run_id,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY o.indicator_code
+                            ORDER BY o.period_end DESC, o.period_start DESC,
+                                     o.version_number DESC, o.observed_at_utc DESC
+                        ) AS recency_rank
+                    FROM observations o
+                    LEFT JOIN indicator_catalog ic ON o.indicator_code = ic.indicator_code
+                    LEFT JOIN unit_catalog uc ON o.unit_code = uc.unit_code
+                    LEFT JOIN source_evidence se ON o.evidence_id = se.evidence_id
+                    WHERE o.country_code IN (?, ?)
+                      AND o.status = 'VERIFIED'
+                      AND (? IS NULL OR se.run_id = ?)
+                )
+                SELECT *
+                FROM ranked
+                WHERE recency_rank = 1
+                ORDER BY indicator_code ASC
+            """, (codes[0], codes[1], run_id, run_id)).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def get_unverified_observations(
+        self,
+        country_code: str = "PL",
+        run_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         """Zwraca obserwacje oczekujące na weryfikację, sporne lub niepotwierdzone."""
         codes = ("PL", "Polska") if country_code in ("PL", "Polska", "Poland") else (country_code, country_code)
         conn = self.get_connection()
@@ -453,9 +514,12 @@ class SQLiteV2Storage:
                     o.observed_at_utc
                 FROM observations o
                 LEFT JOIN indicator_catalog ic ON o.indicator_code = ic.indicator_code
-                WHERE o.country_code IN (?, ?) AND o.status IN ('PENDING', 'CONFLICT', 'NOT_VERIFIED', 'REJECTED')
+                LEFT JOIN source_evidence se ON o.evidence_id = se.evidence_id
+                WHERE o.country_code IN (?, ?)
+                  AND o.status IN ('PENDING', 'CONFLICT', 'NOT_VERIFIED', 'REJECTED')
+                  AND (? IS NULL OR se.run_id = ?)
                 ORDER BY o.observed_at_utc DESC
-            """, codes).fetchall()
+            """, (codes[0], codes[1], run_id, run_id)).fetchall()
             return [dict(r) for r in rows]
         finally:
             conn.close()
