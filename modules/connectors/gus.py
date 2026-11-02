@@ -32,16 +32,83 @@ from modules.connectors.base import (
 )
 
 # Statyczny, audytowany rejestr zatwierdzonych mapowań BDL
-_APPROVED_BDL_REGISTRY_DATA: Dict[int, Dict[str, Any]] = {
-    60270: {
+# Statyczny, audytowany rejestr zatwierdzonych mapowań BDL
+# Zagnieżdżone rekordy są MappingProxyType, co zabezpiecza przed modyfikacją wewnętrznych pól.
+_APPROVED_BDL_REGISTRY_DATA: Dict[int, MappingProxyType] = {
+    60270: MappingProxyType({
         "indicator_code": "PL_UNEMPLOYMENT_REGISTERED_RATE",
         "name": "Stopa bezrobocia rejestrowanego - ogółem (szereg roczny BDL)",
         "unit_code": "PCT",
         "frequency": "ANNUAL",
         "status": "VERIFIED",
         "economic_category": "UNEMPLOYMENT_RATE",
-    },
+    }),
 }
+
+
+def _normalize_text_for_comparison(text: str) -> List[str]:
+    import re
+    words = re.findall(r"[a-ząćęłńóśźżA-ZĄĆĘŁŃÓŚŹŻ]{4,}", text.lower())
+    stopwords = {"oraz", "przez", "dla", "jako", "jest", "jego", "który", "która", "które", "stan", "dane", "szereg"}
+    return [w for w in words if w not in stopwords]
+
+
+def _check_economic_definition_match(expected_name: str, confirmed_text: str) -> Tuple[bool, str]:
+    exp_lower = expected_name.lower().strip()
+    conf_lower = confirmed_text.lower().strip()
+
+    domains = [
+        ("bezroboc", "bezrobocie"),
+        ("wynagrodz", "wynagrodzenia / płace"),
+        ("produkc", "produkcja"),
+        ("sprzedaż", "sprzedaż detaliczna"),
+        ("ceny", "ceny / inflacja"),
+        ("inflac", "ceny / inflacja"),
+        ("cpi", "ceny / inflacja"),
+    ]
+    for stem, domain_name in domains:
+        if stem in exp_lower and stem not in conf_lower:
+            return False, f"ECONOMIC_DEFINITION_MISMATCH: expected domain '{domain_name}' not found in confirmed GUS metadata ('{conf_lower}')"
+        if stem in conf_lower and stem not in exp_lower:
+            return False, f"ECONOMIC_DEFINITION_MISMATCH: confirmed GUS metadata belongs to domain '{domain_name}', but expected definition does not"
+
+    is_exp_rate = "stopa" in exp_lower or "%" in exp_lower or "wskaźnik" in exp_lower
+    is_conf_rate = "stopa" in conf_lower or "%" in conf_lower or "proc" in conf_lower
+    is_exp_count = "liczba" in exp_lower or "osób" in exp_lower or "osob" in exp_lower
+    is_conf_count = "liczba" in conf_lower or "osób" in conf_lower or "osob" in conf_lower or "tys." in conf_lower
+
+    if is_exp_count and is_conf_rate and not is_conf_count:
+        return False, "ECONOMIC_DEFINITION_MISMATCH: expected headcount count, but confirmed GUS metadata defines percentage rate"
+    if is_exp_rate and is_conf_count and not is_conf_rate:
+        return False, "ECONOMIC_DEFINITION_MISMATCH: expected percentage rate, but confirmed GUS metadata defines headcount count"
+
+    exp_tokens = _normalize_text_for_comparison(exp_lower)
+    conf_tokens = _normalize_text_for_comparison(conf_lower)
+    if exp_tokens:
+        overlap = set(exp_tokens) & set(conf_tokens)
+        if not overlap:
+            stem_overlap = any(any(t[:4] in c for c in conf_tokens) for t in exp_tokens)
+            if not stem_overlap:
+                return False, f"ECONOMIC_DEFINITION_MISMATCH: expected '{expected_name}' does not match confirmed GUS metadata '{confirmed_text}'"
+
+    return True, "ECONOMIC_DEFINITION_MATCH"
+
+
+def _extract_gus_metadata_frequency(api_meta: Dict[str, Any]) -> str:
+    raw_freq = str(api_meta.get("frequency") or api_meta.get("periodicity") or "").upper().strip()
+    if raw_freq in ("ANNUAL", "YEARLY", "R", "ROCZNA"):
+        return "ANNUAL"
+    if raw_freq in ("MONTHLY", "M", "MIESIĘCZNA"):
+        return "MONTHLY"
+    if raw_freq in ("QUARTERLY", "K", "Q", "KWARTALNA"):
+        return "QUARTERLY"
+    if "has_months" in api_meta and not api_meta["has_months"]:
+        return "ANNUAL"
+    if "is_annual" in api_meta and api_meta["is_annual"]:
+        return "ANNUAL"
+    if "months" in api_meta or api_meta.get("sub_annual") == "M":
+        return "MONTHLY"
+    return "ANNUAL"
 
 
 class GusConnector(BaseConnector):
@@ -128,7 +195,7 @@ class GusConnector(BaseConnector):
         """
         Weryfikuje identyfikator zmiennej, definicję ekonomiczną, jednostkę i częstotliwość
         w rzeczywistych metadanych oficjalnego API GUS lub w osobnym, wcześniej zatwierdzonym rejestrze mapowań.
-        Samo poprawne ID nie wystarcza — wymagana jest pełna zgodność definicji ekonomicznej, jednostki i częstotliwości.
+        Samo poprawne ID nie wystarcza — wymagana jest rzeczywista zgodność definicji ekonomicznej, jednostki i częstotliwości.
 
         Zwraca: (is_verified, reason_code, verified_metadata).
         """
@@ -143,6 +210,12 @@ class GusConnector(BaseConnector):
             # Zabezpieczenie definicji ekonomicznej: wskaźnik stopy bezrobocia nie może być liczbą bezrobotnych
             if indicator_code == "PL_UNEMPLOYMENT_REGISTERED_COUNT" and approved.get("economic_category") == "UNEMPLOYMENT_RATE":
                 return False, "ECONOMIC_DEFINITION_MISMATCH: rate variable cannot represent headcount count", approved
+
+            # Rzeczywiste porównanie oczekiwanej definicji z zatwierdzonym rejestrem
+            if expected_name:
+                is_def_match, def_reason = _check_economic_definition_match(expected_name, approved.get("name", ""))
+                if not is_def_match:
+                    return False, def_reason, approved
 
             if expected_unit and self.validate_unit(expected_unit) != approved.get("unit_code"):
                 return False, f"APPROVED_REGISTRY_UNIT_MISMATCH (expected {expected_unit}, got {approved.get('unit_code')})", approved
@@ -162,9 +235,20 @@ class GusConnector(BaseConnector):
 
         gus_unit_name = str(api_meta.get("measureUnitName", "")).lower()
         n1 = str(api_meta.get("n1", "")).lower()
+        n2 = str(api_meta.get("n2", "")).lower()
         subject_id = str(api_meta.get("subjectId", "")).upper()
+        confirmed_text = f"{n1} {n2} {subject_id} {gus_unit_name}".strip()
 
-        # Zgodność definicji ekonomicznej i jednostki
+        if not n1 and not subject_id:
+            return False, "INCOMPLETE_GUS_API_VARIABLE_DEFINITION", api_meta
+
+        # Rzeczywiste porównanie oczekiwanej definicji ekonomicznej z potwierdzonymi metadanymi GUS
+        if expected_name:
+            is_def_match, def_reason = _check_economic_definition_match(expected_name, confirmed_text)
+            if not is_def_match:
+                return False, def_reason, api_meta
+
+        # Zgodność definicji ekonomicznej na podstawie kodu wskaźnika
         if indicator_code == "PL_UNEMPLOYMENT_REGISTERED_COUNT":
             if "%" in gus_unit_name or "stopa" in n1:
                 return False, "ECONOMIC_DEFINITION_MISMATCH: percentage rate cannot represent registered unemployment count", api_meta
@@ -174,6 +258,13 @@ class GusConnector(BaseConnector):
         elif indicator_code == "PL_UNEMPLOYMENT_REGISTERED_RATE":
             if not ("%" in gus_unit_name or "stopa" in n1 or "proc" in gus_unit_name):
                 return False, "ECONOMIC_DEFINITION_MISMATCH: variable metadata does not confirm unemployment rate", api_meta
+
+        # Rzeczywiste porównanie częstotliwości z potwierdzonymi metadanymi GUS
+        if expected_frequency:
+            norm_exp_freq = self.validate_frequency(expected_frequency)
+            confirmed_freq = _extract_gus_metadata_frequency(api_meta)
+            if norm_exp_freq != confirmed_freq:
+                return False, f"FREQUENCY_MISMATCH_WITH_GUS_API (expected {norm_exp_freq}, confirmed GUS metadata is {confirmed_freq})", api_meta
 
         # Weryfikacja jednostki
         if expected_unit:
@@ -188,10 +279,6 @@ class GusConnector(BaseConnector):
 
             if not unit_ok:
                 return False, f"UNIT_MISMATCH_WITH_GUS_API (expected {norm_exp_unit}, got '{gus_unit_name}')", api_meta
-
-        # Weryfikacja kompletności nazwy/definicji
-        if not n1 and not subject_id:
-            return False, "INCOMPLETE_GUS_API_VARIABLE_DEFINITION", api_meta
 
         return True, "VERIFIED_OFFICIAL_API_METADATA", api_meta
 
@@ -265,6 +352,8 @@ class GusConnector(BaseConnector):
         unit_id: str = "000000000000",
         indicator_code: Optional[str] = None,
         unit_code: Optional[str] = None,
+        expected_name: Optional[str] = None,
+        expected_frequency: Optional[str] = None,
         **kwargs,
     ) -> Tuple[RawEvidence, List[MacroObservation]]:
         """
@@ -292,7 +381,9 @@ class GusConnector(BaseConnector):
         is_verified, reason, verified_meta = self.verify_bdl_variable_metadata(
             var_id=var_id,
             indicator_code=ind_code,
+            expected_name=expected_name,
             expected_unit=u_code,
+            expected_frequency=expected_frequency,
         )
 
         status = "VERIFIED" if is_verified else "NOT_VERIFIED"
@@ -428,12 +519,16 @@ class GusConnector(BaseConnector):
                     "Wymagane: var_id, name, unit_code, frequency."
                 )
             v_id = int(mapping["var_id"])
+            v_name = mapping["name"]
             v_unit = mapping["unit_code"]
+            v_freq = mapping["frequency"]
 
             return self.fetch_bdl_variable(
                 v_id,
                 indicator_code="PL_UNEMPLOYMENT_REGISTERED_COUNT",
                 unit_code=v_unit,
+                expected_name=v_name,
+                expected_frequency=v_freq,
             )
 
         if var_id is not None:
@@ -441,6 +536,8 @@ class GusConnector(BaseConnector):
                 var_id,
                 indicator_code="PL_UNEMPLOYMENT_REGISTERED_COUNT",
                 unit_code="THOUSAND_PERSONS",
+                expected_name="Liczba zarejestrowanych bezrobotnych",
+                expected_frequency="MONTHLY",
             )
 
         raise VariableNotMappedError(

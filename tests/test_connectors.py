@@ -877,6 +877,7 @@ class TestGusConnector:
             "n1": "Liczba zarejestrowanych bezrobotnych",
             "level": 3,
             "measureUnitName": "tys. osób",
+            "frequency": "MONTHLY",
         })
         connector.register_fixture("variables/888888", gus_var_meta)
         connector.register_fixture("by-variable/888888", GUS_BDL_COUNT_JSON)
@@ -896,6 +897,113 @@ class TestGusConnector:
         assert obs.status == "VERIFIED"
         assert obs.unit_code == "THOUSAND_PERSONS"
         assert obs.metadata["status_reason"] == "VERIFIED_OFFICIAL_API_METADATA"
+
+    def test_regression_correct_id_with_mismatched_definition_remains_not_verified(self):
+        """
+        Regresja: Poprawne ID z błędną definicją ekonomiczną nie może uzyskać statusu VERIFIED.
+        1. Poprawne ID 60270 w rejestrze ma definicję stopy bezrobocia. Podanie definicji wynagrodzenia kończy się NOT_VERIFIED.
+        2. Poprawne ID 888888 w API ma definicję bezrobocia. Podanie definicji produkcji przemysłowej kończy się NOT_VERIFIED.
+        """
+        connector = GusConnector(offline_mode=True)
+
+        # 1. Sprawdzenie w rejestrze zatwierdzonym (60270)
+        connector.register_fixture("by-variable/60270", GUS_BDL_UNEMPLOYMENT_JSON)
+        _, obs_reg = connector.fetch_bdl_variable(
+            var_id=60270,
+            indicator_code="PL_UNEMPLOYMENT_REGISTERED_RATE",
+            expected_name="Przeciętne miesięczne wynagrodzenie w sektorze przedsiębiorstw",
+            unit_code="PCT",
+        )
+        assert obs_reg[0].status == "NOT_VERIFIED"
+        assert obs_reg[0].status != "VERIFIED"
+        assert "ECONOMIC_DEFINITION_MISMATCH" in obs_reg[0].metadata["status_reason"]
+
+        # 2. Sprawdzenie wobec metadanych oficjalnego API GUS
+        gus_var_meta = json.dumps({
+            "id": 888888,
+            "subjectId": "P2437",
+            "n1": "Liczba zarejestrowanych bezrobotnych",
+            "measureUnitName": "tys. osób",
+            "frequency": "MONTHLY",
+        })
+        connector.register_fixture("variables/888888", gus_var_meta)
+        connector.register_fixture("by-variable/888888", GUS_BDL_COUNT_JSON)
+
+        mismatched_mapping = {
+            "var_id": 888888,
+            "name": "Dynamika produkcji sprzedanej przemysłu",
+            "unit_code": "THOUSAND_PERSONS",
+            "frequency": "MONTHLY",
+        }
+        _, obs_api = connector.fetch_registered_unemployment_count(candidate_mapping=mismatched_mapping)
+        assert obs_api[0].status == "NOT_VERIFIED"
+        assert obs_api[0].status != "VERIFIED"
+        assert "ECONOMIC_DEFINITION_MISMATCH" in obs_api[0].metadata["status_reason"]
+
+    def test_regression_correct_id_with_mismatched_frequency_remains_not_verified(self):
+        """
+        Regresja: Poprawne ID z błędną częstotliwością nie może uzyskać statusu VERIFIED.
+        1. Poprawne ID 60270 jest szeregiem rocznym (ANNUAL). Żądanie MONTHLY kończy się NOT_VERIFIED.
+        2. Poprawne ID 888888 w API jest miesięczne (MONTHLY). Żądanie ANNUAL kończy się NOT_VERIFIED.
+        """
+        connector = GusConnector(offline_mode=True)
+
+        # 1. Rejestr zatwierdzony (60270 jest ANNUAL)
+        connector.register_fixture("by-variable/60270", GUS_BDL_UNEMPLOYMENT_JSON)
+        _, obs_reg = connector.fetch_bdl_variable(
+            var_id=60270,
+            indicator_code="PL_UNEMPLOYMENT_REGISTERED_RATE",
+            unit_code="PCT",
+            expected_frequency="MONTHLY",
+        )
+        assert obs_reg[0].status == "NOT_VERIFIED"
+        assert obs_reg[0].status != "VERIFIED"
+        assert "FREQUENCY_MISMATCH" in obs_reg[0].metadata["status_reason"]
+
+        # 2. Metadane API (888888 jest MONTHLY)
+        gus_var_meta = json.dumps({
+            "id": 888888,
+            "subjectId": "P2437",
+            "n1": "Liczba zarejestrowanych bezrobotnych",
+            "measureUnitName": "tys. osób",
+            "frequency": "MONTHLY",
+        })
+        connector.register_fixture("variables/888888", gus_var_meta)
+        connector.register_fixture("by-variable/888888", GUS_BDL_COUNT_JSON)
+
+        mismatched_freq_mapping = {
+            "var_id": 888888,
+            "name": "Liczba zarejestrowanych bezrobotnych",
+            "unit_code": "THOUSAND_PERSONS",
+            "frequency": "ANNUAL",
+        }
+        _, obs_api = connector.fetch_registered_unemployment_count(candidate_mapping=mismatched_freq_mapping)
+        assert obs_api[0].status == "NOT_VERIFIED"
+        assert obs_api[0].status != "VERIFIED"
+        assert "FREQUENCY_MISMATCH" in obs_api[0].metadata["status_reason"]
+
+    def test_regression_registry_nested_record_mutation_is_blocked(self):
+        """
+        Regresja: Próba zmiany wewnętrznego rekordu rejestru jest bezwzględnie blokowana.
+        Zagnieżdżony rekord w APPROVED_BDL_REGISTRY[60270] jest MappingProxyType (read-only).
+        """
+        connector = GusConnector(offline_mode=True)
+
+        # 1. Próba zmiany indicator_code wewnątrz rekordu 60270
+        with pytest.raises(TypeError):
+            connector.APPROVED_BDL_REGISTRY[60270]["indicator_code"] = "PL_UNEMPLOYMENT_REGISTERED_COUNT"
+
+        # 2. Próba zmiany name wewnątrz rekordu 60270
+        with pytest.raises(TypeError):
+            connector.APPROVED_BDL_REGISTRY[60270]["name"] = "Zmanipulowana nazwa"
+
+        # 3. Próba zmiany unit_code wewnątrz rekordu 60270
+        with pytest.raises(TypeError):
+            connector.APPROVED_BDL_REGISTRY[60270]["unit_code"] = "THOUSAND_PERSONS"
+
+        # 4. Próba przez alias VERIFIED_BDL_VARIABLES
+        with pytest.raises(TypeError):
+            connector.VERIFIED_BDL_VARIABLES[60270]["status"] = "PENDING"
 
     def test_fetch_cpi_dbw_resolves_exact_month_from_period_metadata(self):
         """
