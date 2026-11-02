@@ -1,14 +1,13 @@
 -- ============================================================================
--- Polish Economy Agent — SQLite Schema v2 Proposal (DDL)
--- Branch: design/03-data-contract
--- Cel: Standaryzacja katalogu wskaźników, źródeł, wersjonowanych obserwacji,
---      dowodów, kandydatów ekstrakcji, audytu jakości i migracji legacy.
+-- SCHEMAT BAZY DANYCH SQLITE DLA POLISH ECONOMY AGENT (SCHEMA V2)
+-- Plik: docs/sql/schema_v2.sql
+-- Status: PROPOSED (architektura docelowa z audytowalnością i brakiem zgadywania)
 -- ============================================================================
 
 PRAGMA foreign_keys = ON;
 
 -- ----------------------------------------------------------------------------
--- 1. REJESTR ŹRÓDEŁ DANYCH (source_registry)
+-- 1. REJESTR OFICJALNYCH I ZEWNĘTRZNYCH ŹRÓDEŁ (source_registry)
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS source_registry (
     source_id TEXT PRIMARY KEY,
@@ -16,92 +15,105 @@ CREATE TABLE IF NOT EXISTS source_registry (
     institution TEXT NOT NULL,
     base_url TEXT NOT NULL,
     source_type TEXT NOT NULL CHECK(source_type IN (
-        'API_REST', 'API_SDMX', 'STATIC_XML', 'STATIC_HTML', 'WEB_SEARCH', 'MANUAL_ENTRY'
+        'OFFICIAL_API', 'OFFICIAL_WEB', 'WEB_SEARCH', 'FILE_FEED', 'PROXY'
     )),
-    trust_tier TEXT NOT NULL CHECK(trust_tier IN (
-        'TIER_A', 'TIER_B', 'TIER_C', 'TIER_D'
-    )),
-    auth_type TEXT NOT NULL DEFAULT 'NONE' CHECK(auth_type IN (
-        'NONE', 'API_KEY_HEADER', 'BEARER_TOKEN', 'QUERY_PARAM'
-    )),
-    rate_limit_info TEXT,
-    documentation_url TEXT,
-    created_at_utc TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
--- ----------------------------------------------------------------------------
--- 2. KATALOG WSKAŹNIKÓW MAKROEKONOMICZNYCH (indicator_catalog)
--- ----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS indicator_catalog (
-    indicator_code TEXT PRIMARY KEY,
-    name_pl TEXT NOT NULL,
-    name_en TEXT,
-    definition_pl TEXT NOT NULL,
-    methodology_notes TEXT,
-    frequency TEXT NOT NULL CHECK(frequency IN (
-        'DAILY', 'MONTHLY', 'QUARTERLY', 'ANNUAL', 'IRREGULAR'
-    )),
-    unit_code TEXT NOT NULL CHECK(unit_code IN (
-        'PCT', 'THOUSAND_PERSONS', 'PLN', 'PLN_PER_MONTH', 'INDEX_POINTS', 'EUR_PLN', 'USD_PLN', 'COUNT'
-    )),
-    decimal_precision INTEGER NOT NULL DEFAULT 2,
-    min_plausible_value TEXT,
-    max_plausible_value TEXT,
-    preferred_source_id TEXT REFERENCES source_registry(source_id),
+    trust_tier TEXT NOT NULL CHECK(trust_tier IN ('TIER_A', 'TIER_B', 'TIER_C')),
+    update_frequency TEXT NOT NULL DEFAULT 'MONTHLY',
     is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0, 1)),
     created_at_utc TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 -- ----------------------------------------------------------------------------
--- 3. SŁOWNIK ALIASÓW WSKAŹNIKÓW (indicator_aliases)
+-- 2. KATALOG JEDNOSTEK MIARY (unit_catalog)
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS unit_catalog (
+    unit_code TEXT PRIMARY KEY,
+    name_pl TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    unit_type TEXT NOT NULL CHECK(unit_type IN ('PERCENT', 'CURRENCY', 'COUNT', 'INDEX', 'RATIO')),
+    decimal_places INTEGER NOT NULL DEFAULT 2
+);
+
+INSERT OR IGNORE INTO unit_catalog (unit_code, name_pl, symbol, unit_type, decimal_places) VALUES
+('PCT', 'Procent', '%', 'PERCENT', 2),
+('PLN', 'Złoty polski', 'zł', 'CURRENCY', 2),
+('PLN_PER_MONTH', 'Złotych miesięcznie', 'zł/m-c', 'CURRENCY', 2),
+('THOUSAND_PERSONS', 'Tysiące osób', 'tys. osób', 'COUNT', 1),
+('PERSONS', 'Osoby', 'osób', 'COUNT', 0),
+('INDEX_POINTS', 'Punkty indeksu', 'pkt', 'INDEX', 2),
+('RATIO', 'Wskaźnik', 'ratio', 'RATIO', 4);
+
+-- ----------------------------------------------------------------------------
+-- 3. KATALOG WSKAŹNIKÓW MAKROEKONOMICZNYCH (indicator_catalog)
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS indicator_catalog (
+    indicator_code TEXT PRIMARY KEY,
+    name_pl TEXT NOT NULL,
+    definition_pl TEXT NOT NULL,
+    frequency TEXT NOT NULL CHECK(frequency IN (
+        'DAILY', 'MONTHLY', 'QUARTERLY', 'ANNUAL', 'IRREGULAR'
+    )),
+    unit_code TEXT NOT NULL REFERENCES unit_catalog(unit_code),
+    target_macro_area TEXT NOT NULL DEFAULT 'GENERAL' CHECK(target_macro_area IN (
+        'INFLATION', 'LABOUR_MARKET', 'ECONOMIC_GROWTH', 'INDUSTRY', 'MONETARY_POLICY', 'GENERAL'
+    )),
+    is_headline INTEGER NOT NULL DEFAULT 0 CHECK(is_headline IN (0, 1)),
+    is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0, 1)),
+    created_at_utc TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ----------------------------------------------------------------------------
+-- 4. ALIAS I WARIANTY NAZW WSKAŹNIKÓW (indicator_aliases)
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS indicator_aliases (
     alias_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    indicator_code TEXT NOT NULL REFERENCES indicator_catalog(indicator_code) ON DELETE CASCADE,
-    raw_alias TEXT NOT NULL,
-    normalized_alias TEXT NOT NULL,
-    match_type TEXT NOT NULL CHECK(match_type IN ('EXACT', 'REGEX', 'NORMALIZED')),
-    is_disambiguated INTEGER NOT NULL DEFAULT 1 CHECK(is_disambiguated IN (0, 1)),
-    notes TEXT
+    raw_name TEXT NOT NULL,
+    canonical_indicator_code TEXT NOT NULL REFERENCES indicator_catalog(indicator_code),
+    source_context TEXT,
+    notes TEXT,
+    UNIQUE(raw_name, source_context)
 );
 
-CREATE INDEX IF NOT EXISTS idx_indicator_aliases_norm ON indicator_aliases(normalized_alias);
+CREATE INDEX IF NOT EXISTS idx_alias_raw ON indicator_aliases(raw_name);
 
 -- ----------------------------------------------------------------------------
--- 4. SERIE DANYCH API / ŹRÓDEŁ (data_series)
+-- 5. SERIE DANYCH ŹRÓDŁOWYCH (data_series)
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS data_series (
     series_id TEXT PRIMARY KEY,
     indicator_code TEXT NOT NULL REFERENCES indicator_catalog(indicator_code),
     source_id TEXT NOT NULL REFERENCES source_registry(source_id),
-    external_series_id TEXT NOT NULL,
-    endpoint_url TEXT NOT NULL,
-    query_params_template TEXT,
-    response_format TEXT NOT NULL CHECK(response_format IN ('JSON', 'JSON_STAT', 'XML', 'HTML', 'CSV')),
-    verification_status TEXT NOT NULL CHECK(verification_status IN (
-        'VERIFIED', 'NOT_VERIFIED', 'REQUIRES_VARIABLE_MAPPING', 'VERIFIED_STATIC_XML'
-    )),
-    is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0, 1)),
-    created_at_utc TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    country_code TEXT NOT NULL DEFAULT 'PL',
+    dataset_identifier TEXT NOT NULL,
+    variable_identifier TEXT,
+    dimension_filters_json TEXT,
+    release_calendar_url TEXT,
+    is_primary_source INTEGER NOT NULL DEFAULT 1 CHECK(is_primary_source IN (0, 1)),
+    created_at_utc TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(source_id, dataset_identifier, variable_identifier)
 );
 
 -- ----------------------------------------------------------------------------
--- 5. PRZEBIEGI POBIERANIA DANYCH (ingestion_runs)
+-- 6. DZIENNIK PRZEBIEGÓW POBIERANIA (ingestion_runs)
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS ingestion_runs (
     run_id TEXT PRIMARY KEY,
-    provider TEXT NOT NULL,
-    run_type TEXT NOT NULL CHECK(run_type IN ('SCHEDULED', 'MANUAL', 'MIGRATION', 'FALLBACK')),
-    started_at_utc TIMESTAMP NOT NULL,
-    ended_at_utc TIMESTAMP,
-    status TEXT NOT NULL CHECK(status IN ('STARTED', 'COMPLETED', 'FAILED', 'PARTIAL')),
-    records_extracted INTEGER DEFAULT 0,
-    records_validated INTEGER DEFAULT 0,
+    provider TEXT NOT NULL CHECK(provider IN (
+        'GUS_API', 'NBP_API', 'EUROSTAT_API', 'TAVILY_SEARCH', 'LEGACY_MIGRATOR', 'MANUAL'
+    )),
+    run_type TEXT NOT NULL CHECK(run_type IN ('SCHEDULED', 'TRIGGERED', 'MIGRATION', 'REPAIR')),
+    started_at_utc TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at_utc TIMESTAMP,
+    status TEXT NOT NULL CHECK(status IN ('RUNNING', 'COMPLETED', 'FAILED', 'PARTIAL')),
+    records_fetched INTEGER NOT NULL DEFAULT 0,
+    records_validated INTEGER NOT NULL DEFAULT 0,
     error_message TEXT
 );
 
+CREATE INDEX IF NOT EXISTS idx_ingestion_provider ON ingestion_runs(provider, started_at_utc);
+
 -- ----------------------------------------------------------------------------
--- 6. DOWODY ŹRÓDŁOWE / RAW EVIDENCE (source_evidence)
+-- 7. DOWODY ŹRÓDŁOWE / WARSTWA BRUDNA RAW (source_evidence & extracted_candidates)
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS source_evidence (
     evidence_id TEXT PRIMARY KEY,
@@ -109,23 +121,16 @@ CREATE TABLE IF NOT EXISTS source_evidence (
     source_id TEXT NOT NULL REFERENCES source_registry(source_id),
     source_url TEXT NOT NULL,
     document_type TEXT NOT NULL CHECK(document_type IN (
-        'API_RESPONSE', 'OFFICIAL_ANNOUNCEMENT', 'PRESS_ARTICLE', 'WEB_SNIPPET', 'LEGACY_IMPORT'
+        'API_RESPONSE', 'HTML_PAGE', 'PDF_BULLETIN', 'LEGACY_IMPORT', 'SEARCH_SNIPPET'
     )),
     content_hash TEXT NOT NULL,
-    content_preview TEXT,
-    published_at_utc TIMESTAMP,
-    retrieved_at_utc TIMESTAMP NOT NULL,
-    licensing_tier TEXT NOT NULL DEFAULT 'OPEN_DATA' CHECK(licensing_tier IN (
-        'OPEN_DATA', 'PUBLIC_FAIR_USE', 'RESTRICTED'
-    ))
+    raw_payload_text TEXT,
+    retrieved_at_utc TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX IF NOT EXISTS idx_source_evidence_hash ON source_evidence(content_hash);
-CREATE INDEX IF NOT EXISTS idx_source_evidence_run ON source_evidence(run_id);
+CREATE INDEX IF NOT EXISTS idx_evidence_run ON source_evidence(run_id);
+CREATE INDEX IF NOT EXISTS idx_evidence_hash ON source_evidence(content_hash);
 
--- ----------------------------------------------------------------------------
--- 7. KANDYDACI EKSTRAKCJI Z AGENTÓW I PARSERÓW (extracted_candidates)
--- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS extracted_candidates (
     candidate_id TEXT PRIMARY KEY,
     evidence_id TEXT NOT NULL REFERENCES source_evidence(evidence_id),
@@ -194,7 +199,9 @@ END;
 -- ----------------------------------------------------------------------------
 -- 9. TABELA WSKAŹNIKÓW AKTUALNEJ WERSJI (current_observations)
 --    Odrębny mechanizm ustalania aktualnej wersji bez modyfikacji tabeli observations.
---    Zasada: Równe numery wersji nie mogą arbitralnie zastępować istniejącego wskaźnika.
+--    Zasada determinizmu: wybór wskaźnika jest w 100% spójny z widokiem v_latest_observations
+--    nawet przy imporcie danych w nieuporządkowanej kolejności (out-of-order import).
+--    Porządek wyboru: version_number DESC, observed_at_utc DESC, observation_id DESC.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS current_observations (
     indicator_code TEXT NOT NULL REFERENCES indicator_catalog(indicator_code),
@@ -208,6 +215,7 @@ CREATE TABLE IF NOT EXISTS current_observations (
     revision_type TEXT NOT NULL,
     version_number INTEGER NOT NULL,
     status TEXT NOT NULL CHECK(status IN ('VERIFIED', 'PENDING', 'CONFLICT')),
+    observed_at_utc TIMESTAMP NOT NULL,
     updated_at_utc TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (indicator_code, country_code, period_start)
 );
@@ -219,10 +227,10 @@ WHEN NEW.status = 'VERIFIED'
 BEGIN
     INSERT INTO current_observations (
         indicator_code, country_code, period_start, period_end, frequency,
-        observation_id, value_decimal, unit_code, revision_type, version_number, status, updated_at_utc
+        observation_id, value_decimal, unit_code, revision_type, version_number, status, observed_at_utc, updated_at_utc
     ) VALUES (
         NEW.indicator_code, NEW.country_code, NEW.period_start, NEW.period_end, NEW.frequency,
-        NEW.observation_id, NEW.value_decimal, NEW.unit_code, NEW.revision_type, NEW.version_number, NEW.status, CURRENT_TIMESTAMP
+        NEW.observation_id, NEW.value_decimal, NEW.unit_code, NEW.revision_type, NEW.version_number, NEW.status, NEW.observed_at_utc, CURRENT_TIMESTAMP
     )
     ON CONFLICT(indicator_code, country_code, period_start) DO UPDATE SET
         period_end = excluded.period_end,
@@ -233,19 +241,31 @@ BEGIN
         revision_type = excluded.revision_type,
         version_number = excluded.version_number,
         status = excluded.status,
+        observed_at_utc = excluded.observed_at_utc,
         updated_at_utc = CURRENT_TIMESTAMP
-    WHERE excluded.version_number > current_observations.version_number;
+    WHERE 
+        excluded.version_number > current_observations.version_number
+        OR (
+            excluded.version_number = current_observations.version_number
+            AND (
+                excluded.observed_at_utc > current_observations.observed_at_utc
+                OR (
+                    excluded.observed_at_utc = current_observations.observed_at_utc
+                    AND excluded.observation_id > current_observations.observation_id
+                )
+            )
+        );
 END;
 
--- WIDOK ANALITYCZNY NAJNOWSZYCH OBSERWACJI (deklaratywny, spójny z current_observations)
--- W przypadku identycznego numeru wersji pierwszeństwo ma pierwsza zarejestrowana obserwacja.
+-- WIDOK ANALITYCZNY NAJNOWSZYCH OBSERWACJI (deklaratywny, w 100% spójny z current_observations)
+-- Wybór następuje deterministycznie: wyższy numer wersji, a przy równej wersji nowsza data obserwacji.
 CREATE VIEW IF NOT EXISTS v_latest_observations AS
 WITH ranked AS (
     SELECT 
         o.*,
         ROW_NUMBER() OVER (
             PARTITION BY o.indicator_code, o.country_code, o.period_start 
-            ORDER BY o.version_number DESC, o.observed_at_utc ASC, o.observation_id ASC
+            ORDER BY o.version_number DESC, o.observed_at_utc DESC, o.observation_id DESC
         ) AS rnk
     FROM observations o
     WHERE o.status = 'VERIFIED'
@@ -320,3 +340,5 @@ CREATE TABLE IF NOT EXISTS legacy_migration_map (
     migrated_at_utc TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (legacy_table, legacy_id, target_entity, target_id)
 );
+
+CREATE INDEX IF NOT EXISTS idx_legacy_map_lookup ON legacy_migration_map(legacy_table, legacy_id);

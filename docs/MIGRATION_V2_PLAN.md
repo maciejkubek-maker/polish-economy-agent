@@ -106,9 +106,13 @@ Wszystkie 10 oficjalnych domen i portali zostaje bezstratnie przeniesionych do `
 
 ### 3.2. `generated_reports` (6 rekordów) -> `reports`
 - Każdy z 6 historycznych raportów zostaje zapisany z zachowaniem oryginalnego `content_markdown`.
-- Wyliczony zostaje `data_snapshot_hash` na podstawie powiązanych obserwacji.
-- `as_of_utc` zostaje zmapowany z kolumny `created_at` (18.09.2026).
+- Wyliczony zostaje `data_snapshot_hash` jako deterministyczny skrót SHA-256 z danych źródłowych raportu (wyeliminowano fikcyjne wartości tekstowe).
+- `report_date` zostaje zmapowany bezpośrednio z historycznej kolumny `report_date` (znormalizowanej z formatu `DD.MM.YYYY` do ISO `YYYY-MM-DD`, np. `2026-09-18`), a `as_of_utc` z kolumny `created_at`.
 - Raporty w tabeli legacy otrzymują wpis w `legacy_migration_map` z mapowaniem `legacy_id -> report_id`.
+
+### 3.3. `collected_indicators` (75 rekordów) -> `source_evidence`
+- Każdy dowód źródłowy otrzymuje deterministyczny skrót SHA-256 (`content_hash`) wyliczony z surowych danych wejściowych (brak fikcyjnych hashy).
+- Przypisanie `source_id` następuje precyzyjnie do właściwego źródła w `source_registry`: wskaźniki NBP (stopy referencyjne, inflacja bazowa) otrzymują `SRC_LEGACY_2`, a wskaźniki GUS otrzymują `SRC_LEGACY_1` (zamiast sztywnego przypisania wszystkiego do jednego źródła).
 
 ---
 

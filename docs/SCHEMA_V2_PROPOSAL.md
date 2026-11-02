@@ -198,20 +198,24 @@ Nie zawiera mutowalnej kolumny `is_latest` — aktualna wersja jest ustalana prz
 | `validated_at_utc`| `TIMESTAMP`| `NULLABLE` | Czas przejścia walidacji. |
 
 ### 3.9. `current_observations` oraz `v_latest_observations` — Odrębny Mechanizm Ustalania Aktualnej Wersji
-Aby zachować bezwzględny charakter append-only tabeli `observations` i nie wykonywać `UPDATE is_latest = 0` na wcześniejszych wierszach, wprowadzono dwa uzupełniające się mechanizmy:
+Aby zachować bezwzględny charakter append-only tabeli `observations` i nie wykonywać `UPDATE is_latest = 0` na wcześniejszych wierszach, wprowadzono dwa w 100% spójne i deterministyczne mechanizmy:
 
 1. **Zmaterializowana tabela wskaźników `current_observations`:**
    Zawiera unikalny klucz główny `(indicator_code, country_code, period_start)` wskazujący bieżący `observation_id`. Aktualizacja wskaźnika następuje automatycznie za pośrednictwem triggera `trg_observations_update_current` po operacji `INSERT INTO observations` (wyłącznie dla rekordów ze statusem `VERIFIED`).
-   **Zasada:** Nowa obserwacja zastępuje dotychczasowy wskaźnik wyłącznie wtedy, gdy jej numer wersji jest **ściśle wyższy** (`excluded.version_number > current_observations.version_number`). Równe numery wersji nie zastępują istniejącego wpisu.
+   **Zasada determinizmu i niewrażliwości na kolejność importu (out-of-order import):** Nowa obserwacja zastępuje dotychczasowy wskaźnik zgodnie z leksykograficznym porządkiem:
+   - wyższy numer wersji (`excluded.version_number > current_observations.version_number`),
+   - lub przy równych wersjach: nowszy fizyczny czas obserwacji (`excluded.observed_at_utc > current_observations.observed_at_utc`),
+   - lub przy równości obu: deterministyczny tie-breaker ID (`excluded.observation_id > current_observations.observation_id`).
+   Dzięki temu tabela wskaźników wskazuje identyczny rekord niezależnie od tego, czy dane zostały zaimportowane chronologicznie, wstecznie, czy partiami w losowej kolejności.
 2. **Deklaratywny widok SQL `v_latest_observations`:**
-   Wykorzystuje funkcję analityczną:
+   Wykorzystuje funkcję analityczną o identycznym porządku sortowania:
    ```sql
    ROW_NUMBER() OVER (
        PARTITION BY o.indicator_code, o.country_code, o.period_start 
-       ORDER BY o.version_number DESC, o.observed_at_utc ASC, o.observation_id ASC
+       ORDER BY o.version_number DESC, o.observed_at_utc DESC, o.observation_id DESC
    )
    ```
-   W przypadku identycznego numeru wersji pierwszeństwo ma pierwsza zarejestrowana obserwacja (`observed_at_utc ASC`). Zapewnia to pełną deterministyczną spójność widoku z tabelą `current_observations` pod każdym scenariuszem współbieżności.
+   Gwarantuje to absolutną równoważność matematyczną i spójność widoku z tabelą `current_observations` w każdym scenariuszu współbieżności i importu nieuporządkowanego.
 
 ### 3.10. `quality_events` — Dziennik Zdarzeń Jakościowych i Konfliktów
 Rejestruje każdy incydent walidacyjny, odrzucenie kandydata, niespójność jednostek lub konflikt między źródłami.
