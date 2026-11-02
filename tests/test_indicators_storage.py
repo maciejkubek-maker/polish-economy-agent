@@ -9,7 +9,7 @@ from modules.sources import CountrySourcesResponse, EconomicSource
 def test_save_and_read_indicators(isolated_db, isolated_db_path, sample_indicator_items):
     """Test saving indicators and verifying their persistence in SQLite."""
     isolated_db.save_indicators(
-        agent_name="TestGemini",
+        agent_name="TestAgent",
         country="Polska",
         indicators=sample_indicator_items,
     )
@@ -26,7 +26,7 @@ def test_save_and_read_indicators(isolated_db, isolated_db_path, sample_indicato
 
     assert len(rows) == 3
     # Check first row (Inflacja CPI r/r)
-    assert rows[0][0] == "TestGemini"
+    assert rows[0][0] == "TestAgent"
     assert rows[0][1] == "Polska"
     assert rows[0][2] == "Inflacja CPI r/r"
     assert rows[0][3] == "3.40%"

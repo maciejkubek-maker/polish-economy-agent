@@ -290,7 +290,6 @@ def test_isolated_process_import_app_does_not_create_db_connection():
     """
     code = """
 import sys, os
-os.environ['GOOGLE_API_KEY'] = 'mock'
 os.environ['OPENAI_API_KEY'] = 'mock'
 os.environ['TAVILY_API_KEY'] = 'mock'
 

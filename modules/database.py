@@ -84,17 +84,16 @@ class EconomyDatabase:
     conn.close()
 
     agents_found = {row[0]: row[1] for row in rows}
-    if "GeminiAgent" not in agents_found or "GPTAgent" not in agents_found:
+    if "GPTAgent" not in agents_found:
       return False
 
     now = datetime.datetime.now()
-    for agent, last_date_str in agents_found.items():
-      try:
-        last_date = datetime.datetime.fromisoformat(last_date_str)
-        if (now - last_date).total_seconds() > (max_days * 86400):
-          return False
-      except (ValueError, TypeError):
+    try:
+      last_date = datetime.datetime.fromisoformat(agents_found["GPTAgent"])
+      if (now - last_date).total_seconds() > (max_days * 86400):
         return False
+    except (ValueError, TypeError):
+      return False
 
     return True
 

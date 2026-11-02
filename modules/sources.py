@@ -1,6 +1,6 @@
 import config
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
 
@@ -21,9 +21,11 @@ class CountrySourcesResponse(BaseModel):
 
 class PolishEconomySourceChecker:
 
-  def __init__(self, model_name: str = config.DEFAULT_LLM_MODEL):
-    self.llm = ChatGoogleGenerativeAI(
-        model=model_name, google_api_key=config.GOOGLE_API_KEY
+  def __init__(self, model_name: str = config.DEFAULT_OPENAI_MODEL):
+    self.llm = ChatOpenAI(
+        model=model_name,
+        api_key=config.OPENAI_API_KEY,
+        temperature=0.1,
     )
     self.structured_llm = self.llm.with_structured_output(
         CountrySourcesResponse

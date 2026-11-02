@@ -22,7 +22,9 @@ import sqlite3
 import pytest
 
 import config
+import modules.evaluator as evaluator_module
 from app import server, set_db, set_storage_v2
+from langchain_core.runnables import RunnableLambda
 from modules.connectors.base import MacroObservation, RawEvidence, VariableNotMappedError
 from modules.evaluator import EconomyEvaluator
 from modules.pipeline_v2 import MacroPipelineV2, PipelineResult
@@ -389,6 +391,7 @@ def test_report_uses_only_latest_observations_from_its_run(temp_v2_db):
 def test_invalid_live_ai_report_falls_back_with_integrity_notice(
     temp_v2_db,
     monkeypatch,
+    capsys,
 ):
     """Obce liczby/przypisy i brak URL wymuszają jawny fallback v2."""
     monkeypatch.setattr(config, "OFFLINE_MODE", False)
@@ -421,7 +424,20 @@ def test_invalid_live_ai_report_falls_back_with_integrity_notice(
     monkeypatch.setattr(
         evaluator,
         "_run_llm_synthesis",
-        lambda *args, **kwargs: "# Raport\nCPI 4,1% [775]\n## 6. Źródła\n[775] GUS",
+        lambda *args, **kwargs: """# Raport
+## 1. Analiza Trendów w Dostępnym Okresie
+CPI 4,1% [775].
+## 2. Zagrożenia i Ryzyka Makroekonomiczne
+Brak.
+## 3. Co to oznacza dla Kowalskiego? (Perspektywa Obywatela)
+Brak.
+## 4. Co to oznacza dla Przedsiębiorców?
+Brak.
+## 5. Podsumowanie i Realistyczny Werdykt
+Brak.
+## 6. Źródła danych i Metodologia
+[775] GUS
+""",
     )
 
     report = evaluator.evaluate_from_v2(
@@ -442,6 +458,9 @@ def test_invalid_live_ai_report_falls_back_with_integrity_notice(
     assert "dowodem przyszłej stabilności walut" in report
     assert max(citations) == 1
     assert evidence.source_url in report
+    terminal_output = capsys.readouterr().out
+    assert "Raport GPT odrzucony przez walidator" in terminal_output
+    assert "Nieznane numery przypisów" in terminal_output
 
 
 def test_valid_live_ai_report_is_archived_without_fallback(temp_v2_db, monkeypatch):
@@ -534,6 +553,91 @@ Wniosek ogranicza się do zweryfikowanej obserwacji.
     assert "USD/2026-10-30" not in report_markdown
 
 
+def test_gpt_report_uses_gpt4o_with_terminal_streaming(monkeypatch):
+    """Synteza raportu korzysta wyłącznie z GPT-4o i streamingu LangChain."""
+    captured = {}
+
+    def fake_chat_openai(**kwargs):
+        captured.update(kwargs)
+        return RunnableLambda(lambda _: "poprawny raport GPT")
+
+    monkeypatch.setattr(evaluator_module, "ChatOpenAI", fake_chat_openai)
+
+    report = EconomyEvaluator()._run_llm_synthesis(
+        country="Polska",
+        report_date="02.11.2026",
+        periods_summary="październik 2026",
+        chronological_context="zweryfikowane dane",
+        allow_fallback=False,
+    )
+
+    assert report == "poprawny raport GPT"
+    assert captured["model"] == "gpt-4o"
+    assert captured["streaming"] is True
+    assert len(captured["callbacks"]) == 1
+    assert captured["temperature"] == 0.2
+
+
+def test_gpt_api_error_uses_safe_deterministic_fallback(
+    temp_v2_db,
+    monkeypatch,
+    capsys,
+):
+    """Błąd GPT uruchamia fallback i nie ujawnia klucza API w terminalu."""
+    secret = "sk-super-secret-test-key"
+    monkeypatch.setattr(config, "OPENAI_API_KEY", secret)
+    monkeypatch.setattr(config, "OFFLINE_MODE", False)
+    run_id = temp_v2_db.start_ingestion_run(provider="MANUAL", run_type="TRIGGERED")
+    evidence = RawEvidence(
+        evidence_id="EVI_GPT_ERROR",
+        source_id="SRC_NBP",
+        source_url="https://api.nbp.pl/api/exchangerates/rates/A/EUR/2026-10-30/",
+        document_type="API_RESPONSE",
+        content_hash="gpt-error",
+        payload_text="official",
+        status_code=200,
+        retrieved_at_utc="2026-10-30T12:05:00Z",
+    )
+    temp_v2_db.save_evidence(evidence, run_id=run_id)
+    temp_v2_db.save_observation(MacroObservation(
+        indicator_code="PL_FX_EUR_PLN",
+        country_code="PL",
+        period_start="2026-10-30",
+        period_end="2026-10-30",
+        frequency="DAILY",
+        value_decimal="4.3955",
+        unit_code="EUR_PLN",
+        revision_type="FINAL",
+        status="VERIFIED",
+        evidence_id=evidence.evidence_id,
+    ), run_id=run_id)
+
+    evaluator = EconomyEvaluator()
+    monkeypatch.setattr(
+        evaluator,
+        "_run_llm_synthesis",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError(f"quota exceeded for {secret}")
+        ),
+    )
+
+    report = evaluator.evaluate_from_v2(
+        country="Polska",
+        storage=temp_v2_db,
+        search_news=[],
+        offline_mode=False,
+        run_id=run_id,
+    )
+    terminal_output = capsys.readouterr().out
+
+    assert "deterministyczny fallback trybu live" in report
+    assert "Błąd API GPT" in terminal_output
+    assert "RuntimeError" in terminal_output
+    assert "quota exceeded" in terminal_output
+    assert "[REDACTED]" in terminal_output
+    assert secret not in terminal_output
+
+
 # ==============================================================================
 # 6. INTEGRACJA Z APLIKACJĄ FLASK (SERVE_REPORT Z V2)
 # ==============================================================================
@@ -570,7 +674,6 @@ def test_demo_import_without_api_keys_is_offline_by_default():
 
     env = os.environ.copy()
     env["PYTHON_DOTENV_DISABLED"] = "1"
-    env.pop("GOOGLE_API_KEY", None)
     env.pop("OPENAI_API_KEY", None)
     env.pop("TAVILY_API_KEY", None)
     env.pop("OFFLINE_MODE", None)

@@ -8,7 +8,7 @@
 
 ### Overview
 
-Polish Economy Agent is an engineering portfolio project that demonstrates an auditable pipeline for collecting, validating, storing, and presenting selected macroeconomic indicators for Poland. It combines official public-data APIs with web-search context and can generate a cited analytical report either through supported language models or through a deterministic offline generator.
+Polish Economy Agent is an engineering portfolio project that demonstrates an auditable pipeline for collecting, validating, storing, and presenting selected macroeconomic indicators for Poland. It combines official public-data APIs with web-search context and can generate a cited analytical report either through OpenAI GPT or through a deterministic offline generator.
 
 The project is a local prototype, not a deployed production service, an official statistical publication, or financial advice.
 
@@ -35,7 +35,7 @@ flowchart LR
 
     SQLite --> Mode{"Report generation mode"}
     Context --> Mode
-    Mode -->|Online| AI["AI analysis<br/>LangChain · Gemini or OpenAI GPT"]
+    Mode -->|Online| AI["AI analysis<br/>LangChain · OpenAI GPT"]
     Mode -->|Offline| Offline["Deterministic offline generator"]
     AI --> HTML["Sanitised HTML report<br/>citations · sources · missing-data labels"]
     Offline --> HTML
@@ -56,14 +56,13 @@ The official-data and Tavily paths are complementary. Numerical observations ori
 | Eurostat API | HICP, LFS/BAEL unemployment, and GDP series |
 | Tavily | Optional online search context and source snippets |
 | LangChain | Prompt, model, parser, and callback integration |
-| Google Gemini | Primary optional online report model |
-| OpenAI GPT | Optional fallback online report model |
+| OpenAI GPT (`gpt-4o`) | Optional online report model with streamed terminal output |
 | pytest | Offline unit, security, connector, storage, migration, and pipeline tests |
 | uv | Reproducible dependency and test runner workflow |
 
 ### Quick start: offline demo
 
-The default mode is offline. It requires no API keys and does not call NBP, GUS, Eurostat, Tavily, Gemini, or OpenAI. The pipeline uses deterministic local fixtures, writes only to the SQLite v2 database, generates `report.html`, and starts Flask locally.
+The default mode is offline. It requires no API keys and does not call NBP, GUS, Eurostat, Tavily, or OpenAI. The pipeline uses deterministic local fixtures, writes only to the SQLite v2 database, generates `report.html`, and starts Flask locally.
 
 > **Data notice:** offline fixture values are illustrative demonstration data. They are not live, current, or suitable for economic decisions.
 
@@ -98,7 +97,6 @@ cp .env.example .env
 OFFLINE_MODE=false
 DB_V2_PATH=instance/economy_agent_v2.db
 
-GOOGLE_API_KEY=your_gemini_key
 OPENAI_API_KEY=your_openai_key
 TAVILY_API_KEY=your_tavily_key
 ```
@@ -109,18 +107,18 @@ Then run:
 uv run python app.py
 ```
 
-In online report generation, the evaluator tries Gemini first, then OpenAI GPT, and falls back to explicitly labelled deterministic synthesis if both are unavailable or the AI report fails integrity validation. Live official-data calls and Tavily context require network access. If Tavily is unavailable or returns no results, the live run is marked partial and continues without search context; offline fixtures are never substituted in live mode.
+Online report generation uses OpenAI GPT through LangChain with the `gpt-4o` model and streams the analysis to the terminal. `OPENAI_API_KEY` is the only key required for AI analysis. If GPT is unavailable or its report fails integrity validation, the evaluator prints the specific fallback reason and uses explicitly labelled deterministic synthesis. Live official-data calls and Tavily context require network access. If Tavily is unavailable or returns no results, the live run is marked partial and continues without search context; offline fixtures are never substituted in live mode.
 
 ### Tests
 
-The final pre-merge audit passed **134 tests** offline:
+The GPT-only audit passed **136 tests** offline:
 
 ```bash
 uv sync --group dev
 uv run pytest -q
 ```
 
-Expected audited result: `134 passed`.
+Expected audited result: `136 passed`.
 
 <a id="report-screenshots"></a>
 
@@ -149,7 +147,7 @@ No image links are included until the screenshots are added to the repository.
 
 ### O projekcie
 
-Polish Economy Agent to projekt portfolio inżynierskiego prezentujący audytowalny potok pozyskiwania, walidacji, zapisu i prezentacji wybranych wskaźników makroekonomicznych dla Polski. Łączy oficjalne API danych publicznych z kontekstem wyszukiwania internetowego i generuje raport analityczny z przypisami za pomocą obsługiwanych modeli językowych albo deterministycznego generatora offline.
+Polish Economy Agent to projekt portfolio inżynierskiego prezentujący audytowalny potok pozyskiwania, walidacji, zapisu i prezentacji wybranych wskaźników makroekonomicznych dla Polski. Łączy oficjalne API danych publicznych z kontekstem wyszukiwania internetowego i generuje raport analityczny z przypisami za pomocą OpenAI GPT albo deterministycznego generatora offline.
 
 Projekt jest lokalnym prototypem. Nie jest wdrożonym systemem produkcyjnym, oficjalną publikacją statystyczną ani poradą finansową.
 
@@ -176,7 +174,7 @@ flowchart LR
 
     SQLite --> Mode{"Tryb generowania raportu"}
     Context --> Mode
-    Mode -->|Online| AI["Analiza AI<br/>LangChain · Gemini lub OpenAI GPT"]
+    Mode -->|Online| AI["Analiza AI<br/>LangChain · OpenAI GPT"]
     Mode -->|Offline| Offline["Deterministyczny generator offline"]
     AI --> HTML["Sanityzowany raport HTML<br/>przypisy · źródła · oznaczenia braków"]
     Offline --> HTML
@@ -197,14 +195,13 @@ flowchart LR
 | Eurostat API | HICP, bezrobocie BAEL i szeregi PKB |
 | Tavily | Opcjonalny kontekst wyszukiwania online i wycinki źródłowe |
 | LangChain | Integracja promptów, modeli, parserów i callbacków |
-| Google Gemini | Podstawowy opcjonalny model raportowania online |
-| OpenAI GPT | Opcjonalny zapasowy model raportowania online |
+| OpenAI GPT (`gpt-4o`) | Opcjonalny model raportowania online ze streamingiem w terminalu |
 | pytest | Testy offline: jednostkowe, bezpieczeństwa, konektorów, bazy, migracji i potoku |
 | uv | Powtarzalna instalacja zależności i uruchamianie testów |
 
 ### Szybki start: demo offline
 
-Tryb offline jest domyślny. Nie wymaga kluczy API i nie łączy się z NBP, GUS, Eurostatem, Tavily, Gemini ani OpenAI. Potok korzysta z deterministycznych lokalnych fixture'ów, zapisuje dane wyłącznie w bazie SQLite v2, generuje `report.html` i uruchamia lokalny serwer Flask.
+Tryb offline jest domyślny. Nie wymaga kluczy API i nie łączy się z NBP, GUS, Eurostatem, Tavily ani OpenAI. Potok korzysta z deterministycznych lokalnych fixture'ów, zapisuje dane wyłącznie w bazie SQLite v2, generuje `report.html` i uruchamia lokalny serwer Flask.
 
 > **Informacja o danych:** wartości we fixture'ach offline są przykładowymi danymi demonstracyjnymi. Nie są danymi bieżącymi ani podstawą do decyzji ekonomicznych.
 
@@ -239,7 +236,6 @@ cp .env.example .env
 OFFLINE_MODE=false
 DB_V2_PATH=instance/economy_agent_v2.db
 
-GOOGLE_API_KEY=twoj_klucz_gemini
 OPENAI_API_KEY=twoj_klucz_openai
 TAVILY_API_KEY=twoj_klucz_tavily
 ```
@@ -250,18 +246,18 @@ Następnie uruchom:
 uv run python app.py
 ```
 
-Podczas generowania online evaluator najpierw próbuje Gemini, następnie OpenAI GPT, a przy braku modeli lub odrzuceniu raportu przez kontrolę integralności przechodzi do jawnie oznaczonej syntezy deterministycznej. Pobieranie aktualnych danych oficjalnych i kontekstu Tavily wymaga dostępu do sieci. Jeśli Tavily jest niedostępne lub nie zwróci wyników, przebieg live otrzymuje status częściowy i działa bez kontekstu wyszukiwania; fixture'y offline nigdy nie są podstawiane w trybie live.
+Generowanie raportu online wykorzystuje OpenAI GPT przez LangChain, model `gpt-4o`, ze streamingiem analizy w terminalu. `OPENAI_API_KEY` jest jedynym kluczem wymaganym do analizy AI. Gdy GPT jest niedostępny albo raport nie przejdzie kontroli integralności, evaluator wypisuje konkretną przyczynę i przechodzi do jawnie oznaczonej syntezy deterministycznej. Pobieranie aktualnych danych oficjalnych i kontekstu Tavily wymaga dostępu do sieci. Jeśli Tavily jest niedostępne lub nie zwróci wyników, przebieg live otrzymuje status częściowy i działa bez kontekstu wyszukiwania; fixture'y offline nigdy nie są podstawiane w trybie live.
 
 ### Testy
 
-Końcowy audyt przed merge potwierdził **134 testy** działające offline:
+Audyt wariantu GPT-only potwierdził **136 testów** działających offline:
 
 ```bash
 uv sync --group dev
 uv run pytest -q
 ```
 
-Oczekiwany wynik audytu: `134 passed`.
+Oczekiwany wynik audytu: `136 passed`.
 
 ### Zrzuty ekranu raportu
 

@@ -53,7 +53,7 @@ def test_update_record_when_composite_key_matches(isolated_db, isolated_db_path)
 
 
 def test_different_agents_produce_separate_records(isolated_db, isolated_db_path):
-    """Test that GeminiAgent and GPTAgent save separate rows for the exact same indicator and period."""
+    """Test that different agent names save separate rows for the same indicator."""
     item1 = IndicatorItem(
         indicator_name="PKB r/r",
         value="3.90%",
@@ -62,7 +62,7 @@ def test_different_agents_produce_separate_records(isolated_db, isolated_db_path
         page_info="https://stat.gov.pl",
         trend_direction="wzrost",
     )
-    isolated_db.save_indicators("GeminiAgent", "Polska", [item1])
+    isolated_db.save_indicators("AgentA", "Polska", [item1])
 
     item2 = IndicatorItem(
         indicator_name="PKB r/r",
@@ -72,7 +72,7 @@ def test_different_agents_produce_separate_records(isolated_db, isolated_db_path
         page_info="https://stat.gov.pl",
         trend_direction="wzrost",
     )
-    isolated_db.save_indicators("GPTAgent", "Polska", [item2])
+    isolated_db.save_indicators("AgentB", "Polska", [item2])
 
     conn = sqlite3.connect(isolated_db_path)
     cur = conn.cursor()
@@ -82,7 +82,7 @@ def test_different_agents_produce_separate_records(isolated_db, isolated_db_path
 
     assert len(rows) == 2
     agents = {r[0] for r in rows}
-    assert agents == {"GeminiAgent", "GPTAgent"}
+    assert agents == {"AgentA", "AgentB"}
 
 
 def test_indicator_name_casing_sensitivity_creates_duplicate_entries(isolated_db, isolated_db_path):

@@ -12,7 +12,6 @@ import config
 from langchain_core.callbacks import StreamingStdOutCallbackHandler
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 from modules.storage_v2 import SQLiteV2Storage
 
@@ -129,6 +128,16 @@ class EconomyEvaluator:
 
   def __init__(self, db_path: Optional[str] = None):
     self.db_path = db_path or "instance/economy_agent.db"
+
+  @staticmethod
+  def _safe_error_message(error: Exception) -> str:
+    """Zwraca przyczynę błędu bez ujawniania klucza OpenAI."""
+    message = str(error)
+    api_key = getattr(config, "OPENAI_API_KEY", None)
+    if api_key:
+      message = message.replace(str(api_key), "[REDACTED]")
+    message = re.sub(r"\bsk-[A-Za-z0-9_-]{8,}\b", "[REDACTED]", message)
+    return f"{type(error).__name__}: {message}"
 
   def fetch_timeline_data(self, country: str):
     """Metoda kompatybilności wstecznej dla bazy legacy v1."""
@@ -280,31 +289,28 @@ class EconomyEvaluator:
     }
 
     try:
-      llm_gemini = ChatGoogleGenerativeAI(
-          model=config.DEFAULT_LLM_MODEL,
-          google_api_key=config.GOOGLE_API_KEY,
+      llm_gpt = ChatOpenAI(
+          model=config.DEFAULT_OPENAI_MODEL,
+          api_key=config.OPENAI_API_KEY,
           streaming=True,
           callbacks=[StreamingStdOutCallbackHandler()],
+          temperature=0.2,
       )
-      chain = prompt | llm_gemini | StrOutputParser()
+      chain = prompt | llm_gpt | StrOutputParser()
       return chain.invoke(inputs)
-    except Exception as err:
-      print(f"\n[Evaluator Notice] Przełączanie awaryjne na model OpenAI: {err}\n")
-      try:
-        llm_gpt = ChatOpenAI(
-            model=config.DEFAULT_OPENAI_MODEL,
-            api_key=config.OPENAI_API_KEY,
-            streaming=True,
-            callbacks=[StreamingStdOutCallbackHandler()],
-            temperature=0.2,
+    except Exception as gpt_err:
+      if allow_fallback:
+        print(
+            "\n[Evaluator Fallback] Błąd API GPT; używam syntezy "
+            f"deterministycznej: {self._safe_error_message(gpt_err)}\n"
         )
-        chain_gpt = prompt | llm_gpt | StrOutputParser()
-        return chain_gpt.invoke(inputs)
-      except Exception as gpt_err:
-        print(f"\n[Evaluator Notice] Modele online niedostępne, przejście do syntezy deterministycznej: {gpt_err}\n")
-        if allow_fallback:
-          return self._generate_deterministic_report(country, report_date, periods_summary, chronological_context)
-        raise RuntimeError("Modele online są niedostępne") from gpt_err
+        return self._generate_deterministic_report(
+            country,
+            report_date,
+            periods_summary,
+            chronological_context,
+        )
+      raise
 
   # -------------------------------------------------------------------------
   # Nowa integracja z SQLite v2 (TASK-06)
@@ -458,7 +464,8 @@ class EconomyEvaluator:
           f"{report}"
       )
 
-    # Próba generowania przez LLM
+    # Próba generowania przez GPT i niezależna kontrola wyniku.
+    fallback_reason = ""
     try:
       candidate = self._run_llm_synthesis(
           country,
@@ -467,29 +474,46 @@ class EconomyEvaluator:
           chronological_context,
           allow_fallback=False,
       )
-      self._validate_v2_report(candidate, citations, verified_obs)
-      return (
-          "**Tryb generowania:** analiza online zweryfikowana przez kontrolę "
-          "integralności liczb, przypisów i URL.\n\n"
-          f"{search_notice}{candidate}"
+    except Exception as gpt_err:
+      fallback_reason = (
+          "Błąd API GPT: "
+          f"{self._safe_error_message(gpt_err)}"
       )
-    except Exception:
-      report = self._build_deterministic_v2_report(
-          country=country,
-          report_date=report_date,
-          periods_summary=periods_summary,
-          obs_by_code=obs_by_code,
-          obs_citation_map=obs_citation_map,
-          unverified_obs=unverified_obs,
-          search_news=search_news,
-          citations=citations,
-      )
-      return (
-          "**Tryb generowania:** deterministyczny fallback trybu live — "
-          "wynik modelu był niedostępny albo nie przeszedł kontroli "
-          "integralności.\n\n"
-          f"{search_notice}{report}"
-      )
+    else:
+      try:
+        self._validate_v2_report(candidate, citations, verified_obs)
+      except Exception as validation_err:
+        fallback_reason = (
+            "Raport GPT odrzucony przez walidator: "
+            f"{self._safe_error_message(validation_err)}"
+        )
+      else:
+        return (
+            "**Tryb generowania:** analiza online zweryfikowana przez kontrolę "
+            "integralności liczb, przypisów i URL.\n\n"
+            f"{search_notice}{candidate}"
+        )
+
+    print(
+        "\n[Evaluator Fallback] Używam syntezy deterministycznej. "
+        f"Przyczyna: {fallback_reason}\n"
+    )
+    report = self._build_deterministic_v2_report(
+        country=country,
+        report_date=report_date,
+        periods_summary=periods_summary,
+        obs_by_code=obs_by_code,
+        obs_citation_map=obs_citation_map,
+        unverified_obs=unverified_obs,
+        search_news=search_news,
+        citations=citations,
+    )
+    return (
+        "**Tryb generowania:** deterministyczny fallback trybu live — "
+        "wynik GPT był niedostępny albo nie przeszedł kontroli "
+        "integralności.\n\n"
+        f"{search_notice}{report}"
+    )
 
   @staticmethod
   def _normalize_numeric_claim(value: Any) -> str:

@@ -4,7 +4,6 @@ import pytest
 
 # Ensure dummy keys are present in environment BEFORE config.py or other modules are loaded
 # so tests can run completely offline without real API keys.
-os.environ["GOOGLE_API_KEY"] = os.environ.get("GOOGLE_API_KEY") or "mock-google-api-key-offline"
 os.environ["OPENAI_API_KEY"] = os.environ.get("OPENAI_API_KEY") or "mock-openai-api-key-offline"
 os.environ["TAVILY_API_KEY"] = os.environ.get("TAVILY_API_KEY") or "mock-tavily-api-key-offline"
 

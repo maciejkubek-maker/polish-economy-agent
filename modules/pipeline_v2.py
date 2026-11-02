@@ -7,7 +7,7 @@ Integruje cały proces w jeden działający, w pełni kontrolowany i audytowalny
 2. WALIDACJA (typy, jednostki, definicje, okresy, brak zgadywania).
 3. ZAPIS (SQLite v2: ingestion_runs, source_evidence, observations - strictly append-only).
 4. WYSZUKIWANIE (Tavily Search: komunikaty oficjalne vs komentarze medialne).
-5. ANALIZA AI (EconomyEvaluator / Gemini / GPT z bezpiecznym trybem offline).
+5. ANALIZA AI (EconomyEvaluator / OpenAI GPT z bezpiecznym trybem offline).
 6. RAPORT (wielosekcyjny raport analityczny z aparatem źródłowym, zapis w tabeli reports oraz w HTML).
 """
 

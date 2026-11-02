@@ -1,7 +1,6 @@
 from typing import List, Optional
 import config
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 from modules.database import EconomyDatabase
 from pydantic import BaseModel, Field
@@ -61,13 +60,12 @@ EXTRACTION_PROMPT = ChatPromptTemplate.from_messages([
 
 class EconomyDataFetcher:
 
-  def __init__(self, agent_name: str = "GeminiAgent"):
+  def __init__(self, agent_name: str = "GPTAgent"):
     self.agent_name = agent_name
-    self.llm = ChatGoogleGenerativeAI(
-        model=config.DEFAULT_LLM_MODEL,
-        google_api_key=config.GOOGLE_API_KEY,
-        max_retries=1,
-        timeout=30,
+    self.llm = ChatOpenAI(
+        model=config.DEFAULT_OPENAI_MODEL,
+        api_key=config.OPENAI_API_KEY,
+        temperature=0.1,
     )
     self.db = EconomyDatabase()
 
@@ -85,19 +83,9 @@ class EconomyDataFetcher:
     }
 
     print(f"[{self.agent_name}] Ekstrakcja danych makroekonomicznych...")
-    try:
-      structured_llm = self.llm.with_structured_output(IndicatorResponse)
-      chain = EXTRACTION_PROMPT | structured_llm
-      result: IndicatorResponse = chain.invoke(inputs)
-    except Exception as err:
-      print(f"[{self.agent_name} Notice] Przełączanie awaryjne na model OpenAI: {err}")
-      fallback_llm = ChatOpenAI(
-          model=config.DEFAULT_OPENAI_MODEL,
-          api_key=config.OPENAI_API_KEY,
-          temperature=0.1,
-      ).with_structured_output(IndicatorResponse)
-      chain_fallback = EXTRACTION_PROMPT | fallback_llm
-      result: IndicatorResponse = chain_fallback.invoke(inputs)
+    structured_llm = self.llm.with_structured_output(IndicatorResponse)
+    chain = EXTRACTION_PROMPT | structured_llm
+    result: IndicatorResponse = chain.invoke(inputs)
 
     self.db.save_indicators(
         agent_name=self.agent_name,
