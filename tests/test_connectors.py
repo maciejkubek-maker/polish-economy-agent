@@ -773,29 +773,96 @@ class TestGusConnector:
         assert obs.status != "VERIFIED"
         assert "VARIABLE_NOT_FOUND_IN_OFFICIAL_GUS_API" in obs.metadata["status_reason"]
 
-    def test_fetch_registered_unemployment_count_preapproved_registry_succeeds_as_verified(self):
+    def test_approved_registry_preapproved_variable_succeeds_as_verified(self):
         """
-        Wskaźnik znajdujący się w osobnym, wcześniej zatwierdzonym rejestrze mapowań
-        (APPROVED_BDL_REGISTRY) uzyskuje status VERIFIED.
+        Zmienna znajdująca się w kontrolowanym, wcześniej zatwierdzonym rejestrze mapowań
+        (APPROVED_BDL_REGISTRY, np. 60270 dla PL_UNEMPLOYMENT_REGISTERED_RATE)
+        uzyskuje status VERIFIED z powodem VERIFIED_PREAPPROVED_REGISTRY.
         """
         connector = GusConnector(offline_mode=True)
-        connector.register_fixture("by-variable/777777", GUS_BDL_COUNT_JSON)
-        connector.APPROVED_BDL_REGISTRY[777777] = {
-            "indicator_code": "PL_UNEMPLOYMENT_REGISTERED_COUNT",
-            "name": "Liczba bezrobotnych zarejestrowanych (zatwierdzony rejestr)",
-            "unit_code": "THOUSAND_PERSONS",
-            "frequency": "MONTHLY",
-            "status": "VERIFIED",
-        }
+        connector.register_fixture("by-variable/60270", GUS_BDL_UNEMPLOYMENT_JSON)
 
-        evidence, observations = connector.fetch_registered_unemployment_count(var_id=777777)
+        evidence, observations = connector.fetch_registered_unemployment()
+
+        assert len(observations) == 2
+        obs = observations[-1]
+        assert obs.indicator_code == "PL_UNEMPLOYMENT_REGISTERED_RATE"
+        assert obs.status == "VERIFIED"
+        assert obs.unit_code == "PCT"
+        assert obs.metadata["status_reason"] == "VERIFIED_PREAPPROVED_REGISTRY"
+
+    def test_bypass_attempt_registry_mutation_is_blocked(self):
+        """
+        Próba bezpośredniej modyfikacji rejestru zatwierdzonych mapowań
+        (APPROVED_BDL_REGISTRY / VERIFIED_BDL_VARIABLES) jest blokowana przez MappingProxyType.
+        """
+        connector = GusConnector(offline_mode=True)
+        with pytest.raises(TypeError):
+            connector.APPROVED_BDL_REGISTRY[999999] = {
+                "indicator_code": "PL_UNEMPLOYMENT_REGISTERED_COUNT",
+                "name": "Rogue injection",
+                "unit_code": "THOUSAND_PERSONS",
+                "frequency": "MONTHLY",
+                "status": "VERIFIED",
+            }
+        with pytest.raises(TypeError):
+            connector.VERIFIED_BDL_VARIABLES[999999] = {"status": "VERIFIED"}
+
+    def test_bypass_attempt_force_status_is_blocked(self):
+        """
+        Próba wymuszenia statusu VERIFIED przez parametr force_status="VERIFIED"
+        jest bezwzględnie blokowana przez ValidationError.
+        """
+        connector = GusConnector(offline_mode=True)
+        connector.register_fixture("by-variable/60269", GUS_BDL_COUNT_JSON)
+
+        with pytest.raises(ValidationError, match="force_status"):
+            connector.fetch_bdl_variable(
+                var_id=60269,
+                indicator_code="PL_UNEMPLOYMENT_REGISTERED_COUNT",
+                unit_code="THOUSAND_PERSONS",
+                force_status="VERIFIED",
+            )
+
+        with pytest.raises(ValidationError, match="force_status"):
+            connector.fetch_registered_unemployment_count(
+                var_id=60269,
+                force_status="VERIFIED",
+            )
+
+    def test_bypass_attempt_trusted_preapproved_is_blocked(self):
+        """
+        Próba rejestracji zmiennej z flagą trusted_preapproved=True
+        bez niezależnej autoryzacji rzuca ValidationError.
+        """
+        connector = GusConnector(offline_mode=True)
+        with pytest.raises(ValidationError, match="trusted_preapproved"):
+            connector.register_verified_bdl_variable(
+                var_id=999999,
+                name="Nieautoryzowana zmienna",
+                indicator_code="PL_UNEMPLOYMENT_REGISTERED_COUNT",
+                unit_code="THOUSAND_PERSONS",
+                frequency="MONTHLY",
+                trusted_preapproved=True,
+            )
+
+    def test_bypass_attempt_valid_id_with_mismatched_definition_or_unit_remains_not_verified(self):
+        """
+        Samo poprawne ID nie wystarcza — wymagana jest zgodność definicji ekonomicznej, jednostki i częstotliwości.
+        Użycie ID 60270 (stopa bezrobocia, PCT, ANNUAL) jako liczby bezrobotnych (headcount, THOUSAND_PERSONS, MONTHLY)
+        zostaje odrzucone i seria otrzymuje status NOT_VERIFIED.
+        """
+        connector = GusConnector(offline_mode=True)
+        connector.register_fixture("by-variable/60270", GUS_BDL_COUNT_JSON)
+
+        evidence, observations = connector.fetch_registered_unemployment_count(var_id=60270)
 
         assert len(observations) == 1
         obs = observations[0]
         assert obs.indicator_code == "PL_UNEMPLOYMENT_REGISTERED_COUNT"
-        assert obs.status == "VERIFIED"
-        assert obs.unit_code == "THOUSAND_PERSONS"
-        assert obs.metadata["status_reason"] == "VERIFIED_PREAPPROVED_REGISTRY"
+        assert obs.status == "NOT_VERIFIED"
+        assert obs.status != "VERIFIED"
+        assert "MISMATCH" in obs.metadata["status_reason"]
 
     def test_fetch_registered_unemployment_count_verified_via_official_gus_api_metadata(self):
         """
