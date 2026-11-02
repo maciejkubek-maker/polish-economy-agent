@@ -167,3 +167,56 @@ TASK-06 został w pełni zrealizowany. Platforma danych v2 jest gotowa do dział
 1. **Harmonogram automatycznych pobrań:** Zintegrowanie zadania cron / APScheduler do cyklicznego uruchamiania `run_pipeline(use_v2=True)`.
 2. **Rozszerzenie rejestru mapowań GUS:** Przeprowadzenie weryfikacji produkcyjnych ID w BDL dla brakujących serii (liczba bezrobotnych, przeciętne wynagrodzenie brutto, produkcja przemysłowa).
 3. **Eksport JSON / API endpoint:** Wystawienie odrębnego punktu końcowego `/api/v2/report/latest` dla integracji zewnętrznych systemów.
+
+---
+
+## 6. Final Portfolio Check
+
+**Data kontroli:** 2026-11-02<br>
+**Status:** `DONE`<br>
+**Commit poprawki blokującej:** `3e08a6c6588e20be3d321a3726d810d637f5ae8e`<br>
+**PR:** https://github.com/maciejkubek-maker/polish-economy-agent/pull/4
+
+### DONE
+
+- Uruchomiono pełny potok demo bez kluczy API, z wyłączonym odczytem `.env`, na tymczasowej bazie SQLite v2 i wbudowanych fixture'ach offline.
+- Potok zakończył się statusem `COMPLETED`: 10 dowodów, 17 obserwacji i 5 materiałów kontekstowych.
+- Raport otwarto przez rzeczywisty lokalny serwer Flask pod `/report.html`; odpowiedź HTTP 200 miała 17 899 bajtów.
+- Potwierdzono aparat przypisów oraz rozdzielenie `Oficjalne API / Rejestr` od `Analiza / Komentarz medialny`.
+- Potwierdzono oznaczenie `Brak danych` w scenariuszu częściowej awarii konektora.
+- Nie znaleziono aktywnych wzorców XSS (`<script`, `<iframe`, `onerror=`); testy renderera i endpointu przeszły.
+- Szablon `build_html_template` i CSS w `app.py` nie zmieniły się względem bezpośrednio poprzedniego commita, więc wygląd raportu pozostał zgodny.
+- Usunięto blokadę startu bez kluczy i ustawiono `OFFLINE_MODE=true` jako bezpieczną wartość domyślną; README jednoznacznie opisuje brak wywołań Tavily/Gemini/OpenAI w demo.
+- Nie rozpoczęto TASK-07 i nie wykonano merge.
+
+### Zmienione pliki
+
+| Ścieżka | Opis |
+|---|---|
+| `config.py` | Klucze API są opcjonalne przy imporcie; demo jest domyślnie offline. |
+| `README.md` | Doprecyzowano bezpłatny, offline'owy charakter poleceń demo. |
+| `tests/test_pipeline_v2.py` | Dodano regresję startu bez kluczy i domyślnego trybu offline. |
+| `docs/agent-reports/TASK-06-REPORT.md` | Dodano wynik finalnej kontroli portfolio. |
+
+### Testy i kontrole
+
+| Polecenie / kontrola | Status | Wynik |
+|---|---|---|
+| `uv sync --group dev` | `PASSED` | 72 pakiety rozwiązane, 70 sprawdzonych. |
+| Wybrane testy pipeline/Flask/XSS | `PASSED` | 20/20 w 4,05 s. |
+| `uv run pytest -q` | `PASSED` | 130/130 w 6,33 s. |
+| Lokalny Flask + HTTP `/report.html` | `PASSED` | HTTP 200; przypisy i oba typy źródeł obecne; brak aktywnego XSS. |
+| Integralność `instance/economy_agent.db` | `PASSED` | 73 728 B; SHA-256 `e6c5f318ffe1eceeb34191a7a74ec9f7f7de6069c4f298850792734277ecde3b`. |
+
+### Stan danych i bezpieczeństwa
+
+- Oryginalna baza `instance/economy_agent.db` nie została zmodyfikowana.
+- Nie wykonano płatnych wywołań API ani połączeń live; testy i demo korzystały z fixture'ów offline.
+- Tymczasowe bazy i raporty audytowe zostały usunięte automatycznie po kontroli.
+- `KNOWN_VULNERABILITY`: brak znanych podatności XSS w sprawdzonym rendererze; ochrona nadal zależy od utrzymania zasady escape-before-formatting.
+
+### PROPOSED / NOT_RUN
+
+- `PROPOSED`: code review i decyzja właściciela dotycząca PR #4.
+- `NOT_RUN`: testy live i płatne API — celowo, zgodnie z zakresem finalnego audytu offline.
+- TASK-07 pozostaje poza zakresem.
