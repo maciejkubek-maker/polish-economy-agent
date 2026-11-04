@@ -13,6 +13,7 @@ from langchain_core.callbacks import StreamingStdOutCallbackHandler
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
+from modules.diagnostics import safe_error_message
 from modules.storage_v2 import SQLiteV2Storage
 
 
@@ -128,16 +129,16 @@ class EconomyEvaluator:
 
   def __init__(self, db_path: Optional[str] = None):
     self.db_path = db_path or "instance/economy_agent.db"
+    self.last_generation_diagnostics: Dict[str, Any] = {
+        "generation_mode": None,
+        "gpt_attempted": False,
+        "fallback_reason": None,
+    }
 
   @staticmethod
   def _safe_error_message(error: Exception) -> str:
-    """Zwraca przyczynę błędu bez ujawniania klucza OpenAI."""
-    message = str(error)
-    api_key = getattr(config, "OPENAI_API_KEY", None)
-    if api_key:
-      message = message.replace(str(api_key), "[REDACTED]")
-    message = re.sub(r"\bsk-[A-Za-z0-9_-]{8,}\b", "[REDACTED]", message)
-    return f"{type(error).__name__}: {message}"
+    """Zwraca przyczynę błędu bez ujawniania sekretów ani treści modelu."""
+    return safe_error_message(error)
 
   def fetch_timeline_data(self, country: str):
     """Metoda kompatybilności wstecznej dla bazy legacy v1."""
@@ -440,6 +441,11 @@ class EconomyEvaluator:
 
     # Sprawdzenie trybu offline / bezpłatnego
     is_offline = offline_mode or getattr(config, "OFFLINE_MODE", False)
+    self.last_generation_diagnostics = {
+        "generation_mode": "OFFLINE_DEMO" if is_offline else None,
+        "gpt_attempted": False,
+        "fallback_reason": None,
+    }
     search_notice = ""
     if not search_news:
       search_notice = (
@@ -466,6 +472,7 @@ class EconomyEvaluator:
 
     # Próba generowania przez GPT i niezależna kontrola wyniku.
     fallback_reason = ""
+    self.last_generation_diagnostics["gpt_attempted"] = True
     try:
       candidate = self._run_llm_synthesis(
           country,
@@ -479,6 +486,10 @@ class EconomyEvaluator:
           "Błąd API GPT: "
           f"{self._safe_error_message(gpt_err)}"
       )
+      self.last_generation_diagnostics.update({
+          "generation_mode": "GPT_API_ERROR",
+          "fallback_reason": fallback_reason,
+      })
     else:
       try:
         self._validate_v2_report(candidate, citations, verified_obs)
@@ -487,7 +498,12 @@ class EconomyEvaluator:
             "Raport GPT odrzucony przez walidator: "
             f"{self._safe_error_message(validation_err)}"
         )
+        self.last_generation_diagnostics.update({
+            "generation_mode": "GPT_VALIDATION_REJECTED",
+            "fallback_reason": fallback_reason,
+        })
       else:
+        self.last_generation_diagnostics["generation_mode"] = "LIVE_AI_VALIDATED"
         return (
             "**Tryb generowania:** analiza online zweryfikowana przez kontrolę "
             "integralności liczb, przypisów i URL.\n\n"

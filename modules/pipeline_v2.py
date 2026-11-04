@@ -15,7 +15,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hashlib
 import json
+import logging
 import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 import uuid
 
@@ -32,6 +34,12 @@ from modules.connectors.eurostat import EurostatConnector
 from modules.connectors.gus import GusConnector
 from modules.connectors.nbp import NbpConnector
 from modules.evaluator import EconomyEvaluator
+from modules.diagnostics import (
+    PipelineDiagnostics,
+    base_run_summary,
+    missing_report_indicators,
+    safe_error_message,
+)
 from modules.search_service import WebSearchService
 from modules.storage_v2 import SQLiteV2Storage
 
@@ -201,11 +209,13 @@ class MacroPipelineV2:
         offline_mode: bool = False,
         search_service: Optional[WebSearchService] = None,
         evaluator: Optional[EconomyEvaluator] = None,
+        diagnostics_dir: os.PathLike[str] | str = Path("instance") / "logs",
     ):
         self.offline_mode = offline_mode or getattr(config, "OFFLINE_MODE", False)
         self.db = db or SQLiteV2Storage()
         self.search_service = search_service or WebSearchService(offline_mode=self.offline_mode)
         self.evaluator = evaluator or EconomyEvaluator()
+        self.diagnostics = PipelineDiagnostics(diagnostics_dir)
 
         # Inicjalizacja konektorów
         self.nbp = NbpConnector(offline_mode=self.offline_mode)
@@ -427,20 +437,15 @@ class MacroPipelineV2:
         snap_payload = f"{country}|{report_date}|{exec_horizon}|{report_markdown}"
         snap_hash = hashlib.sha256(snap_payload.encode("utf-8")).hexdigest()
 
+        generation_diagnostics = dict(self.evaluator.last_generation_diagnostics)
         model_meta = {
             "orchestrator": "MacroPipelineV2",
             "run_id": run_id,
             "offline_mode": self.offline_mode,
             "verified_indicators_count": len(verified),
-            "generation_mode": (
-                "OFFLINE_DEMO"
-                if self.offline_mode
-                else (
-                    "LIVE_DETERMINISTIC_FALLBACK"
-                    if "deterministyczny fallback trybu live" in report_markdown
-                    else "LIVE_AI_VALIDATED"
-                )
-            ),
+            "generation_mode": generation_diagnostics.get("generation_mode"),
+            "gpt_attempted": generation_diagnostics.get("gpt_attempted", False),
+            "fallback_reason": generation_diagnostics.get("fallback_reason"),
             "search_context": (
                 "OFFLINE_DEMO_FIXTURES"
                 if self.offline_mode
@@ -477,20 +482,64 @@ class MacroPipelineV2:
         """
         Uruchamia pełny, zintegrowany proces platformy danych v2.
         """
-        run_id = self.db.start_ingestion_run(provider="MANUAL", run_type="TRIGGERED")
-        print(f"[PipelineV2] Uruchomiono przebieg: {run_id} (offline_mode={self.offline_mode})")
-
+        run_id = f"UNAVAILABLE_{uuid.uuid4().hex[:12]}"
+        summary = base_run_summary(run_id=run_id, offline_mode=self.offline_mode)
+        q_events: List[str] = []
+        errors: List[str] = []
+        evidence_list: List[RawEvidence] = []
+        observation_list: List[MacroObservation] = []
+        search_news: List[Dict[str, Any]] = []
+        saved_obs = 0
+        run_started = False
+        self.diagnostics.event(logging.INFO, "Pipeline execution requested", run_id=run_id)
         try:
+            run_id = self.db.start_ingestion_run(provider="MANUAL", run_type="TRIGGERED")
+            run_started = True
+            summary["run_id"] = run_id
+            self.diagnostics.event(
+                logging.INFO,
+                f"Pipeline started (offline_mode={self.offline_mode})",
+                run_id=run_id,
+            )
+            print(f"[PipelineV2] Uruchomiono przebieg: {run_id} (offline_mode={self.offline_mode})")
+
             # 1. Pobieranie danych oficjalnych
             evidence_list, observation_list, q_events, errors = self.fetch_official_data(run_id)
+            self.diagnostics.event(
+                logging.INFO,
+                f"Official data fetched: evidence={len(evidence_list)}, observations={len(observation_list)}",
+                run_id=run_id,
+            )
+            for partial_error in errors:
+                self.diagnostics.event(
+                    logging.WARNING,
+                    f"Partial connector failure: {partial_error}",
+                    run_id=run_id,
+                )
             print(f"[PipelineV2] Pobrano {len(evidence_list)} dowodów oraz {len(observation_list)} obserwacji.")
 
             # 2. Zapis w bazie SQLite v2
             saved_evi, saved_obs = self.store_official_data(evidence_list, observation_list, run_id)
+            self.diagnostics.event(
+                logging.INFO,
+                f"Official data stored: evidence={saved_evi}, observations={saved_obs}",
+                run_id=run_id,
+            )
             print(f"[PipelineV2] Zapisano do bazy v2: {saved_evi} dowodów, {saved_obs} obserwacji.")
 
             # 3. Wyszukiwanie Tavily i wzbogacenie kontekstu
             search_news = self.search_enrichment(country, run_id)
+            summary["tavily_results_count"] = len(search_news)
+            summary["tavily_status"] = (
+                "OFFLINE_DEMO"
+                if self.offline_mode
+                else ("SUCCESS" if search_news else "UNAVAILABLE")
+            )
+            self.diagnostics.event(
+                logging.INFO if search_news or self.offline_mode else logging.WARNING,
+                f"Tavily status={summary['tavily_status']}, results={len(search_news)}",
+                run_id=run_id,
+            )
             print(f"[PipelineV2] Zebrano {len(search_news)} analiz i komunikatów rynkowych.")
             if not self.offline_mode and not search_news:
                 message = "Kontekst Tavily niedostępny; nie użyto fixture'ów offline."
@@ -510,6 +559,22 @@ class MacroPipelineV2:
                 run_id=run_id,
                 output_html_path=output_html_path,
             )
+            generation_diagnostics = self.evaluator.last_generation_diagnostics
+            summary.update({
+                "generation_mode": generation_diagnostics.get("generation_mode"),
+                "gpt_attempted": generation_diagnostics.get("gpt_attempted", False),
+                "fallback_reason": generation_diagnostics.get("fallback_reason"),
+                "report_id": report_id,
+            })
+            generation_level = (
+                logging.INFO
+                if summary["generation_mode"] in {"LIVE_AI_VALIDATED", "OFFLINE_DEMO"}
+                else logging.WARNING
+            )
+            generation_message = f"Report generation mode={summary['generation_mode']}"
+            if summary["fallback_reason"]:
+                generation_message += f"; reason={summary['fallback_reason']}"
+            self.diagnostics.event(generation_level, generation_message, run_id=run_id)
             print(f"[PipelineV2] Raport pomyślnie zarchiwizowany pod ID: {report_id}")
 
             status = "PARTIAL" if errors else "COMPLETED"
@@ -519,6 +584,22 @@ class MacroPipelineV2:
                 records_fetched=len(observation_list),
                 records_validated=saved_obs,
                 error_message="; ".join(errors) if errors else None,
+            )
+
+            verified = self.db.get_latest_verified_observations(
+                country_code="PL",
+                run_id=run_id,
+            )
+            summary.update({
+                "pipeline_status": status,
+                "verified_indicators_count": len(verified),
+                "missing_indicators": missing_report_indicators(verified),
+            })
+            self.diagnostics.write_summary(summary)
+            self.diagnostics.event(
+                logging.INFO if status == "COMPLETED" else logging.WARNING,
+                f"Pipeline finished with status={status}, report_id={report_id}",
+                run_id=run_id,
             )
 
             return PipelineResult(
@@ -539,14 +620,47 @@ class MacroPipelineV2:
             )
 
         except Exception as exc:
-            print(f"[PipelineV2 Error] Niepowodzenie potoku: {exc}")
-            self.db.finish_ingestion_run(
+            failure_reason = safe_error_message(exc)
+            print(f"[PipelineV2 Error] Niepowodzenie potoku: {failure_reason}")
+            self.diagnostics.event(
+                logging.ERROR,
+                f"Pipeline failed: {failure_reason}",
                 run_id=run_id,
-                status="FAILED",
-                records_fetched=0,
-                records_validated=0,
-                error_message=str(exc),
             )
+            if run_started:
+                try:
+                    self.db.finish_ingestion_run(
+                        run_id=run_id,
+                        status="FAILED",
+                        records_fetched=len(observation_list),
+                        records_validated=saved_obs,
+                        error_message=failure_reason,
+                    )
+                except Exception as finish_exc:
+                    self.diagnostics.event(
+                        logging.ERROR,
+                        f"Could not persist FAILED ingestion status: {safe_error_message(finish_exc)}",
+                        run_id=run_id,
+                    )
+
+            generation_diagnostics = self.evaluator.last_generation_diagnostics
+            if generation_diagnostics.get("generation_mode"):
+                summary.update({
+                    "generation_mode": generation_diagnostics["generation_mode"],
+                    "gpt_attempted": generation_diagnostics.get("gpt_attempted", False),
+                })
+            summary.update({
+                "run_id": run_id,
+                "pipeline_status": "FAILED",
+                "fallback_reason": failure_reason,
+                "tavily_results_count": len(search_news),
+                "verified_indicators_count": 0,
+                "missing_indicators": missing_report_indicators([]),
+                "report_id": None,
+            })
+            if summary["tavily_status"] == "NOT_RUN" and self.offline_mode:
+                summary["tavily_status"] = "NOT_RUN_OFFLINE"
+            self.diagnostics.write_summary(summary)
             return PipelineResult(
                 success=False,
                 run_id=run_id,
@@ -558,5 +672,8 @@ class MacroPipelineV2:
                 report_html="",
                 offline_mode=self.offline_mode,
                 quality_events=q_events,
-                errors=errors + [str(exc)],
+                evidence_count=len(evidence_list),
+                observations_count=len(observation_list),
+                search_news_count=len(search_news),
+                errors=errors + [failure_reason],
             )

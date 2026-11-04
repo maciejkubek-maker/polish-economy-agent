@@ -109,16 +109,25 @@ uv run python app.py
 
 Online report generation uses OpenAI GPT through LangChain with the `gpt-4o` model and streams the analysis to the terminal. `OPENAI_API_KEY` is the only key required for AI analysis. If GPT is unavailable or its report fails integrity validation, the evaluator prints the specific fallback reason and uses explicitly labelled deterministic synthesis. Live official-data calls and Tavily context require network access. If Tavily is unavailable or returns no results, the live run is marked partial and continues without search context; offline fixtures are never substituted in live mode.
 
+### Local diagnostics
+
+Every pipeline execution writes secret-redacted diagnostics under `instance/logs/` (the directory is ignored by Git):
+
+- `agent.log` is a rotating event and error log;
+- `last_run.json` is a readable summary of the latest run, including its real pipeline status, GPT generation outcome, Tavily status, verified and missing indicators, and report ID.
+
+The diagnostic files never intentionally store API keys, authorization headers, full prompts, or GPT responses. They remain local and can be removed when no longer needed without affecting SQLite data or generated reports.
+
 ### Tests
 
-The GPT-only audit passed **136 tests** offline:
+The diagnostic-logging regression suite passes **142 tests** offline:
 
 ```bash
 uv sync --group dev
 uv run pytest -q
 ```
 
-Expected audited result: `136 passed`.
+Expected audited result: `142 passed`.
 
 <a id="report-screenshots"></a>
 
@@ -248,16 +257,25 @@ uv run python app.py
 
 Generowanie raportu online wykorzystuje OpenAI GPT przez LangChain, model `gpt-4o`, ze streamingiem analizy w terminalu. `OPENAI_API_KEY` jest jedynym kluczem wymaganym do analizy AI. Gdy GPT jest niedostępny albo raport nie przejdzie kontroli integralności, evaluator wypisuje konkretną przyczynę i przechodzi do jawnie oznaczonej syntezy deterministycznej. Pobieranie aktualnych danych oficjalnych i kontekstu Tavily wymaga dostępu do sieci. Jeśli Tavily jest niedostępne lub nie zwróci wyników, przebieg live otrzymuje status częściowy i działa bez kontekstu wyszukiwania; fixture'y offline nigdy nie są podstawiane w trybie live.
 
+### Lokalna diagnostyka
+
+Każde uruchomienie potoku zapisuje lokalną diagnostykę z redakcją sekretów w `instance/logs/` (katalog jest ignorowany przez Git):
+
+- `agent.log` to rotowany dziennik zdarzeń i błędów;
+- `last_run.json` to czytelne podsumowanie ostatniego przebiegu z rzeczywistym statusem potoku, wynikiem generowania GPT, statusem Tavily, listą zweryfikowanych i brakujących wskaźników oraz identyfikatorem raportu.
+
+Pliki diagnostyczne nie zapisują celowo kluczy API, nagłówków autoryzacyjnych, pełnych promptów ani odpowiedzi GPT. Pozostają lokalne i można je usunąć bez wpływu na dane SQLite lub wygenerowane raporty.
+
 ### Testy
 
-Audyt wariantu GPT-only potwierdził **136 testów** działających offline:
+Zestaw regresyjny z diagnostyką potwierdził **142 testy** działające offline:
 
 ```bash
 uv sync --group dev
 uv run pytest -q
 ```
 
-Oczekiwany wynik audytu: `136 passed`.
+Oczekiwany wynik audytu: `142 passed`.
 
 ### Zrzuty ekranu raportu
 

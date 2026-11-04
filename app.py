@@ -211,7 +211,10 @@ def run_pipeline(force_refresh: bool = True, offline_mode: bool = False, use_v2:
     v2_storage = get_storage_v2() or SQLiteV2Storage()
     pipeline = MacroPipelineV2(db=v2_storage, offline_mode=offline_mode)
     result = pipeline.run(country=country, output_html_path=report_path, force_refresh=force_refresh)
-    print("\n[System] Potok v2 zakończony sukcesem. Podgląd: http://127.0.0.1:5000/report.html\n")
+    if result.success:
+      print("\n[System] Potok v2 zakończony sukcesem. Podgląd: http://127.0.0.1:5000/report.html\n")
+    else:
+      print(f"\n[System] Potok v2 zakończony niepowodzeniem (status={result.status}).\n")
     return result
 
   # Ścieżka legacy (v1)
