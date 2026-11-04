@@ -583,7 +583,13 @@ class GusConnector(BaseConnector):
                     code, payload, _, _ = self._execute_request(url)
                     if code == 200 and payload:
                         data = json.loads(payload).get("data", [])
-                        if data and any(it.get("wartosc") is not None for it in data):
+                        if data and any(
+                            it.get("wartosc") is not None and (
+                                it.get("id-sposob-prezentacji-miara") == 5
+                                or "id-sposob-prezentacji-miara" not in it
+                            )
+                            for it in data
+                        ):
                             return (r, okres, m)
                 except Exception:
                     pass
@@ -654,7 +660,18 @@ class GusConnector(BaseConnector):
         item = None
         if as_percentage_change and is_index_base_100:
             item = next((it for it in data_list if it.get("id-sposob-prezentacji-miara") == 5), None)
-        if item is None:
+            if item is None:
+                has_presentation_keys = any("id-sposob-prezentacji-miara" in it for it in data_list)
+                if has_presentation_keys or len(data_list) > 1:
+                    present_ids = [it.get("id-sposob-prezentacji-miara") for it in data_list]
+                    raise ValidationError(
+                        "Nie znaleziono wymaganego sposobu prezentacji CPI r/r (id-sposob-prezentacji-miara=5) w GUS DBW. "
+                        f"Dostępne pozycje: {present_ids}. Zakaz zgadywania metodologii."
+                    )
+                item = data_list[0]
+        else:
+            if len(data_list) > 1:
+                raise ValidationError("Niejednoznaczna odpowiedź GUS DBW: wiele rekordów bez określonej miary")
             item = data_list[0]
 
         # Weryfikacja identyfikatora zmiennej

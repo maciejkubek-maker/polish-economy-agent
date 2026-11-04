@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 import logging
@@ -10,7 +11,7 @@ import os
 from pathlib import Path
 import re
 import time
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Optional
 
 import config
 
@@ -103,13 +104,14 @@ class _RedactingFormatter(logging.Formatter):
 
 
 class PipelineDiagnostics:
-    """Write rotating event logs and an atomic summary of the last pipeline run."""
+    """Write rotating event logs, atomic run summary, and structural step trace."""
 
     def __init__(self, log_dir: os.PathLike[str] | str = DEFAULT_LOG_DIR):
         self.log_dir = Path(log_dir)
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.log_path = self.log_dir / "agent.log"
         self.summary_path = self.log_dir / "last_run.json"
+        self.steps_path = self.log_dir / "steps.jsonl"
         logger_name = f"polish_economy_agent.pipeline.{self.log_path.resolve()}"
         self.logger = logging.getLogger(logger_name)
         self.logger.setLevel(logging.INFO)
@@ -138,6 +140,82 @@ class PipelineDiagnostics:
             json.dump(payload, stream, ensure_ascii=False, indent=2, sort_keys=True)
             stream.write("\n")
         os.replace(temporary_path, self.summary_path)
+
+    def record_step(
+        self,
+        *,
+        run_id: str,
+        function: str,
+        stage: str,
+        duration_ms: float = 0.0,
+        input_summary: Optional[str] = None,
+        output_summary: Optional[str] = None,
+        error_code: Optional[str] = None,
+        error_message: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Record a structured START, END, or ERROR step trace entry to steps.jsonl."""
+        record = {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "run_id": run_id,
+            "function": function,
+            "funkcja": function,
+            "stage": stage,
+            "step": stage,
+            "etap": stage,
+            "duration_ms": round(float(duration_ms), 2) if duration_ms is not None else 0.0,
+            "input_summary": redact_secrets(input_summary) if input_summary is not None else None,
+            "output_summary": redact_secrets(output_summary) if output_summary is not None else None,
+            "error_code": str(error_code) if error_code is not None else None,
+            "kod_bledu": str(error_code) if error_code is not None else None,
+            "error_message": redact_secrets(error_message) if error_message is not None else None,
+            "przyczyna": redact_secrets(error_message) if error_message is not None else None,
+        }
+        with open(self.steps_path, "a", encoding="utf-8") as stream:
+            stream.write(json.dumps(record, ensure_ascii=False) + "\n")
+        return record
+
+    @contextmanager
+    def track_step(
+        self,
+        *,
+        run_id: str,
+        function: str,
+        input_summary: Optional[str] = None,
+    ):
+        """Context manager measuring execution duration and emitting START/END/ERROR records."""
+        t0 = time.perf_counter()
+        self.record_step(
+            run_id=run_id,
+            function=function,
+            stage="START",
+            duration_ms=0.0,
+            input_summary=input_summary,
+        )
+        ctx: dict[str, Any] = {"output_summary": None}
+        try:
+            yield ctx
+            duration_ms = (time.perf_counter() - t0) * 1000.0
+            self.record_step(
+                run_id=run_id,
+                function=function,
+                stage="END",
+                duration_ms=duration_ms,
+                input_summary=input_summary,
+                output_summary=ctx.get("output_summary"),
+            )
+        except Exception as exc:
+            duration_ms = (time.perf_counter() - t0) * 1000.0
+            self.record_step(
+                run_id=run_id,
+                function=function,
+                stage="ERROR",
+                duration_ms=duration_ms,
+                input_summary=input_summary,
+                output_summary=ctx.get("output_summary"),
+                error_code=type(exc).__name__,
+                error_message=safe_error_message(exc),
+            )
+            raise
 
 
 def missing_report_indicators(verified_observations: Iterable[Mapping[str, Any]]) -> list[str]:

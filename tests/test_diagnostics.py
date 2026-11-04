@@ -407,3 +407,203 @@ Brak.
     err = str(exc_info.value)
     assert "Raport nie zawiera bezpośrednich URL-i cytowanych źródeł" in err
     assert "https://api-dbw.stat.gov.pl/api/1.1.0/exact-endpoint-test" in err
+
+
+def test_pipeline_steps_jsonl_records_structured_events(tmp_path, monkeypatch):
+    """steps.jsonl zawiera rekordy START i END dla kluczowych etapów potoku z kompletnymi polami."""
+    storage = SQLiteV2Storage(db_path=str(tmp_path / "steps_test.db"))
+    evaluator = EconomyEvaluator()
+
+    def mock_synth(country, report_date, periods_summary, chronological_context, **kwargs):
+        import re
+        match = re.search(r"-\s*([^:]+):\s*([0-9.,]+)\s*%\s*[^\[]*\[(\d+)\]", chronological_context)
+        if match:
+            ind_name, val, fn = match.group(1).strip(), match.group(2).strip(), match.group(3).strip()
+            claim = f"{ind_name} wyniosła {val}% [{fn}]."
+        else:
+            claim = "Wskaźnik wyniósł 4.0% [1]."
+        return f"""# RAPORT KONDYCJI GOSPODARCZEJ: Polska
+
+## 1. Analiza Trendów w Dostępnym Okresie
+{claim}
+
+## 2. Zagrożenia i Ryzyka Makroekonomiczne
+Ryzyka makroekonomiczne.
+
+## 3. Co to oznacza dla Kowalskiego? (Perspektywa Obywatela)
+Perspektywa obywatela.
+
+## 4. Co to oznacza dla Przedsiębiorców?
+Perspektywa przedsiębiorcy.
+
+## 5. Podsumowanie i Realistyczny Werdykt
+Podsumowanie analizy.
+
+## 6. Źródła danych i Metodologia
+"""
+
+    monkeypatch.setattr(evaluator, "_run_llm_synthesis", mock_synth)
+    pipeline = MacroPipelineV2(
+        db=storage,
+        offline_mode=False,
+        evaluator=evaluator,
+        diagnostics_dir=tmp_path / "logs",
+    )
+    pipeline._register_offline_fixtures()
+    pipeline.nbp.offline_mode = True
+    pipeline.eurostat.offline_mode = True
+    pipeline.gus.offline_mode = True
+    pipeline.search_service.offline_mode = True
+    html_out = str(tmp_path / "report.html")
+    result = pipeline.run(output_html_path=html_out)
+
+    assert result.success is True
+    steps_file = tmp_path / "logs" / "steps.jsonl"
+    assert steps_file.exists(), "Plik steps.jsonl musi istnieć"
+
+    lines = [json.loads(line) for line in steps_file.read_text(encoding="utf-8").strip().splitlines()]
+    assert len(lines) >= 8
+
+    required_keys = {
+        "timestamp_utc",
+        "run_id",
+        "function",
+        "funkcja",
+        "stage",
+        "step",
+        "etap",
+        "duration_ms",
+        "input_summary",
+        "output_summary",
+        "error_code",
+        "kod_bledu",
+        "error_message",
+        "przyczyna",
+    }
+    for record in lines:
+        for k in required_keys:
+            assert k in record, f"Brak klucza {k} w rekordzie steps.jsonl: {record}"
+        assert record["run_id"] == result.run_id
+
+    functions = {r["function"] for r in lines}
+    expected_functions = {
+        "fetch_nbp",
+        "fetch_eurostat",
+        "fetch_gus",
+        "search_tavily",
+        "gpt_synthesis",
+        "validate_report",
+        "store_sqlite",
+        "write_html",
+    }
+    for fn in expected_functions:
+        assert fn in functions, f"Brak funkcji {fn} w steps.jsonl (zarejestrowano: {functions})"
+
+    # Sprawdzenie etapów START i END dla validate_report i gpt_synthesis
+    val_stages = [r["stage"] for r in lines if r["function"] == "validate_report"]
+    assert "START" in val_stages
+    assert "END" in val_stages
+
+    # duration_ms na END musi być >= 0
+    end_records = [r for r in lines if r["stage"] == "END"]
+    for r in end_records:
+        assert r["duration_ms"] >= 0.0
+
+
+def test_pipeline_steps_jsonl_records_error_events(tmp_path, monkeypatch):
+    """steps.jsonl rejestruje etap ERROR z kodem błędu i przyczyną przy odrzuceniu przez walidator."""
+    evaluator = EconomyEvaluator()
+    monkeypatch.setattr(evaluator, "_run_llm_synthesis", lambda *args, **kwargs: "niepoprawny raport")
+    pipeline = _make_pipeline(tmp_path, monkeypatch, evaluator)
+    result = pipeline.run()
+
+    assert result.success is False
+    steps_file = tmp_path / "logs" / "steps.jsonl"
+    assert steps_file.exists()
+
+    lines = [json.loads(line) for line in steps_file.read_text(encoding="utf-8").strip().splitlines()]
+    val_errors = [r for r in lines if r["function"] == "validate_report" and r["stage"] == "ERROR"]
+    assert len(val_errors) == 1
+    err_rec = val_errors[0]
+    assert err_rec["error_code"] == "VALIDATION_FAILED"
+    assert "Raport nie zachowuje wymaganej struktury" in err_rec["error_message"]
+    assert err_rec["duration_ms"] >= 0.0
+
+
+def test_validator_diagnostics_logged_to_run_log_file(tmp_path, monkeypatch):
+    """Diagnostyka walidatora (ostrzeżenia i sukces) trafia do agent.log z run_id danego przebiegu."""
+    evaluator = EconomyEvaluator()
+    # 1. Przebieg z błędem walidacji
+    monkeypatch.setattr(evaluator, "_run_llm_synthesis", lambda *args, **kwargs: "błędna treść")
+    pipeline_fail = _make_pipeline(tmp_path, monkeypatch, evaluator)
+    res_fail = pipeline_fail.run()
+
+    log_path = tmp_path / "logs" / "agent.log"
+    assert log_path.exists()
+    log_content = log_path.read_text(encoding="utf-8")
+    assert f"run_id={res_fail.run_id}" in log_content
+    assert "Validator rejection: Raport nie zachowuje wymaganej struktury" in log_content
+
+    # 2. Przebieg z sukcesem walidacji (nowa baza na odrębny przebieg)
+    storage_ok = SQLiteV2Storage(db_path=str(tmp_path / "ok_test.db"))
+    pipeline_ok = MacroPipelineV2(
+        db=storage_ok,
+        offline_mode=False,
+        evaluator=evaluator,
+        diagnostics_dir=tmp_path / "logs",
+    )
+    monkeypatch.setattr(pipeline_ok, "fetch_official_data", lambda run_id: _official_data("PL_CPI_YOY"))
+    monkeypatch.setattr(pipeline_ok, "search_enrichment", lambda country, run_id: [])
+    monkeypatch.setattr(evaluator, "_run_llm_synthesis", lambda *args, **kwargs: _valid_gpt_report())
+    res_ok = pipeline_ok.run()
+    log_content_after = log_path.read_text(encoding="utf-8")
+    assert f"run_id={res_ok.run_id}" in log_content_after
+    assert "Validator passed: structure, footnotes, direct URLs and numbers verified" in log_content_after
+
+
+def test_last_run_json_updated_at_pipeline_start(tmp_path, monkeypatch):
+    """last_run.json jest tworzony/aktualizowany już przy rozpoczęciu przebiegu (status STARTED)."""
+    evaluator = EconomyEvaluator()
+    monkeypatch.setattr(evaluator, "_run_llm_synthesis", lambda *args, **kwargs: _valid_gpt_report())
+    pipeline = _make_pipeline(tmp_path, monkeypatch, evaluator)
+
+    observed_status_at_start = []
+
+    orig_fetch = pipeline.fetch_official_data
+    def intercepting_fetch(run_id):
+        # Podczas pobierania danych sprawdzamy zawartość last_run.json
+        summary = _read_summary(tmp_path)
+        observed_status_at_start.append(summary.copy())
+        return orig_fetch(run_id)
+
+    monkeypatch.setattr(pipeline, "fetch_official_data", intercepting_fetch)
+    result = pipeline.run()
+
+    assert result.success is True
+    assert len(observed_status_at_start) == 1
+    start_summary = observed_status_at_start[0]
+    assert start_summary["pipeline_status"] == "STARTED"
+    assert start_summary["run_id"] == result.run_id
+
+    # Po zakończeniu status zmienia się na COMPLETED/PARTIAL
+    final_summary = _read_summary(tmp_path)
+    assert final_summary["pipeline_status"] in {"COMPLETED", "PARTIAL"}
+    assert final_summary["run_id"] == result.run_id
+
+
+def test_steps_jsonl_redacts_secrets(tmp_path, monkeypatch):
+    """steps.jsonl redaguje sekrety z pól input_summary, output_summary i error_message."""
+    secret = "sk-test-secret-key-1234567890"
+    monkeypatch.setattr(config, "OPENAI_API_KEY", secret)
+    evaluator = EconomyEvaluator()
+    monkeypatch.setattr(
+        evaluator,
+        "_run_llm_synthesis",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError(f"Unauthorized with {secret}")),
+    )
+    pipeline = _make_pipeline(tmp_path, monkeypatch, evaluator)
+    pipeline.run()
+
+    steps_text = (tmp_path / "logs" / "steps.jsonl").read_text(encoding="utf-8")
+    assert secret not in steps_text
+    assert "[REDACTED]" in steps_text

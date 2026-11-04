@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import sqlite3
+import time
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -328,6 +329,7 @@ class EconomyEvaluator:
       search_news: Optional[List[Dict[str, Any]]] = None,
       offline_mode: bool = False,
       run_id: Optional[str] = None,
+      diagnostics: Any = None,
   ) -> str:
     """
     Generuje kompletny raport makroekonomiczny w oparciu o zweryfikowane obserwacje v2
@@ -482,6 +484,14 @@ class EconomyEvaluator:
 
     # Próba generowania przez GPT i rygorystyczna kontrola wyniku (w trybie live wyłącznie GPT).
     self.last_generation_diagnostics["gpt_attempted"] = True
+    t0_gpt = time.perf_counter()
+    if diagnostics and run_id:
+      diagnostics.record_step(
+          run_id=run_id,
+          function="gpt_synthesis",
+          stage="START",
+          input_summary=f"country={country}, model={getattr(config, 'DEFAULT_OPENAI_MODEL', 'unknown')}",
+      )
     try:
       candidate = self._run_llm_synthesis(
           country,
@@ -490,7 +500,28 @@ class EconomyEvaluator:
           chronological_context,
           allow_fallback=False,
       )
+      gpt_duration = (time.perf_counter() - t0_gpt) * 1000.0
+      if diagnostics and run_id:
+        diagnostics.record_step(
+            run_id=run_id,
+            function="gpt_synthesis",
+            stage="END",
+            duration_ms=gpt_duration,
+            input_summary=f"country={country}",
+            output_summary=f"candidate_length={len(candidate)}",
+        )
     except Exception as gpt_err:
+      gpt_duration = (time.perf_counter() - t0_gpt) * 1000.0
+      if diagnostics and run_id:
+        diagnostics.record_step(
+            run_id=run_id,
+            function="gpt_synthesis",
+            stage="ERROR",
+            duration_ms=gpt_duration,
+            input_summary=f"country={country}",
+            error_code=type(gpt_err).__name__,
+            error_message=self._safe_error_message(gpt_err),
+        )
       fallback_reason = (
           "Błąd API GPT: "
           f"{self._safe_error_message(gpt_err)}"
@@ -504,9 +535,44 @@ class EconomyEvaluator:
     # Złożenie raportu: sekcja 6 jest budowana programowo z rzeczywistego rejestru cytowań
     assembled_report = self._assemble_v2_report_with_citations(candidate, citations)
 
+    t0_val = time.perf_counter()
+    if diagnostics and run_id:
+      diagnostics.record_step(
+          run_id=run_id,
+          function="validate_report",
+          stage="START",
+          input_summary=f"citations_count={len(citations)}, verified_obs_count={len(verified_obs)}",
+      )
     try:
-      self._validate_v2_report(assembled_report, citations, verified_obs)
+      self._validate_v2_report(
+          assembled_report,
+          citations,
+          verified_obs,
+          diagnostics=diagnostics,
+          run_id=run_id,
+      )
+      val_duration = (time.perf_counter() - t0_val) * 1000.0
+      if diagnostics and run_id:
+        diagnostics.record_step(
+            run_id=run_id,
+            function="validate_report",
+            stage="END",
+            duration_ms=val_duration,
+            input_summary=f"citations_count={len(citations)}",
+            output_summary="validation_passed=True",
+        )
     except Exception as validation_err:
+      val_duration = (time.perf_counter() - t0_val) * 1000.0
+      if diagnostics and run_id:
+        diagnostics.record_step(
+            run_id=run_id,
+            function="validate_report",
+            stage="ERROR",
+            duration_ms=val_duration,
+            input_summary=f"citations_count={len(citations)}",
+            error_code="VALIDATION_FAILED",
+            error_message=self._safe_error_message(validation_err),
+        )
       fallback_reason = (
           "Raport GPT odrzucony przez walidator: "
           f"{self._safe_error_message(validation_err)}"
@@ -578,8 +644,17 @@ class EconomyEvaluator:
       report_text: str,
       citations: List[Dict[str, Any]],
       verified_obs: List[Dict[str, Any]],
+      *,
+      diagnostics: Any = None,
+      run_id: Optional[str] = None,
   ) -> None:
     """Odrzuca raport AI z obcymi liczbami, przypisami lub bez URL-i."""
+    def _reject(msg: str) -> None:
+      logger.warning(f"[_validate_v2_report] {msg}")
+      if diagnostics and run_id:
+        diagnostics.event(logging.WARNING, f"Validator rejection: {msg}", run_id=run_id)
+      raise ValueError(msg)
+
     required_sections = [
         "## 1. Analiza Trendów w Dostępnym Okresie",
         "## 2. Zagrożenia i Ryzyka Makroekonomiczne",
@@ -590,14 +665,10 @@ class EconomyEvaluator:
     ]
     missing_sections = [sec for sec in required_sections if sec not in report_text]
     if missing_sections:
-      msg = f"Raport nie zachowuje wymaganej struktury sześciu sekcji: brak {missing_sections}"
-      logger.warning(f"[_validate_v2_report] {msg}")
-      raise ValueError(msg)
+      _reject(f"Raport nie zachowuje wymaganej struktury sześciu sekcji: brak {missing_sections}")
 
     if re.search(r"<\/?[a-zA-Z][^>]*>", report_text):
-      msg = "Raport AI zawiera nieoczekiwany surowy HTML"
-      logger.warning(f"[_validate_v2_report] {msg}")
-      raise ValueError(msg)
+      _reject("Raport AI zawiera nieoczekiwany surowy HTML")
 
     split_match = re.search(
         r"##\s*6\.\s*Źródła danych i Metodologia.*",
@@ -609,15 +680,11 @@ class EconomyEvaluator:
     valid_indices = {int(c["idx"]) for c in citations}
     used_indices = {int(value) for value in re.findall(r"\[(\d+)\]", body_text)}
     if not used_indices:
-      msg = "Raport nie zawiera przypisów źródłowych [N] w treści analizy"
-      logger.warning(f"[_validate_v2_report] {msg}")
-      raise ValueError(msg)
+      _reject("Raport nie zawiera przypisów źródłowych [N] w treści analizy")
 
     invalid_indices = used_indices - valid_indices
     if invalid_indices:
-      msg = f"Nieznane numery przypisów: {sorted(invalid_indices)} (dostępny rejestr: {sorted(valid_indices)})"
-      logger.warning(f"[_validate_v2_report] {msg}")
-      raise ValueError(msg)
+      _reject(f"Nieznane numery przypisów: {sorted(invalid_indices)} (dostępny rejestr: {sorted(valid_indices)})")
 
     missing_urls = [
         str(c["url"])
@@ -627,9 +694,7 @@ class EconomyEvaluator:
         and str(c["url"]) not in report_text
     ]
     if missing_urls:
-      msg = f"Raport nie zawiera bezpośrednich URL-i cytowanych źródeł: {missing_urls}"
-      logger.warning(f"[_validate_v2_report] {msg}")
-      raise ValueError(msg)
+      _reject(f"Raport nie zawiera bezpośrednich URL-i cytowanych źródeł: {missing_urls}")
 
     allowed_values = {
         self._normalize_numeric_claim(o["value_decimal"])
@@ -647,12 +712,10 @@ class EconomyEvaluator:
       if match and self._normalize_numeric_claim(match.group(0)) not in allowed_values:
         unsupported.append(claim.strip())
     if unsupported:
-      msg = (
+      _reject(
           f"Niezweryfikowane twierdzenia liczbowe: {sorted(set(unsupported))} "
           f"(dozwolone wartości ze zweryfikowanych źródeł: {sorted(allowed_values)})"
       )
-      logger.warning(f"[_validate_v2_report] {msg}")
-      raise ValueError(msg)
 
     uncited_lines = [
         line.strip()
@@ -660,9 +723,7 @@ class EconomyEvaluator:
         if claim_pattern.search(line) and not re.search(r"\[\d+\]", line)
     ]
     if uncited_lines:
-      msg = f"Twierdzenie liczbowe bez przypisu źródłowego w liniach: {uncited_lines}"
-      logger.warning(f"[_validate_v2_report] {msg}")
-      raise ValueError(msg)
+      _reject(f"Twierdzenie liczbowe bez przypisu źródłowego w liniach: {uncited_lines}")
 
     # Weryfikacja powiązania przypisów z właściwymi źródłami
     citation_by_idx = {int(c["idx"]): c for c in citations}
@@ -724,9 +785,14 @@ class EconomyEvaluator:
             )
 
     if mismatched_citations:
-      msg = f"Niepoprawne powiązanie przypisów ze źródłami: {mismatched_citations}"
-      logger.warning(f"[_validate_v2_report] {msg}")
-      raise ValueError(msg)
+      _reject(f"Niepoprawne powiązanie przypisów ze źródłami: {mismatched_citations}")
+
+    if diagnostics and run_id:
+      diagnostics.event(
+          logging.INFO,
+          "Validator passed: structure, footnotes, direct URLs and numbers verified",
+          run_id=run_id,
+      )
 
   def _build_deterministic_v2_report(
       self,

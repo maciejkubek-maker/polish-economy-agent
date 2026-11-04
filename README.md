@@ -1,6 +1,15 @@
 # Polish Economy Agent
 
-[English](#english) · [Polski](#polski)
+A local, audit-first macroeconomic data platform and reporting prototype for Poland. The project fetches official observations from NBP, GUS, and Eurostat, enforces strict statistical definitions, persists verifiable evidence and observations to SQLite v2, enriches findings with Tavily web search, and synthesizes multi-section analytical reports using OpenAI GPT or a deterministic offline generator.
+
+---
+
+## Language / Język
+
+- [English](#english)
+- [Polski](#polski)
+
+---
 
 <a id="english"></a>
 
@@ -8,65 +17,67 @@
 
 ### Overview
 
-Polish Economy Agent is an engineering portfolio project that demonstrates an auditable pipeline for collecting, validating, storing, and presenting selected macroeconomic indicators for Poland. It combines official public-data APIs with web-search context and can generate a cited analytical report either through OpenAI GPT or through a deterministic offline generator.
+Polish Economy Agent is an engineering portfolio project demonstrating a reliable, verifiable pipeline for macro indicators. It contrasts official statistical releases with web commentary, tracks data lineage from HTTP responses to report footnotes, handles partial connector downtime gracefully, and provides both an offline demo mode and an optional live OpenAI synthesis mode.
 
-The project is a local prototype, not a deployed production service, an official statistical publication, or financial advice.
+The project is an educational, local prototype. It is not an investment advisory service, official statistical publication, or automated trading tool.
 
-### What it does
+### Features
 
-- collects selected exchange-rate, interest-rate, inflation, labour-market, and GDP observations from NBP, GUS, and Eurostat connectors;
-- validates source payloads, indicator definitions, units, periods, and frequencies before persistence;
-- stores observations in an auditable SQLite v2 schema with source evidence, quality events, versioning, and append-only protection;
-- enriches the factual dataset with Tavily search results classified as official communications or media commentary;
-- keeps registered unemployment, LFS/BAEL unemployment, CPI variants, and GDP growth definitions separate;
-- generates a six-section report with numbered citations and explicit `Brak danych` / `No data` handling instead of invented values;
-- renders escaped and sanitised HTML and serves the latest report through Flask;
-- supports partial connector failures without silently replacing missing observations.
+- Multi-source connectors: NBP (FX, policy rate), GUS BDL & DBW (registered unemployment, CPI), and Eurostat (HICP, harmonized unemployment, quarterly GDP volume, QoQ, YoY).
+- Dynamic CPI discovery from GUS DBW with verification of variable ID 305, dimension 736, presentation mode 5 (YoY), period, and unit without hardcoded dates or methodology guessing.
+- Strict validation: prevents variable hallucination, separates registered from LFS unemployment, distinguishes QoQ from YoY GDP growth, and rejects unverifiable observations.
+- SQLite v2 data platform: audit-ready tables for ingestion runs, raw evidence (with SHA-256 content hashes), macro observations, quality events, and generated reports.
+- Safe web search: queries Tavily for recent analyses and official communiqués with domain-level classification; search numbers are never treated as official statistical observations.
+- Structured reporting: six markdown sections with numbered footnotes, direct verified endpoint URLs, and explicit `Data unavailable` labels when inputs are missing.
+- Live mode (GPT-only): reports in live mode are generated exclusively by OpenAI GPT, validated against official records, with Section 6 programmatically assembled from the citation registry. In case of API or validator rejection, the run fails safely (`FAILED`, `report_id=null`) without saving to SQLite or `report.html`, and without any deterministic fallback.
+- Security and hygiene: HTML escaping and tag sanitization via bleach, secret redaction in logs/summaries, and no modification to legacy databases.
+- Full debug trace & diagnostics: structured event logs (`agent.log`), run summary (`last_run.json` created at run start), and step-level execution trace (`steps.jsonl`).
 
-### Data flow
+### Architecture
 
 ```mermaid
-flowchart LR
-    Official["Official APIs<br/>NBP · GUS · Eurostat"] --> Connectors["Source connectors"]
-    Connectors --> Validation["Validation<br/>definitions · units · periods"]
-    Validation --> SQLite["SQLite v2<br/>evidence · observations · quality events"]
+flowchart TD
+    subgraph Sources["External Sources"]
+        NBP["NBP Web API<br/>Rates & FX"]
+        GUS["GUS BDL & DBW<br/>Unemployment & CPI"]
+        EST["Eurostat API<br/>HICP & GDP"]
+        TAV["Tavily Search<br/>Market Context"]
+    end
 
-    Tavily["Tavily Search"] --> Context["Context<br/>official communications · media commentary"]
+    subgraph Ingestion["Ingestion & Validation"]
+        Connectors["Connector Layer"]
+        Validation["Data & Unit Validation"]
+    end
 
-    SQLite --> Mode{"Report generation mode"}
-    Context --> Mode
-    Mode -->|Online| AI["AI analysis<br/>LangChain · OpenAI GPT"]
-    Mode -->|Offline| Offline["Deterministic offline generator"]
-    AI --> HTML["Sanitised HTML report<br/>citations · sources · missing-data labels"]
-    Offline --> HTML
-    HTML --> Flask["Flask<br/>/ and /report.html"]
+    subgraph Storage["Audit-First SQLite v2"]
+        Runs["ingestion_runs"]
+        Evidence["source_evidence (SHA-256)"]
+        Obs["observations (append-only)"]
+        Quality["quality_events"]
+        Reports["reports"]
+    end
+
+    subgraph Synthesis["Synthesis & Delivery"]
+        Eval["EconomyEvaluator<br/>Live GPT or Offline Demo"]
+        UI["Flask Web App<br/>Dashboard & HTML Export"]
+    end
+
+    Sources --> Connectors
+    Connectors --> Validation
+    Validation --> Runs
+    Validation --> Evidence
+    Validation --> Obs
+    Validation --> Quality
+    Obs --> Eval
+    Evidence --> Eval
+    TAV --> Eval
+    Eval --> Reports
+    Reports --> UI
 ```
 
-The official-data and Tavily paths are complementary. Numerical observations originate from the connector and validation path; search results provide separately labelled context and source evidence.
+### Quickstart (Offline by default)
 
-### Technology stack
-
-| Technology | Role in the project |
-|---|---|
-| Python 3.11+ | Application, connectors, validation, orchestration, and reporting |
-| Flask | Local HTML report server |
-| SQLite v2 | Auditable persistence for runs, evidence, observations, quality events, and reports |
-| NBP API | EUR/PLN and USD/PLN rates and the NBP reference rate |
-| GUS API | Selected BDL and DBW indicators, including registered unemployment and CPI |
-| Eurostat API | HICP, LFS/BAEL unemployment, and GDP series |
-| Tavily | Optional online search context and source snippets |
-| LangChain | Prompt, model, parser, and callback integration |
-| OpenAI GPT (`gpt-4o`) | Optional online report model with streamed terminal output |
-| pytest | Offline unit, security, connector, storage, migration, and pipeline tests |
-| uv | Reproducible dependency and test runner workflow |
-
-### Quick start: offline demo
-
-The default mode is offline. It requires no API keys and does not call NBP, GUS, Eurostat, Tavily, or OpenAI. The pipeline uses deterministic local fixtures, writes only to the SQLite v2 database, generates `report.html`, and starts Flask locally.
-
-> **Data notice:** offline fixture values are illustrative demonstration data. They are not live, current, or suitable for economic decisions.
-
-Requirements: Python 3.11 or newer and `uv`.
+Prerequisites: Python 3.11+ and [`uv`](https://docs.astral.sh/uv/).
 
 ```bash
 git clone https://github.com/maciejkubek-maker/polish-economy-agent.git
@@ -76,17 +87,17 @@ uv sync --group dev
 uv run python app.py
 ```
 
-In PowerShell, use `Copy-Item .env.example .env` instead of `cp`. The copied file already contains `OFFLINE_MODE=true` and empty API keys.
+On Windows PowerShell, use `Copy-Item .env.example .env` instead of `cp`. The copied file already has `OFFLINE_MODE=true` and empty API keys.
 
-Open <http://127.0.0.1:5000/> or <http://127.0.0.1:5000/report.html>. Stop the local server with `Ctrl+C`.
+Open <http://127.0.0.1:5000/> or <http://127.0.0.1:5000/report.html>. Press `Ctrl+C` in the terminal to stop the local server.
 
-The application is offline by default even without `.env`, but copying the example makes the safe configuration explicit. Do not set `DB_V2_PATH` to `instance/economy_agent.db`; that legacy database is protected and must remain unchanged.
+The app is offline-safe by default even without a `.env` file, but copying the example file ensures you explicitly preserve the offline settings. Do not configure `DB_V2_PATH` to point to `instance/economy_agent.db`; that legacy database is protected and must remain untouched.
 
 ### Optional online mode
 
-Online mode contacts external services and may create billable model or search requests depending on the configured accounts. Enable it only when you intend to use those services.
+Online mode connects to external services and may incur API costs depending on your account tiers. Enable it intentionally.
 
-Copy the safe example to a local `.env` file that is not committed, then set `OFFLINE_MODE=false` and provide keys only for services you intend to use:
+Copy the safe example to your local, uncommitted `.env` file, set `OFFLINE_MODE=false`, and provide only the keys you intend to use:
 
 ```bash
 cp .env.example .env
@@ -109,25 +120,26 @@ uv run python app.py
 
 Online report generation uses OpenAI GPT through LangChain with the `gpt-4o` model and streams the analysis to the terminal. `OPENAI_API_KEY` is the only key required for AI analysis. Under the live pipeline, reports are generated strictly by GPT and validated against stored observations (exact numbers, footnote-to-source attribution, URLs, and section structure). The final section 6 bibliography is assembled programmatically from the verified citations registry with direct endpoint URLs, while GPT provides strict footnote markers `[N]` linked to verified official sources (web search snippets from Tavily are never treated as official statistical observations). If GPT fails or validation rejects the report, the run is marked `FAILED` without generating any deterministic substitute report, and no report is persisted to SQLite or `report.html`. The deterministic report generator is reserved exclusively for the intentional offline demo mode. Live official-data calls and Tavily context require network access. If Tavily is unavailable or returns no results, the live run is marked partial and continues without search context; offline fixtures are never substituted in live mode.
 
-### Local diagnostics
+### Local diagnostics & debug trace
 
 Every pipeline execution writes secret-redacted diagnostics under `instance/logs/` (the directory is ignored by Git):
 
-- `agent.log` is a rotating event and error log;
-- `last_run.json` is a readable summary of the latest run, including its real pipeline status, GPT generation outcome, Tavily status, verified and missing indicators, and report ID.
+- `agent.log` is a rotating event and error log; validator rejections and approvals are logged directly here tagged with the run's `run_id`.
+- `last_run.json` is an atomic summary created at run start (`pipeline_status: STARTED`) and updated on completion with the real pipeline status, GPT generation outcome, Tavily status, verified and missing indicators, and report ID.
+- `steps.jsonl` provides a structured execution trace with `START`, `END`, and `ERROR` records for each major function: `fetch_nbp`, `fetch_eurostat`, `fetch_gus`, `search_tavily`, `gpt_synthesis`, `validate_report`, `store_sqlite`, and `write_html`. Each record contains UTC timestamp, run_id, function, stage, elapsed duration_ms, input_summary, output_summary, error_code, and safe error message.
 
-The diagnostic files never intentionally store API keys, authorization headers, full prompts, or GPT responses. They remain local and can be removed when no longer needed without affecting SQLite data or generated reports.
+The diagnostic files never store API keys, authorization headers, full prompts, or raw GPT responses. They remain local and can be removed when no longer needed without affecting SQLite data or generated reports.
 
 ### Tests
 
-The final stabilization regression suite passes **154 tests** offline:
+The regression and diagnostics test suite passes **160 tests** offline:
 
 ```bash
 uv sync --group dev
 uv run pytest -q
 ```
 
-Expected audited result: `154 passed`.
+Expected audited result: `160 passed`.
 
 <a id="report-screenshots"></a>
 
@@ -163,13 +175,15 @@ Projekt jest lokalnym prototypem. Nie jest wdrożonym systemem produkcyjnym, ofi
 ### Funkcjonalności
 
 - pobieranie wybranych kursów walut, stóp procentowych, danych o inflacji, rynku pracy i PKB przez konektory NBP, GUS i Eurostatu;
+- dynamiczne odkrywanie najnowszego CPI z GUS DBW z weryfikacją zmiennej 305, przekroju 736, sposobu prezentacji 5 (r/r), okresu i jednostki bez zgadywania metodologii;
 - walidacja odpowiedzi źródłowych, definicji wskaźników, jednostek, okresów i częstotliwości przed zapisem;
 - audytowalny zapis w SQLite v2 z dowodami źródłowymi, zdarzeniami jakościowymi, wersjonowaniem i ochroną append-only;
-- wzbogacanie danych o wyniki Tavily sklasyfikowane jako komunikaty oficjalne lub komentarze medialne;
+- wzbogacanie danych o wyniki Tavily sklasyfikowane jako komunikaty oficjalne lub komentarze medialne (wyniki wyszukiwania nie zastępują oficjalnych obserwacji);
 - rozdzielenie m.in. bezrobocia rejestrowanego od BAEL, wariantów CPI oraz dynamiki PKB kw/kw od r/r;
-- sześciosekcyjny raport z numerowanymi przypisami i jawnym oznaczeniem `Brak danych` zamiast zgadywania wartości;
+- sześciosekcyjny raport z numerowanymi przypisami, programowo składaną bibliografią z bezpośrednimi URL-ami i jawnym oznaczeniem `Brak danych` zamiast zgadywania wartości;
+- w trybie live wyłącznie generowanie przez model GPT z rygorystyczną kontrolą spójności (brak deterministycznego fallbacku przy błędzie);
 - bezpieczne renderowanie HTML z escapowaniem i sanityzacją oraz udostępnianie raportu przez Flask;
-- kontrolowana obsługa częściowych awarii konektorów.
+- pełna diagnostyka i audytowalny trace: dziennik `agent.log`, podsumowanie `last_run.json` (inicjowane na starcie przebiegu) oraz strukturalny ślad `steps.jsonl`.
 
 ### Przepływ danych
 
@@ -178,43 +192,15 @@ flowchart LR
     Official["Oficjalne API<br/>NBP · GUS · Eurostat"] --> Connectors["Konektory źródłowe"]
     Connectors --> Validation["Walidacja<br/>definicje · jednostki · okresy"]
     Validation --> SQLite["SQLite v2<br/>dowody · obserwacje · zdarzenia jakościowe"]
-
-    Tavily["Tavily Search"] --> Context["Kontekst<br/>komunikaty oficjalne · komentarze medialne"]
-
-    SQLite --> Mode{"Tryb generowania raportu"}
-    Context --> Mode
-    Mode -->|Online| AI["Analiza AI<br/>LangChain · OpenAI GPT"]
-    Mode -->|Offline| Offline["Deterministyczny generator offline"]
-    AI --> HTML["Sanityzowany raport HTML<br/>przypisy · źródła · oznaczenia braków"]
-    Offline --> HTML
-    HTML --> Flask["Flask<br/>/ i /report.html"]
+    SQLite --> Evaluator["Generator raportu<br/>Live GPT lub Demo offline"]
+    Tavily["Tavily Search<br/>kontekst rynkowy"] --> Evaluator
+    Evaluator --> Reports["Tabela reports<br/>oraz plik HTML"]
+    Reports --> Flask["Aplikacja Flask<br/>127.0.0.1:5000"]
 ```
 
-Ścieżki danych oficjalnych i Tavily wzajemnie się uzupełniają. Obserwacje liczbowe pochodzą z konektorów i walidacji, natomiast wyniki wyszukiwania dostarczają oddzielnie oznaczony kontekst i dowody źródłowe.
+### Szybki start (Domyślnie offline)
 
-### Technologie
-
-| Technologia | Rola w projekcie |
-|---|---|
-| Python 3.11+ | Aplikacja, konektory, walidacja, orkiestracja i raportowanie |
-| Flask | Lokalny serwer raportu HTML |
-| SQLite v2 | Audytowalny zapis przebiegów, dowodów, obserwacji, zdarzeń jakościowych i raportów |
-| NBP API | Kursy EUR/PLN i USD/PLN oraz stopa referencyjna NBP |
-| GUS API | Wybrane wskaźniki BDL i DBW, w tym bezrobocie rejestrowane i CPI |
-| Eurostat API | HICP, bezrobocie BAEL i szeregi PKB |
-| Tavily | Opcjonalny kontekst wyszukiwania online i wycinki źródłowe |
-| LangChain | Integracja promptów, modeli, parserów i callbacków |
-| OpenAI GPT (`gpt-4o`) | Opcjonalny model raportowania online ze streamingiem w terminalu |
-| pytest | Testy offline: jednostkowe, bezpieczeństwa, konektorów, bazy, migracji i potoku |
-| uv | Powtarzalna instalacja zależności i uruchamianie testów |
-
-### Szybki start: demo offline
-
-Tryb offline jest domyślny. Nie wymaga kluczy API i nie łączy się z NBP, GUS, Eurostatem, Tavily ani OpenAI. Potok korzysta z deterministycznych lokalnych fixture'ów, zapisuje dane wyłącznie w bazie SQLite v2, generuje `report.html` i uruchamia lokalny serwer Flask.
-
-> **Informacja o danych:** wartości we fixture'ach offline są przykładowymi danymi demonstracyjnymi. Nie są danymi bieżącymi ani podstawą do decyzji ekonomicznych.
-
-Wymagania: Python 3.11 lub nowszy oraz `uv`.
+Wymagania: Python 3.11+ oraz [`uv`](https://docs.astral.sh/uv/).
 
 ```bash
 git clone https://github.com/maciejkubek-maker/polish-economy-agent.git
@@ -257,25 +243,26 @@ uv run python app.py
 
 Generowanie raportu online wykorzystuje OpenAI GPT przez LangChain, model `gpt-4o`, ze streamingiem analizy w terminalu. `OPENAI_API_KEY` jest jedynym kluczem wymaganym do analizy AI. W trybie live raport generuje wyłącznie GPT i musi on przejść rygorystyczną walidację (struktura 6 sekcji, spójność liczb, powiązanie przypisów z właściwymi źródłami i bezpośrednie linki URL). Końcowa sekcja 6 (bibliografia) jest składana programowo z oficjalnego rejestru cytowań z bezpośrednimi URL-ami, podczas gdy model odpowiada za rygorystyczne przypisy `[N]`, a wyniki wyszukiwania (Tavily) nigdy nie są traktowane jako oficjalne obserwacje statystyczne. Błąd API GPT lub odrzucenie przez walidator oznacza natychmiastowe niepowodzenie generowania (`pipeline_status=FAILED`, `report_id=null`) — potok live NIE tworzy raportu zastępczego ani nie zapisuje nieudanej próby do bazy SQLite i pliku `report.html`. Generator deterministyczny jest zarezerwowany WYŁĄCZNIE dla świadomego trybu offline. Pobieranie aktualnych danych oficjalnych i kontekstu Tavily wymaga dostępu do sieci. Jeśli Tavily jest niedostępne lub nie zwróci wyników, przebieg live otrzymuje status częściowy i działa bez kontekstu wyszukiwania; fixture'y offline nigdy nie są podstawiane w trybie live.
 
-### Lokalna diagnostyka
+### Lokalna diagnostyka i pełny ślad wykonania
 
 Każde uruchomienie potoku zapisuje lokalną diagnostykę z redakcją sekretów w `instance/logs/` (katalog jest ignorowany przez Git):
 
-- `agent.log` to rotowany dziennik zdarzeń i błędów;
-- `last_run.json` to czytelne podsumowanie ostatniego przebiegu z rzeczywistym statusem potoku, wynikiem generowania GPT, statusem Tavily, listą zweryfikowanych i brakujących wskaźników oraz identyfikatorem raportu.
+- `agent.log` to rotowany dziennik zdarzeń i błędów; diagnostyka walidatora (odrzucenia i akceptacje) trafia bezpośrednio tutaj z oznaczeniem `run_id` bieżącego przebiegu;
+- `last_run.json` to czytelne podsumowanie tworzone już na starcie potoku (`pipeline_status: STARTED`) i aktualizowane po zakończeniu z ostatecznym statusem potoku, wynikiem generowania GPT, statusem Tavily, listą zweryfikowanych i brakujących wskaźników oraz identyfikatorem raportu;
+- `steps.jsonl` to strukturalny ślad wykonania z rekordami `START`, `END` oraz `ERROR` dla kluczowych operacji: pobierania NBP (`fetch_nbp`), Eurostatu (`fetch_eurostat`), GUS (`fetch_gus`), wyszukiwania Tavily (`search_tavily`), syntezy GPT (`gpt_synthesis`), walidacji (`validate_report`), zapisu bazy (`store_sqlite`) oraz generowania pliku HTML (`write_html`). Każdy rekord zawiera znacznik czasu UTC, run_id, funkcję, etap, czas trwania w ms, bezpieczne podsumowanie wejścia/wyjścia, kod błędu oraz zredagowaną przyczynę.
 
 Pliki diagnostyczne nie zapisują celowo kluczy API, nagłówków autoryzacyjnych, pełnych promptów ani odpowiedzi GPT. Pozostają lokalne i można je usunąć bez wpływu na dane SQLite lub wygenerowane raporty.
 
 ### Testy
 
-Zestaw regresyjny końcowej stabilizacji potwierdził **154 testy** działające offline:
+Zestaw regresyjny końcowej stabilizacji i pełnej diagnostyki potwierdził **160 testów** działających offline:
 
 ```bash
 uv sync --group dev
 uv run pytest -q
 ```
 
-Oczekiwany wynik audytu: `154 passed`.
+Oczekiwany wynik audytu: `160 passed`.
 
 ### Zrzuty ekranu raportu
 

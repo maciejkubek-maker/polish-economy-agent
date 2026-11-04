@@ -1164,6 +1164,42 @@ class TestGusConnector:
             connector.fetch_cpi_dbw()
 
 
+
+
+    def test_fetch_cpi_dbw_rejects_missing_mode_5_without_guessing(self):
+        """Konektor GUS CPI odrzuca odpowiedź bez sposobu prezentacji 5 (r/r) i nie wybiera losowo data_list[0]."""
+        connector = GusConnector(offline_mode=True)
+        # Payload zawierający sposoby prezentacji 1 (m/m) i 2 (grudzień=100), ale brak 5 (r/r)
+        payload_no_mode_5 = json.dumps({
+            "page": 1,
+            "page-size": 10,
+            "total-records": 2,
+            "data": [
+                {
+                    "id-zmienna": 305,
+                    "id-przekroj": 736,
+                    "id-rok": 2026,
+                    "id-okres": 255,
+                    "id-sposob-prezentacji-miara": 1,
+                    "wartosc": 100.4,
+                    "precyzja": 1
+                },
+                {
+                    "id-zmienna": 305,
+                    "id-przekroj": 736,
+                    "id-rok": 2026,
+                    "id-okres": 255,
+                    "id-sposob-prezentacji-miara": 2,
+                    "wartosc": 102.1,
+                    "precyzja": 1
+                }
+            ]
+        })
+        connector.register_fixture("data/data-data", payload_no_mode_5)
+        with pytest.raises(ValidationError, match="Nie znaleziono wymaganego sposobu prezentacji CPI r/r"):
+            connector.fetch_cpi_dbw(rok=2026, okres_id=255)
+
+
 class TestBaseConnectorGuards:
     """Testy mechanizmów walidacyjnych i odpornościowych BaseConnector."""
 
