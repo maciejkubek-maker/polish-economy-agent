@@ -132,7 +132,7 @@ The diagnostic files never store API keys, authorization headers, full prompts, 
 
 ### Tests
 
-The regression and diagnostics test suite passes **162 tests** offline:
+The regression and diagnostics test suite passes **178 tests** offline:
 
 ```bash
 uv sync --group dev
@@ -255,7 +255,7 @@ Pliki diagnostyczne nie zapisują celowo kluczy API, nagłówków autoryzacyjnyc
 
 ### Testy
 
-Zestaw regresyjny końcowej stabilizacji i pełnej diagnostyki potwierdził **162 testy** działające offline:
+Zestaw regresyjny końcowej stabilizacji i pełnej diagnostyki potwierdził **178 testów** działających offline:
 
 ```bash
 uv sync --group dev

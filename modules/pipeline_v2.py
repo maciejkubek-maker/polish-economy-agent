@@ -625,6 +625,40 @@ class MacroPipelineV2:
             ),
         }
 
+        temp_html_path = None
+        t0_html = None
+        if output_html_path:
+            t0_html = time.perf_counter()
+            self.diagnostics.record_step(
+                run_id=run_id,
+                function="write_html",
+                stage="START",
+                input_summary=f"path={output_html_path}",
+            )
+            try:
+                temp_html_path = f"{output_html_path}.tmp.{uuid.uuid4().hex[:8]}"
+                with open(temp_html_path, "w", encoding="utf-8") as f:
+                    f.write(report_html)
+                    f.flush()
+                    os.fsync(f.fileno())
+            except Exception as err:
+                dur_html = (time.perf_counter() - t0_html) * 1000.0
+                self.diagnostics.record_step(
+                    run_id=run_id,
+                    function="write_html",
+                    stage="ERROR",
+                    duration_ms=dur_html,
+                    input_summary=f"path={output_html_path}",
+                    error_code=type(err).__name__,
+                    error_message=safe_error_message(err),
+                )
+                if temp_html_path and os.path.exists(temp_html_path):
+                    try:
+                        os.remove(temp_html_path)
+                    except Exception:
+                        pass
+                raise
+
         t0_rep = time.perf_counter()
         self.diagnostics.record_step(
             run_id=run_id,
@@ -663,19 +697,16 @@ class MacroPipelineV2:
                 error_code=type(err).__name__,
                 error_message=safe_error_message(err),
             )
+            if temp_html_path and os.path.exists(temp_html_path):
+                try:
+                    os.remove(temp_html_path)
+                except Exception:
+                    pass
             raise
 
-        if output_html_path:
-            t0_html = time.perf_counter()
-            self.diagnostics.record_step(
-                run_id=run_id,
-                function="write_html",
-                stage="START",
-                input_summary=f"path={output_html_path}",
-            )
+        if output_html_path and temp_html_path:
             try:
-                with open(output_html_path, "w", encoding="utf-8") as f:
-                    f.write(report_html)
+                os.replace(temp_html_path, output_html_path)
                 dur_html = (time.perf_counter() - t0_html) * 1000.0
                 self.diagnostics.record_step(
                     run_id=run_id,
@@ -696,6 +727,11 @@ class MacroPipelineV2:
                     error_code=type(err).__name__,
                     error_message=safe_error_message(err),
                 )
+                if os.path.exists(temp_html_path):
+                    try:
+                        os.remove(temp_html_path)
+                    except Exception:
+                        pass
                 raise
 
         return report_id, report_markdown, report_html
