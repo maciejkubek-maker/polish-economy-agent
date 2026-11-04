@@ -176,11 +176,11 @@ def build_html_template(report_text: str, country: str) -> str:
             background: var(--card-white);
             border: 1px solid var(--border-light);
             border-radius: 16px;
-            padding: 12px;
+            padding: 10px;
             margin: 0 auto 16px auto;
             box-shadow: 0 4px 14px rgba(20, 43, 73, 0.08);
-            width: 96px;
-            height: 96px;
+            width: 140px;
+            height: 140px;
         }}
         {logo_css}
         .header h1 {{
@@ -279,6 +279,11 @@ def build_failure_html_template(
   safe_run_id = html.escape(str(run_id or ""), quote=True)
   safe_reason = html.escape(str(reason or ""), quote=True)
   logo_uri = get_logo_data_uri()
+  logo_css = (
+      f'.report-logo {{ background-image: url("{logo_uri}"); background-size: contain; background-repeat: no-repeat; background-position: center; width: 100%; height: 100%; display: block; }}'
+      if logo_uri
+      else ""
+  )
   logo_div = (
       '<div class="logo-card">'
       '<div class="report-logo" role="img" aria-label="Logo"></div>'
@@ -343,18 +348,13 @@ def build_failure_html_template(
             background: var(--card-white);
             border: 1px solid var(--border-light);
             border-radius: 16px;
-            padding: 12px;
+            padding: 10px;
             margin: 0 auto 16px auto;
             box-shadow: 0 4px 14px rgba(20, 43, 73, 0.08);
-            width: 96px;
-            height: 96px;
+            width: 140px;
+            height: 140px;
         }}
-        .report-logo {{
-            width: 100%;
-            height: 100%;
-            object-fit: contain;
-            display: block;
-        }}
+        {logo_css}
         .header h1 {{
             color: var(--navy-primary);
             margin: 0 0 8px 0;

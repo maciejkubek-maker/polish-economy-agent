@@ -631,3 +631,13 @@ class SQLiteV2Storage:
             return dict(row) if row else None
         finally:
             conn.close()
+
+    def delete_report(self, report_id: str) -> bool:
+        """Usuwa raport o podanym ID w przypadku niepowodzenia publikacji lub procedury odzyskiwania."""
+        conn = self.get_connection()
+        try:
+            cursor = conn.execute("DELETE FROM reports WHERE report_id = ?", (report_id,))
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()

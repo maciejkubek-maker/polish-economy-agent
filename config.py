@@ -1,9 +1,5 @@
 import os
-import warnings
 from dotenv import load_dotenv
-
-# Całkowite wyciszenie ostrzeżeń zewnętrznych bibliotek (SDK / HTTP)
-warnings.filterwarnings("ignore")
 
 load_dotenv()
 

@@ -666,6 +666,7 @@ class MacroPipelineV2:
             stage="START",
             input_summary=f"report_id={report_id}, snapshot_hash={snap_hash[:8]}",
         )
+        report_saved_in_db = False
         try:
             self.db.save_report(
                 report_id=report_id,
@@ -677,6 +678,7 @@ class MacroPipelineV2:
                 data_snapshot_hash=snap_hash,
                 model_metadata=model_meta,
             )
+            report_saved_in_db = True
             dur_rep = (time.perf_counter() - t0_rep) * 1000.0
             self.diagnostics.record_step(
                 run_id=run_id,
@@ -686,53 +688,53 @@ class MacroPipelineV2:
                 input_summary=f"report_id={report_id}",
                 output_summary=f"report_id={report_id}, status=SAVED",
             )
-        except Exception as err:
-            dur_rep = (time.perf_counter() - t0_rep) * 1000.0
-            self.diagnostics.record_step(
-                run_id=run_id,
-                function="store_sqlite",
-                stage="ERROR",
-                duration_ms=dur_rep,
-                input_summary=f"report_id={report_id}",
-                error_code=type(err).__name__,
-                error_message=safe_error_message(err),
-            )
+
+            if output_html_path and temp_html_path:
+                try:
+                    os.replace(temp_html_path, output_html_path)
+                    dur_html = (time.perf_counter() - t0_html) * 1000.0
+                    self.diagnostics.record_step(
+                        run_id=run_id,
+                        function="write_html",
+                        stage="END",
+                        duration_ms=dur_html,
+                        input_summary=f"path={output_html_path}",
+                        output_summary=f"bytes_written={len(report_html.encode('utf-8'))}",
+                    )
+                except Exception as err:
+                    dur_html = (time.perf_counter() - t0_html) * 1000.0
+                    self.diagnostics.record_step(
+                        run_id=run_id,
+                        function="write_html",
+                        stage="ERROR",
+                        duration_ms=dur_html,
+                        input_summary=f"path={output_html_path}",
+                        error_code=type(err).__name__,
+                        error_message=safe_error_message(err),
+                    )
+                    raise
+        except Exception as pub_err:
+            # Procedura odzyskiwania po błędzie publikacji (rollback SQLite i czyszczenie plików)
+            if report_saved_in_db:
+                try:
+                    self.db.delete_report(report_id)
+                    self.diagnostics.event(
+                        logging.WARNING,
+                        f"Publication failed: rolled back un-published report {report_id} from SQLite v2",
+                        run_id=run_id,
+                    )
+                except Exception as del_err:
+                    self.diagnostics.event(
+                        logging.ERROR,
+                        f"Failed to delete un-published report {report_id} from SQLite v2: {safe_error_message(del_err)}",
+                        run_id=run_id,
+                    )
             if temp_html_path and os.path.exists(temp_html_path):
                 try:
                     os.remove(temp_html_path)
                 except Exception:
                     pass
             raise
-
-        if output_html_path and temp_html_path:
-            try:
-                os.replace(temp_html_path, output_html_path)
-                dur_html = (time.perf_counter() - t0_html) * 1000.0
-                self.diagnostics.record_step(
-                    run_id=run_id,
-                    function="write_html",
-                    stage="END",
-                    duration_ms=dur_html,
-                    input_summary=f"path={output_html_path}",
-                    output_summary=f"bytes_written={len(report_html.encode('utf-8'))}",
-                )
-            except Exception as err:
-                dur_html = (time.perf_counter() - t0_html) * 1000.0
-                self.diagnostics.record_step(
-                    run_id=run_id,
-                    function="write_html",
-                    stage="ERROR",
-                    duration_ms=dur_html,
-                    input_summary=f"path={output_html_path}",
-                    error_code=type(err).__name__,
-                    error_message=safe_error_message(err),
-                )
-                if os.path.exists(temp_html_path):
-                    try:
-                        os.remove(temp_html_path)
-                    except Exception:
-                        pass
-                raise
 
         return report_id, report_markdown, report_html
 

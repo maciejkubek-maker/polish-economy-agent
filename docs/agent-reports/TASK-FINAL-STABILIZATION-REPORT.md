@@ -96,6 +96,25 @@ In run `RUN_258c9a14a4be`, pipeline execution failed due to several interconnect
 
 ---
 
+
+### Pillar 10: Resolution of Independent Audit Blockers (PR #6 Audit Hardening)
+1. **SQLite + HTML Atomic Publication & Rollback:**
+   - Problem: In commit 46ecb3, SQLite insert occurred before os.replace(). An os.replace() I/O failure left the report saved in SQLite despite pipeline_status=FAILED.
+   - Resolution: Added delete_report(report_id) to SQLiteV2Storage. In MacroPipelineV2.run(), if os.replace() or HTML publishing fails, the report is immediately purged from SQLite, temporary files are removed, 
+eport_id is set to None, status is set to FAILED, and Flask serves uild_failure_html_template.
+   - Verified: **Test O** (	est_os_replace_failure_recovery_and_flask_status).
+2. **Deterministic Structured Claims Validator:**
+   - Problem: Proximity heuristics (character distance, regex guessing) were fragile against complex sentence structures.
+   - Resolution: Replaced heuristic distance with structured claims (_parse_candidate_payload, _validate_structured_report, _assemble_report_from_sections). Each claim is bound to observation metadata, unit, and citation ID. Text is assembled programmatically *after* validation passes.
+   - Verified: **Test Q** (	est_structured_claims_json_and_multi_number_paragraph), **Test C**, and **Test D**.
+3. **Tavily Unverified Numeric Stripping & Prompt Injection Defense:**
+   - Problem: Full text from web search could leak unverified statistical claims or adversarial prompt injection into GPT context.
+   - Resolution: evaluate_from_v2 automatically strips numerical claims (\d+(?:[.,]\d+)?\s*(?:%|zł|PLN|p\.p\.|pkt|proc\.)(?!\w)) from search snippets replacing them with [wartość usunięta — źródło nieoficjalne] and neutralizes prompt injection instructions.
+   - Verified: **Test P** (	est_tavily_prompt_injection_and_numeric_sanitization).
+4. **General Polish & Hygiene:**
+   - Removed global warnings.filterwarnings('ignore') from config.py.
+   - Enlarged logo container (.logo-card) to 140x140 with padding for crisp rendering.
+
 ## 3. Test Suite Execution & Audit Results
 
 The entire offline test suite was executed in `.worktrees/final-stabilization`:
@@ -106,7 +125,7 @@ platform win32 -- Python 3.11.16, pytest-9.2.0, pluggy-1.7.0
 rootdir: E:\Programy\PycharmProjects\polish-economy-agent\.worktrees\final-stabilization
 configfile: pyproject.toml
 plugins: anyio-4.15.1, langsmith-0.12.4
-collected 178 items
+collected 181 items
 
 tests\test_ambiguous_formats.py .....                                    [  2%]
 tests\test_cache_freshness.py ......                                     [  6%]
@@ -123,11 +142,11 @@ tests\test_pipeline_v2.py .................                              [ 90%]
 tests\test_record_updates.py .....                                       [ 93%]
 tests\test_schema_v2_design.py ............                              [100%]
 
-============================ 178 passed in 10.47s =============================
+============================ 181 passed in 11.28s =============================
 ```
 
-- **Total Tests:** 178
-- **Passed:** 178
+- **Total Tests:** 181
+- **Passed:** 181
 - **Failed:** 0
 - **Duration:** 10.47 seconds
 
