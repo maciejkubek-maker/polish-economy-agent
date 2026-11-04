@@ -35,20 +35,27 @@ PR #5 realizuje pełną diagnostykę potoku oraz końcową stabilizację projekt
    - Baza legacy `instance/economy_agent.db` oraz niecommitowany plik użytkownika `report.html` w głównym drzewie pozostają ściśle nienaruszone (prace prowadzone w dedykowanym worktree).
    - Zero płatnych wywołań API podczas testów i weryfikacji.
 
+5. **Stabilizacja Cytowań i Bibliografii (Rozwiązanie RUN_89f71ad08c71):**
+   - **Przyczyna odrzucenia w RUN_89f71ad08c71:** Model GPT wygenerował merytorycznie poprawny raport, ale w Sekcji 6 podał ogólne domeny (`https://stat.gov.pl`, `https://nbp.pl`) zamiast pełnych, wieloparametrowych endpointów API GUS/NBP zarejestrowanych w rejestrze źródeł (`citations`).
+   - **Programowy montaż Sekcji 6:** Wprowadzono `_assemble_v2_report_with_citations`, która programowo dołącza Sekcję 6 ("6. Źródła i bibliografia") z rzeczywistego rejestru cytowań dla przypisów faktycznie użytych w tekście (`used_indices`). Eliminuje to zależność od bezbłędnego przepisywania długich URL-i zapytań przez LLM.
+   - **Rygorystyczne powiązanie przypisów:** Walidator weryfikuje istnienie przypisów `[N]`, dopasowanie do rejestru źródeł oraz atrybucję — liczba w tekście powiązana z `[N]` musi odpowiadać obserwacji z tego konkretnego źródła.
+   - **Izolacja danych Tavily:** Wyniki z wyszukiwarki Tavily mają zawsze `is_official=False` i `value_decimal=None` — liczby z newsów internetowych nie mogą spełniać wymogów oficjalnych obserwacji makroekonomicznych.
+   - **Szczegółowe logowanie odrzuceń:** Dokładna lista brakujących URL-i lub odrzuconych liczb jest logowana na poziomie WARNING i przekazywana w przyczynie błędu.
+
 ## Zmienione pliki w gałęzi `feature/diagnostic-logging`
 
 | Ścieżka | Opis zmian |
 |---|---|
 | `.gitignore` | Ignorowanie katalogu diagnostycznego `instance/logs/`. |
-| `README.md` | Aktualizacja dokumentacji trybu live, diagnostyki i wyników testów (150 passed) w wersjach PL i EN. |
+| `README.md` | Aktualizacja dokumentacji trybu live, diagnostyki, programowej bibliografii i wyników testów (154 passed) w wersjach PL i EN. |
 | `app.py` | Poprawny komunikat konsolowy przy niepowodzeniu potoku v2. |
 | `modules/connectors/gus.py` | Dynamiczne odkrywanie najnowszego CPI w DBW (`_discover_latest_cpi_period`), obsługa wywołań bez sztywnych dat, rygorystyczna weryfikacja metadanych odpowiedzi GUS. |
 | `modules/diagnostics.py` | Rotacja logów, atomowy JSON, redakcja sekretów, aliasy wskaźników (`EU_HICP_YOY`, `PL_NBP_REFERENCE_RATE`), obsługa `generation_mode=None` przed GPT. |
-| `modules/evaluator.py` | Odrzucenie deterministycznego fallbacku w trybie live — wyłącznie GPT z walidacją; zgłaszanie błędu przy awarii GPT / odrzuceniu przez walidator. |
+| `modules/evaluator.py` | Odrzucenie deterministycznego fallbacku w trybie live; programowy montaż Sekcji 6 z rejestru cytowań (`_assemble_v2_report_with_citations`); walidacja atrybucji przypisów i odrzucenie liczb Tavily jako oficjalnych obserwacji; szczegółowe logowanie odrzuconych URL-i i liczb. |
 | `modules/pipeline_v2.py` | Usunięcie sztywnego wywołania CPI w `fetch_official_data`, poprawna obsługa stanu awarii GPT i przed-GPT, brak zapisu raportu przy niepowodzeniu. |
 | `tests/test_connectors.py` | Dodatkowe testy dynamicznego odkrywania CPI, weryfikacji zmiennej, przekroju, okresu, roku oraz braku zgadywania. |
-| `tests/test_diagnostics.py` | Testy poprawnego i nieudanego GPT, rozróżnienia błędów przed GPT, aliasów wskaźników konektorów i redakcji sekretów. |
-| `tests/test_pipeline_v2.py` | Testy odrzucenia raportu w trybie live bez fallbacku, braku nadpisywania `report.html` i SQLite przy błędzie, czyszczenia sekretów. |
+| `tests/test_diagnostics.py` | Testy poprawnego i nieudanego GPT, rozróżnienia błędów przed GPT, aliasów wskaźników konektorów, redakcji sekretów, atrybucji przypisów, odrzucania liczb Tavily oraz logowania brakujących URL-i. |
+| `tests/test_pipeline_v2.py` | Testy odrzucenia raportu w trybie live bez fallbacku, braku nadpisywania `report.html` i SQLite przy błędzie, czyszczenia sekretów, test regresyjny `RUN_89f71ad08c71` z domenowymi URL-ami w GPT i ich programową podmianą. |
 
 ## Wyniki testów (100% offline)
 
@@ -60,27 +67,27 @@ platform win32 -- Python 3.11.16, pytest-9.2.0, pluggy-1.7.0
 rootdir: E:\Programy\PycharmProjects\polish-economy-agent\.worktrees\diagnostic-logging
 configfile: pyproject.toml
 plugins: anyio-4.15.1, langsmith-0.12.4
-collected 150 items
+collected 154 items
 
 tests\test_ambiguous_formats.py .....                                    [  3%]
 tests\test_cache_freshness.py ......                                     [  7%]
-tests\test_connectors.py ............................................... [ 38%]
-...                                                                      [ 40%]
-tests\test_database_init.py .....                                        [ 44%]
-tests\test_diagnostics.py ........                                       [ 49%]
-tests\test_executive_horizon.py ........                                 [ 54%]
+tests\test_connectors.py ............................................... [ 37%]
+...                                                                      [ 39%]
+tests\test_database_init.py .....                                        [ 42%]
+tests\test_diagnostics.py ...........                                    [ 50%]
+tests\test_executive_horizon.py ........                                 [ 55%]
 tests\test_html_security.py .................                            [ 66%]
 tests\test_indicators_storage.py ......                                  [ 70%]
-tests\test_migrator.py ............                                      [ 78%]
-tests\test_pipeline_v2.py ................                               [ 88%]
+tests\test_migrator.py ............                                      [ 77%]
+tests\test_pipeline_v2.py .................                              [ 88%]
 tests\test_record_updates.py .....                                       [ 92%]
 tests\test_schema_v2_design.py ............                              [100%]
 
-============================= 150 passed in 8.17s =============================
+============================= 154 passed in 8.60s =============================
 ```
 
 ## Ograniczenia i stan weryfikacji
 
-1. **Brak płatnych wywołań w audycie:** Zgodnie z wytycznymi nie wykonywano płatnych wywołań OpenAI API ani Tavily API. Działanie potoku live z rzeczywistym modelem GPT nie zostało przetestowane "na żywo" na płatnym koncie, natomiast zostało w 100% zweryfikowane testami jednostkowymi i integracyjnymi z mockami symulującymi prawidłową odpowiedź, błąd API oraz odrzucenie przez walidator.
+1. **Brak płatnych wywołań w audycie:** Zgodnie z wytycznymi nie wykonywano płatnych wywołań OpenAI API ani Tavily API. Działanie potoku live z rzeczywistym modelem GPT nie zostało przetestowane "na żywo" na płatnym koncie, natomiast zostało w 100% zweryfikowane testami jednostkowymi i integracyjnymi z mockami symulującymi prawidłową odpowiedź, błąd API, odrzucenie przez walidator oraz scenariusz RUN_89f71ad08c71.
 2. **Dynamiczne API GUS DBW:** Metoda odkrywania najnowszego okresu bada lata od bieżącego do 2 lat wstecz. W oficjalnym API GUS DBW najświeższe dane roczne/miesięczne dla zmiennej 305 / przekroju 736 spływają z opóźnieniem publikacyjnym (np. okresy 2025 r.).
 3. **Pliki diagnostyczne:** Dziennik `agent.log` oraz `last_run.json` zapisywane są lokalnie w `instance/logs/`.

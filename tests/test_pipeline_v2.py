@@ -565,6 +565,133 @@ Wniosek ogranicza się do zweryfikowanej obserwacji.
     assert "USD/2026-10-30" not in report_markdown
 
 
+def test_regression_run_89f71ad08c71_gpt_domain_urls_assembled_programmatically(temp_v2_db, monkeypatch):
+    """
+    Test regresyjny odpowiadający faktycznemu wynikowi GPT z przebiegu RUN_89f71ad08c71:
+    GPT wygenerował pełny raport z poprawnymi numerami przypisów [N], ale w sekcji 6 podał
+    ogólne adresy domen (np. https://stat.gov.pl i https://nbp.pl) zamiast dokładnych URL-i.
+    Końcowa bibliografia budowana jest programowo z rejestru cytowań z bezpośrednimi URL-ami,
+    raport przechodzi walidację i zostaje zapisany bez błędu i bez fallbacku.
+    """
+    monkeypatch.setattr(config, "OFFLINE_MODE", False)
+    run_id = temp_v2_db.start_ingestion_run(provider="MANUAL", run_type="TRIGGERED")
+
+    exact_cpi_url = "https://api-dbw.stat.gov.pl/api/1.1.0/variable/variable-data-section?id-zmienna=305&id-przekroj=736&id-rok=2025&id-okres=258"
+    exact_fx_url = "https://api.nbp.pl/api/exchangerates/rates/A/EUR/2026-10-30/"
+
+    evi_cpi = RawEvidence(
+        evidence_id="EVI_CPI_REG",
+        source_id="SRC_GUS_DBW",
+        source_url=exact_cpi_url,
+        document_type="API_RESPONSE",
+        content_hash="cpi-reg-hash",
+        payload_text="official cpi",
+        status_code=200,
+        retrieved_at_utc="2026-10-30T10:00:00Z",
+    )
+    temp_v2_db.save_evidence(evi_cpi, run_id=run_id)
+    temp_v2_db.save_observation(MacroObservation(
+        indicator_code="PL_CPI_YOY",
+        country_code="PL",
+        period_start="2025-12-01",
+        period_end="2025-12-31",
+        frequency="MONTHLY",
+        value_decimal="3.1",
+        unit_code="PCT",
+        revision_type="FINAL",
+        status="VERIFIED",
+        evidence_id=evi_cpi.evidence_id,
+    ), run_id=run_id)
+
+    evi_fx = RawEvidence(
+        evidence_id="EVI_FX_REG",
+        source_id="SRC_NBP",
+        source_url=exact_fx_url,
+        document_type="API_RESPONSE",
+        content_hash="fx-reg-hash",
+        payload_text="official fx",
+        status_code=200,
+        retrieved_at_utc="2026-10-30T10:00:00Z",
+    )
+    temp_v2_db.save_evidence(evi_fx, run_id=run_id)
+    temp_v2_db.save_observation(MacroObservation(
+        indicator_code="PL_FX_EUR_PLN",
+        country_code="PL",
+        period_start="2026-10-30",
+        period_end="2026-10-30",
+        frequency="DAILY",
+        value_decimal="4.3955",
+        unit_code="EUR_PLN",
+        revision_type="FINAL",
+        status="VERIFIED",
+        evidence_id=evi_fx.evidence_id,
+    ), run_id=run_id)
+
+    # Rzeczywisty wzorzec odpowiedzi modelu GPT z przebiegu RUN_89f71ad08c71:
+    # Model użył ogólnych domen https://stat.gov.pl i https://nbp.pl w sekcji 6
+    gpt_candidate_output = """# RAPORT KONDYCJI GOSPODARCZEJ: Polska
+**Data publikacji analizy:** 04.11.2026  
+**Horyzont analizowanych danych:** Grudzień 2025 | Październik 2026
+
+## 1. Analiza Trendów w Dostępnym Okresie
+
+Inflacja CPI wyniosła 3.1% [1], a kurs walutowy EUR/PLN ukształtował się na poziomie 4.3955 zł [2].
+
+## 2. Zagrożenia i Ryzyka Makroekonomiczne
+
+Pojedyncze odczyty nie stanowią podstawy do kategorycznych projekcji przyszłych decyzji.
+
+## 3. Co to oznacza dla Kowalskiego? (Perspektywa Obywatela)
+
+- **Kredyty i Raty:** Brak danych o bezpośredniej decyzji.
+- **Ceny i Zakupy:** Wskaźnik cen CPI ukształtował się na poziomie 3.1% [1].
+- **Praca i Zarobki:** Brak danych.
+
+## 4. Co to oznacza dla Przedsiębiorców?
+
+Kurs walutowy 4.3955 zł [2] wpływa na koszty importu i rozliczenia handlowe.
+
+## 5. Podsumowanie i Realistyczny Werdykt
+
+Analiza opiera się na zweryfikowanych obserwacjach oficjalnych.
+
+## 6. Źródła danych i Metodologia
+
+[1] Główny Urząd Statystyczny - https://stat.gov.pl
+[2] Narodowy Bank Polski - https://nbp.pl
+"""
+    evaluator = EconomyEvaluator()
+    monkeypatch.setattr(evaluator, "_run_llm_synthesis", lambda *args, **kwargs: gpt_candidate_output)
+
+    pipeline = MacroPipelineV2(
+        db=temp_v2_db,
+        offline_mode=False,
+        evaluator=evaluator,
+    )
+
+    report_id, report_markdown, _ = pipeline.generate_and_archive_report(
+        country="Polska",
+        search_news=[],
+        run_id=run_id,
+    )
+
+    # Weryfikacja: raport został zaakceptowany w trybie LIVE_AI_VALIDATED
+    assert report_id is not None
+    assert "analiza online zweryfikowana" in report_markdown
+
+    # Weryfikacja: końcowy raport zawiera bezpośrednie oficjalne URL-e zbudowane programowo
+    assert exact_cpi_url in report_markdown
+    assert exact_fx_url in report_markdown
+    assert "GUS" in report_markdown
+    assert "NBP" in report_markdown
+
+    # Weryfikacja zapisu w bazie danych SQLite v2
+    stored = temp_v2_db.get_latest_report("PL")
+    metadata = json.loads(stored["model_metadata_json"])
+    assert stored["report_id"] == report_id
+    assert metadata["generation_mode"] == "LIVE_AI_VALIDATED"
+
+
 def test_gpt_report_uses_gpt4o_with_terminal_streaming(monkeypatch):
     """Synteza raportu korzysta wyłącznie z GPT-4o i streamingu LangChain."""
     captured = {}
