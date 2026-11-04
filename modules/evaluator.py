@@ -2,9 +2,11 @@ from collections import defaultdict
 import datetime
 import hashlib
 import json
+import logging
 import os
 import re
 import sqlite3
+import time
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -13,7 +15,10 @@ from langchain_core.callbacks import StreamingStdOutCallbackHandler
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
+from modules.diagnostics import safe_error_message
 from modules.storage_v2 import SQLiteV2Storage
+
+logger = logging.getLogger("modules.evaluator")
 
 
 def build_executive_horizon(raw_periods: list[str]) -> str:
@@ -128,16 +133,16 @@ class EconomyEvaluator:
 
   def __init__(self, db_path: Optional[str] = None):
     self.db_path = db_path or "instance/economy_agent.db"
+    self.last_generation_diagnostics: Dict[str, Any] = {
+        "generation_mode": None,
+        "gpt_attempted": False,
+        "fallback_reason": None,
+    }
 
   @staticmethod
   def _safe_error_message(error: Exception) -> str:
-    """Zwraca przyczynę błędu bez ujawniania klucza OpenAI."""
-    message = str(error)
-    api_key = getattr(config, "OPENAI_API_KEY", None)
-    if api_key:
-      message = message.replace(str(api_key), "[REDACTED]")
-    message = re.sub(r"\bsk-[A-Za-z0-9_-]{8,}\b", "[REDACTED]", message)
-    return f"{type(error).__name__}: {message}"
+    """Zwraca przyczynę błędu bez ujawniania sekretów ani treści modelu."""
+    return safe_error_message(error)
 
   def fetch_timeline_data(self, country: str):
     """Metoda kompatybilności wstecznej dla bazy legacy v1."""
@@ -250,10 +255,12 @@ class EconomyEvaluator:
                 " scenariuszy. Nie formułuj kategorycznych prognoz ani nowych"
                 " wartości liczbowych. Używaj języka warunkowego i jawnie"
                 " wskazuj ograniczenia wynikające z braków oraz lagów danych.\n"
-                "6. DYSCYPLINA ŹRÓDEŁ: Każda pojedyncza liczba w tekście MUSI"
-                " posiadać odnośnik numeryczny (np. [1], [2]), w 100% spójny z"
-                " wykazem w sekcji 6. Sekcja 6 MUSI zawierać bezpośredni URL"
-                " dla każdego wykorzystanego źródła.\n"
+                "6. DYSCYPLINA ŹRÓDEŁ I PRZYPISÓW: Każda pojedyncza liczba w"
+                " tekście MUSI posiadać bezpośredni odnośnik numeryczny (np. [1], [2])"
+                " odpowiadający numerowi źródła przekazanemu w zestawie zweryfikowanych odczytów."
+                " Zakaz przypisywania liczb do innych źródeł (np. stopy NBP do GUS)"
+                " oraz zakaz podawania liczb nieobecnych w zweryfikowanych odczytach oficjalnych."
+                " Wykaz sekcji 6 z pełnymi URL zostanie dołączony programowo.\n"
                 "7. Całkowity zakaz odwołań do AI, promptów, modeli czy"
                 " skryptów.\n\n"
                 "STRUKTURA RAPORTU:\n"
@@ -322,6 +329,7 @@ class EconomyEvaluator:
       search_news: Optional[List[Dict[str, Any]]] = None,
       offline_mode: bool = False,
       run_id: Optional[str] = None,
+      diagnostics: Any = None,
   ) -> str:
     """
     Generuje kompletny raport makroekonomiczny w oparciu o zweryfikowane obserwacje v2
@@ -364,11 +372,13 @@ class EconomyEvaluator:
         url: str,
         is_official: bool = True,
         value_decimal: Optional[str] = None,
+        indicator_code: Optional[str] = None,
     ) -> int:
       idx = len(citations) + 1
       citations.append({
           "idx": idx,
           "institution": institution,
+          "indicator_code": indicator_code,
           "indicator_name": indicator_name,
           "period": period,
           "url": url or "https://stat.gov.pl",
@@ -385,6 +395,7 @@ class EconomyEvaluator:
       )
       c_idx = add_citation(
           institution=inst,
+          indicator_code=o.get("indicator_code"),
           indicator_name=o.get("name_pl") or o["indicator_code"],
           period=f"{o['period_start']} – {o['period_end']}",
           url=o.get("source_url") or ("https://api.nbp.pl" if inst == "NBP" else "https://stat.gov.pl"),
@@ -393,7 +404,7 @@ class EconomyEvaluator:
       )
       obs_citation_map[o["indicator_code"]] = c_idx
 
-    # Rejestracja źródeł prasowych/wyszukiwania
+    # Rejestracja źródeł prasowych/wyszukiwania (Tavily nigdy nie jest traktowane jako oficjalna obserwacja statystyczna)
     news_citation_map = {}
     if search_news:
       for news in search_news:
@@ -401,10 +412,12 @@ class EconomyEvaluator:
         if url:
           c_idx = add_citation(
               institution=news.get("domain", "Media"),
+              indicator_code=None,
               indicator_name=news.get("title", "Komentarz rynkowy"),
               period=news.get("published_date") or "październik 2026",
               url=url,
-              is_official=(news.get("source_classification") == "OFFICIAL_COMMUNIQUE"),
+              is_official=False,
+              value_decimal=None,
           )
           news_citation_map[url] = c_idx
 
@@ -426,7 +439,7 @@ class EconomyEvaluator:
         )
 
     if search_news:
-      context_lines.append("\n### DONIESIENIA PRASOWE I KOMENTARZE RYNKOWE (ODRĘBNA KATEGORIA):")
+      context_lines.append("\n### DONIESIENIA PRASOWE I KOMENTARZE RYNKOWE (ODRĘBNA KATEGORIA — NIE STANOWIĄ OFICJALNYCH ODCZYTÓW):")
       for news in search_news:
         u = news.get("url", "")
         c_num = news_citation_map.get(u, "")
@@ -440,6 +453,11 @@ class EconomyEvaluator:
 
     # Sprawdzenie trybu offline / bezpłatnego
     is_offline = offline_mode or getattr(config, "OFFLINE_MODE", False)
+    self.last_generation_diagnostics = {
+        "generation_mode": "OFFLINE_DEMO" if is_offline else None,
+        "gpt_attempted": False,
+        "fallback_reason": None,
+    }
     search_notice = ""
     if not search_news:
       search_notice = (
@@ -464,8 +482,16 @@ class EconomyEvaluator:
           f"{report}"
       )
 
-    # Próba generowania przez GPT i niezależna kontrola wyniku.
-    fallback_reason = ""
+    # Próba generowania przez GPT i rygorystyczna kontrola wyniku (w trybie live wyłącznie GPT).
+    self.last_generation_diagnostics["gpt_attempted"] = True
+    t0_gpt = time.perf_counter()
+    if diagnostics and run_id:
+      diagnostics.record_step(
+          run_id=run_id,
+          function="gpt_synthesis",
+          stage="START",
+          input_summary=f"country={country}, model={getattr(config, 'DEFAULT_OPENAI_MODEL', 'unknown')}",
+      )
     try:
       candidate = self._run_llm_synthesis(
           country,
@@ -474,46 +500,136 @@ class EconomyEvaluator:
           chronological_context,
           allow_fallback=False,
       )
+      gpt_duration = (time.perf_counter() - t0_gpt) * 1000.0
+      if diagnostics and run_id:
+        diagnostics.record_step(
+            run_id=run_id,
+            function="gpt_synthesis",
+            stage="END",
+            duration_ms=gpt_duration,
+            input_summary=f"country={country}",
+            output_summary=f"candidate_length={len(candidate)}",
+        )
     except Exception as gpt_err:
+      gpt_duration = (time.perf_counter() - t0_gpt) * 1000.0
+      if diagnostics and run_id:
+        diagnostics.record_step(
+            run_id=run_id,
+            function="gpt_synthesis",
+            stage="ERROR",
+            duration_ms=gpt_duration,
+            input_summary=f"country={country}",
+            error_code=type(gpt_err).__name__,
+            error_message=self._safe_error_message(gpt_err),
+        )
       fallback_reason = (
           "Błąd API GPT: "
           f"{self._safe_error_message(gpt_err)}"
       )
-    else:
-      try:
-        self._validate_v2_report(candidate, citations, verified_obs)
-      except Exception as validation_err:
-        fallback_reason = (
-            "Raport GPT odrzucony przez walidator: "
-            f"{self._safe_error_message(validation_err)}"
-        )
-      else:
-        return (
-            "**Tryb generowania:** analiza online zweryfikowana przez kontrolę "
-            "integralności liczb, przypisów i URL.\n\n"
-            f"{search_notice}{candidate}"
-        )
+      self.last_generation_diagnostics.update({
+          "generation_mode": "GPT_API_ERROR",
+          "fallback_reason": fallback_reason,
+      })
+      raise RuntimeError(fallback_reason) from gpt_err
 
-    print(
-        "\n[Evaluator Fallback] Używam syntezy deterministycznej. "
-        f"Przyczyna: {fallback_reason}\n"
-    )
-    report = self._build_deterministic_v2_report(
-        country=country,
-        report_date=report_date,
-        periods_summary=periods_summary,
-        obs_by_code=obs_by_code,
-        obs_citation_map=obs_citation_map,
-        unverified_obs=unverified_obs,
-        search_news=search_news,
-        citations=citations,
-    )
+    # Złożenie raportu: sekcja 6 jest budowana programowo z rzeczywistego rejestru cytowań
+    assembled_report = self._assemble_v2_report_with_citations(candidate, citations)
+
+    t0_val = time.perf_counter()
+    if diagnostics and run_id:
+      diagnostics.record_step(
+          run_id=run_id,
+          function="validate_report",
+          stage="START",
+          input_summary=f"citations_count={len(citations)}, verified_obs_count={len(verified_obs)}",
+      )
+    try:
+      self._validate_v2_report(
+          assembled_report,
+          citations,
+          verified_obs,
+          diagnostics=diagnostics,
+          run_id=run_id,
+      )
+      val_duration = (time.perf_counter() - t0_val) * 1000.0
+      if diagnostics and run_id:
+        diagnostics.record_step(
+            run_id=run_id,
+            function="validate_report",
+            stage="END",
+            duration_ms=val_duration,
+            input_summary=f"citations_count={len(citations)}",
+            output_summary="validation_passed=True",
+        )
+    except Exception as validation_err:
+      val_duration = (time.perf_counter() - t0_val) * 1000.0
+      if diagnostics and run_id:
+        diagnostics.record_step(
+            run_id=run_id,
+            function="validate_report",
+            stage="ERROR",
+            duration_ms=val_duration,
+            input_summary=f"citations_count={len(citations)}",
+            error_code="VALIDATION_FAILED",
+            error_message=self._safe_error_message(validation_err),
+        )
+      fallback_reason = (
+          "Raport GPT odrzucony przez walidator: "
+          f"{self._safe_error_message(validation_err)}"
+      )
+      self.last_generation_diagnostics.update({
+          "generation_mode": "GPT_VALIDATION_REJECTED",
+          "fallback_reason": fallback_reason,
+      })
+      raise RuntimeError(fallback_reason) from validation_err
+
+    self.last_generation_diagnostics["generation_mode"] = "LIVE_AI_VALIDATED"
     return (
-        "**Tryb generowania:** deterministyczny fallback trybu live — "
-        "wynik GPT był niedostępny albo nie przeszedł kontroli "
-        "integralności.\n\n"
-        f"{search_notice}{report}"
+        "**Tryb generowania:** analiza online zweryfikowana przez kontrolę "
+        "integralności liczb, przypisów i URL.\n\n"
+        f"{search_notice}{assembled_report}"
     )
+
+  def _build_v2_sources_section(
+      self,
+      citations: List[Dict[str, Any]],
+      used_indices: Optional[set[int]] = None,
+  ) -> str:
+    """Buduje sekcję 6 programowo z rzeczywistego rejestru cytowań."""
+    sources_lines = ["## 6. Źródła danych i Metodologia"]
+    for c in citations:
+      if used_indices is not None and int(c["idx"]) not in used_indices:
+        continue
+      prefix = "Oficjalne API / Rejestr" if c.get("is_official") else "Analiza / Komentarz medialny"
+      sources_lines.append(
+          f"[{c['idx']}] {c['institution']}, {c['indicator_name']}, okres: {c['period']} [{prefix}], {c['url']}"
+      )
+    return "\n".join(sources_lines)
+
+  def _assemble_v2_report_with_citations(
+      self, candidate: str, citations: List[Dict[str, Any]]
+  ) -> str:
+    """
+    Zastępuje lub dołącza sekcję 6 (wykaz źródeł) zbudowaną programowo z rejestru cytowań.
+    Nie polegamy na przepisywaniu długich URL-i przez model GPT.
+    Do wykazu trafiają wyłącznie źródła rzeczywiście zacytowane w treści raportu.
+    """
+    split_match = re.search(
+        r"##\s*6\.\s*Źródła danych i Metodologia.*",
+        candidate,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if split_match:
+      body = candidate[:split_match.start()].rstrip()
+    else:
+      body = candidate.rstrip()
+
+    used_indices = {int(value) for value in re.findall(r"\[(\d+)\]", body)}
+    sec6 = self._build_v2_sources_section(
+        citations,
+        used_indices=used_indices if used_indices else None,
+    )
+    return f"{body}\n\n{sec6}\n"
 
   @staticmethod
   def _normalize_numeric_claim(value: Any) -> str:
@@ -528,8 +644,17 @@ class EconomyEvaluator:
       report_text: str,
       citations: List[Dict[str, Any]],
       verified_obs: List[Dict[str, Any]],
+      *,
+      diagnostics: Any = None,
+      run_id: Optional[str] = None,
   ) -> None:
     """Odrzuca raport AI z obcymi liczbami, przypisami lub bez URL-i."""
+    def _reject(msg: str) -> None:
+      logger.warning(f"[_validate_v2_report] {msg}")
+      if diagnostics and run_id:
+        diagnostics.event(logging.WARNING, f"Validator rejection: {msg}", run_id=run_id)
+      raise ValueError(msg)
+
     required_sections = [
         "## 1. Analiza Trendów w Dostępnym Okresie",
         "## 2. Zagrożenia i Ryzyka Makroekonomiczne",
@@ -538,16 +663,28 @@ class EconomyEvaluator:
         "## 5. Podsumowanie i Realistyczny Werdykt",
         "## 6. Źródła danych i Metodologia",
     ]
-    if any(section not in report_text for section in required_sections):
-      raise ValueError("Raport nie zachowuje wymaganej struktury sześciu sekcji")
+    missing_sections = [sec for sec in required_sections if sec not in report_text]
+    if missing_sections:
+      _reject(f"Raport nie zachowuje wymaganej struktury sześciu sekcji: brak {missing_sections}")
+
     if re.search(r"<\/?[a-zA-Z][^>]*>", report_text):
-      raise ValueError("Raport AI zawiera nieoczekiwany surowy HTML")
+      _reject("Raport AI zawiera nieoczekiwany surowy HTML")
+
+    split_match = re.search(
+        r"##\s*6\.\s*Źródła danych i Metodologia.*",
+        report_text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    body_text = report_text[:split_match.start()] if split_match else report_text
 
     valid_indices = {int(c["idx"]) for c in citations}
-    used_indices = {int(value) for value in re.findall(r"\[(\d+)\]", report_text)}
+    used_indices = {int(value) for value in re.findall(r"\[(\d+)\]", body_text)}
+    if not used_indices:
+      _reject("Raport nie zawiera przypisów źródłowych [N] w treści analizy")
+
     invalid_indices = used_indices - valid_indices
     if invalid_indices:
-      raise ValueError(f"Nieznane numery przypisów: {sorted(invalid_indices)}")
+      _reject(f"Nieznane numery przypisów: {sorted(invalid_indices)} (dostępny rejestr: {sorted(valid_indices)})")
 
     missing_urls = [
         str(c["url"])
@@ -557,37 +694,105 @@ class EconomyEvaluator:
         and str(c["url"]) not in report_text
     ]
     if missing_urls:
-      raise ValueError("Raport nie zawiera bezpośrednich URL-i cytowanych źródeł")
+      _reject(f"Raport nie zawiera bezpośrednich URL-i cytowanych źródeł: {missing_urls}")
 
     allowed_values = {
         self._normalize_numeric_claim(o["value_decimal"])
         for o in verified_obs
         if o.get("value_decimal") is not None
     }
-    numeric_claims = re.findall(
+    claim_pattern = re.compile(
         r"(?<![\w\[])\-?\d+(?:[.,]\d+)?\s*(?:%|zł/EUR|zł/USD|PLN|mln\s+EUR|pkt)",
-        report_text,
         flags=re.IGNORECASE,
     )
+    numeric_claims = claim_pattern.findall(body_text)
     unsupported = []
     for claim in numeric_claims:
       match = re.search(r"\-?\d+(?:[.,]\d+)?", claim)
       if match and self._normalize_numeric_claim(match.group(0)) not in allowed_values:
         unsupported.append(claim.strip())
     if unsupported:
-      raise ValueError(f"Niezweryfikowane twierdzenia liczbowe: {unsupported}")
+      _reject(
+          f"Niezweryfikowane twierdzenia liczbowe: {sorted(set(unsupported))} "
+          f"(dozwolone wartości ze zweryfikowanych źródeł: {sorted(allowed_values)})"
+      )
 
-    claim_pattern = re.compile(
-        r"(?<![\w\[])\-?\d+(?:[.,]\d+)?\s*(?:%|zł/EUR|zł/USD|PLN|mln\s+EUR|pkt)",
-        flags=re.IGNORECASE,
-    )
     uncited_lines = [
-        line
-        for line in report_text.splitlines()
+        line.strip()
+        for line in body_text.splitlines()
         if claim_pattern.search(line) and not re.search(r"\[\d+\]", line)
     ]
     if uncited_lines:
-      raise ValueError("Twierdzenie liczbowe bez przypisu źródłowego")
+      _reject(f"Twierdzenie liczbowe bez przypisu źródłowego w liniach: {uncited_lines}")
+
+    # Weryfikacja powiązania przypisów z właściwymi źródłami
+    citation_by_idx = {int(c["idx"]): c for c in citations}
+    mismatched_citations = []
+
+    for line in body_text.splitlines():
+      if not claim_pattern.search(line):
+        continue
+      line_claims = list(claim_pattern.finditer(line))
+      line_footnotes = [int(m.group(1)) for m in re.finditer(r"\[(\d+)\]", line)]
+      if not line_footnotes:
+        continue
+
+      for claim_match in line_claims:
+        claim_str = claim_match.group(0).strip()
+        num_match = re.search(r"\-?\d+(?:[.,]\d+)?", claim_str)
+        if not num_match:
+          continue
+        norm_val = self._normalize_numeric_claim(num_match.group(0))
+
+        # Przypis bezpośrednio po twierdzeniu
+        claim_end = claim_match.end()
+        following_text = line[claim_end:]
+        following_fn_match = re.search(r"^[^0-9\[]{0,35}\[(\d+)\]", following_text)
+
+        target_fn = None
+        if following_fn_match:
+          target_fn = int(following_fn_match.group(1))
+        elif len(line_footnotes) == 1:
+          target_fn = line_footnotes[0]
+
+        if target_fn is not None and target_fn in citation_by_idx:
+          c = citation_by_idx[target_fn]
+          expected_val = (
+              self._normalize_numeric_claim(c.get("value_decimal"))
+              if c.get("value_decimal") is not None
+              else None
+          )
+          if expected_val is not None and norm_val != expected_val:
+            mismatched_citations.append(
+                f"Twierdzenie '{claim_str}' powiązane z przypisem [{target_fn}] "
+                f"({c.get('indicator_name')}, oczekiwana wartość: {c.get('value_decimal')})"
+            )
+          elif expected_val is None:
+            mismatched_citations.append(
+                f"Twierdzenie '{claim_str}' powiązane z nieoficjalnym źródłem/bez wartości [{target_fn}] "
+                f"({c.get('institution')})"
+            )
+        else:
+          line_official_values = {
+              self._normalize_numeric_claim(citation_by_idx[fn].get("value_decimal"))
+              for fn in line_footnotes
+              if fn in citation_by_idx and citation_by_idx[fn].get("value_decimal") is not None
+          }
+          if norm_val not in line_official_values:
+            mismatched_citations.append(
+                f"Twierdzenie '{claim_str}' na linii '{line.strip()}' "
+                f"nie ma odpowiednika wśród cytowanych źródeł {line_footnotes}"
+            )
+
+    if mismatched_citations:
+      _reject(f"Niepoprawne powiązanie przypisów ze źródłami: {mismatched_citations}")
+
+    if diagnostics and run_id:
+      diagnostics.event(
+          logging.INFO,
+          "Validator passed: structure, footnotes, direct URLs and numbers verified",
+          run_id=run_id,
+      )
 
   def _build_deterministic_v2_report(
       self,
@@ -694,14 +899,7 @@ class EconomyEvaluator:
     )
 
     # Sekcja 6: Wykaz źródeł
-    sources_lines = []
-    for c in citations:
-      prefix = "Oficjalne API / Rejestr" if c["is_official"] else "Analiza / Komentarz medialny"
-      sources_lines.append(
-          f"[{c['idx']}] {c['institution']}, {c['indicator_name']}, okres: {c['period']} [{prefix}], {c['url']}"
-      )
-
-    sec6 = "\n".join(sources_lines)
+    sec6 = self._build_v2_sources_section(citations)
 
     report_md = f"""# RAPORT KONDYCJI GOSPODARCZEJ: {country}
 **Data publikacji analizy:** {report_date}  
@@ -726,8 +924,6 @@ class EconomyEvaluator:
 ## 5. Podsumowanie i Realistyczny Werdykt
 
 {sec5}
-
-## 6. Źródła danych i Metodologia
 
 {sec6}
 """

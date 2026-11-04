@@ -3,9 +3,11 @@ Aplikacja Polish Economy Agent.
 Uruchamia potok danych makroekonomicznych v2 oraz serwuje raport analityczny.
 """
 
+import base64
 from datetime import datetime
 import html
 import os
+from pathlib import Path
 import re
 from typing import Optional
 from urllib.parse import urlparse
@@ -104,9 +106,35 @@ def format_report_html(text: str) -> str:
   return text
 
 
+_LOGO_PATH = Path(__file__).resolve().parent / "static" / "logo.png"
+_LOGO_DATA_URI: Optional[str] = None
+
+
+def get_logo_data_uri() -> str:
+  global _LOGO_DATA_URI
+  if _LOGO_DATA_URI is None:
+    if _LOGO_PATH.exists():
+      encoded = base64.b64encode(_LOGO_PATH.read_bytes()).decode("ascii")
+      _LOGO_DATA_URI = f"data:image/png;base64,{encoded}"
+    else:
+      _LOGO_DATA_URI = ""
+  return _LOGO_DATA_URI
+
+
 def build_html_template(report_text: str, country: str) -> str:
   safe_country = html.escape(str(country or ""), quote=True)
   formatted_content = format_report_html(report_text)
+  logo_uri = get_logo_data_uri()
+  logo_css = (
+      f'.report-logo {{ background-image: url("{logo_uri}"); background-size: contain; background-repeat: no-repeat; background-position: center; height: 80px; margin: 0 auto 15px auto; max-width: 300px; }}'
+      if logo_uri
+      else ""
+  )
+  logo_div = (
+      '<div class="report-logo" role="img" aria-label="Logo"></div>'
+      if logo_uri
+      else ""
+  )
   return f"""<!DOCTYPE html>
 <html lang="pl">
 <head>
@@ -115,6 +143,7 @@ def build_html_template(report_text: str, country: str) -> str:
     <style>
         body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; margin: 0; background-color: #f4f6f9; color: #2c3e50; }}
         .header {{ background-color: #1a252f; color: white; padding: 30px 40px; text-align: center; }}
+        {logo_css}
         .container {{ max-width: 950px; margin: 30px auto; background: white; padding: 40px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); }}
         h1 {{ color: #1a252f; margin-top: 10px; }}
         h2 {{ color: #2980b9; border-bottom: 2px solid #ecf0f1; padding-bottom: 8px; margin-top: 30px; }}
@@ -124,6 +153,7 @@ def build_html_template(report_text: str, country: str) -> str:
 </head>
 <body>
     <div class="header">
+        {logo_div}
         <h1>Autonomiczny System Analizy Makroekonomicznej</h1>
         <p>Raport z weryfikacją wieloźródłową i aparatem krytycznym</p>
     </div>
@@ -211,7 +241,10 @@ def run_pipeline(force_refresh: bool = True, offline_mode: bool = False, use_v2:
     v2_storage = get_storage_v2() or SQLiteV2Storage()
     pipeline = MacroPipelineV2(db=v2_storage, offline_mode=offline_mode)
     result = pipeline.run(country=country, output_html_path=report_path, force_refresh=force_refresh)
-    print("\n[System] Potok v2 zakończony sukcesem. Podgląd: http://127.0.0.1:5000/report.html\n")
+    if result.success:
+      print("\n[System] Potok v2 zakończony sukcesem. Podgląd: http://127.0.0.1:5000/report.html\n")
+    else:
+      print(f"\n[System] Potok v2 zakończony niepowodzeniem (status={result.status}).\n")
     return result
 
   # Ścieżka legacy (v1)

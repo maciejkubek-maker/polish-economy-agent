@@ -564,10 +564,40 @@ class GusConnector(BaseConnector):
             "Użyj znanego identyfikatora okresu (1-12 lub 247-258) lub przekaż jawny parametr 'month'."
         )
 
+    def _discover_latest_cpi_period(
+        self, var_id: int = 305, przekroj_id: int = 736
+    ) -> Tuple[int, int, int]:
+        """
+        Wyszukuje najnowszy rzeczywiście dostępny odczyt CPI w oficjalnym API GUS DBW.
+        Bada okresy wstecz od bieżącego roku bez zgadywania wartości.
+        """
+        now_year = datetime.now().year
+        for r in range(now_year, now_year - 3, -1):
+            for m in range(12, 0, -1):
+                okres = 246 + m
+                url = (
+                    f"{self.DBW_BASE_URL}/variable/variable-data-section"
+                    f"?id-zmienna={var_id}&id-przekroj={przekroj_id}&id-rok={r}&id-okres={okres}"
+                )
+                try:
+                    code, payload, _, _ = self._execute_request(url)
+                    if code == 200 and payload:
+                        data = json.loads(payload).get("data", [])
+                        if data and any(
+                            it.get("wartosc") is not None and it.get("id-sposob-prezentacji-miara") == 5
+                            for it in data
+                        ):
+                            return (r, okres, m)
+                except Exception:
+                    pass
+        raise DataNotFoundError(
+            f"Nie znaleziono dostępnych odczytów CPI w oficjalnym API GUS DBW dla zmienna={var_id}, przekroj={przekroj_id} (badano lata {now_year}-{now_year - 2})"
+        )
+
     def fetch_cpi_dbw(
         self,
-        rok: int,
-        okres_id: int,
+        rok: Optional[int] = None,
+        okres_id: Optional[int] = None,
         month: Optional[int] = None,
         var_id: int = 305,
         przekroj_id: int = 736,
@@ -576,7 +606,24 @@ class GusConnector(BaseConnector):
     ) -> Tuple[RawEvidence, MacroObservation]:
         """
         Pobiera wskaźnik CPI z GUS DBW.
+        Dla wywołania bez parametrów w trybie live: automatycznie pobiera najnowszy
+        rzeczywiście dostępny odczyt z oficjalnego API.
+        Weryfikuje identyfikator zmiennej, przekrój, okres, rok i jednostkę w oficjalnej odpowiedzi.
         """
+        if rok is None or okres_id is None:
+            if self.offline_mode:
+                rok = 2026 if rok is None else rok
+                okres_id = 255 if okres_id is None else okres_id
+                if month is None:
+                    month = 9
+            else:
+                disc_rok, disc_okres, disc_month = self._discover_latest_cpi_period(
+                    var_id=var_id, przekroj_id=przekroj_id
+                )
+                rok = disc_rok if rok is None else rok
+                okres_id = disc_okres if okres_id is None else okres_id
+                month = disc_month if month is None else month
+
         resolved_month = self._resolve_dbw_month(okres_id, explicit_month=month)
         rok_int = int(rok)
         if rok_int < 1990 or rok_int > 2050:
@@ -603,14 +650,66 @@ class GusConnector(BaseConnector):
 
         data_list = data.get("data", [])
         if not data_list:
-            raise DataNotFoundError(f"Brak danych w GUS DBW dla zmienna={var_id}, przekroj={przekroj_id}, rok={rok}, okres={okres_id}")
+            raise DataNotFoundError(
+                f"Brak danych w GUS DBW dla zmienna={var_id}, przekroj={przekroj_id}, rok={rok_int}, okres={okres_id}"
+            )
 
-        item = data_list[0]
+        item = None
+        if as_percentage_change and is_index_base_100:
+            item = next((it for it in data_list if it.get("id-sposob-prezentacji-miara") == 5), None)
+            if item is None:
+                present_ids = [it.get("id-sposob-prezentacji-miara") for it in data_list]
+                raise ValidationError(
+                    "Nie znaleziono wymaganego sposobu prezentacji CPI r/r "
+                    "(id-sposob-prezentacji-miara=5, analogiczny okres roku poprzedniego = 100) w odpowiedzi GUS DBW. "
+                    f"Dostępne pozycje: {present_ids}. Zakaz zgadywania metodologii."
+                )
+        else:
+            if len(data_list) > 1:
+                raise ValidationError("Niejednoznaczna odpowiedź GUS DBW: wiele rekordów bez określonej miary")
+            item = data_list[0]
+
+        # Weryfikacja identyfikatora zmiennej
+        item_var_id = item.get("id-zmienna")
+        if item_var_id is not None and int(item_var_id) != int(var_id):
+            raise ValidationError(
+                f"Niezgodność id-zmienna w odpowiedzi GUS DBW: oczekiwano {var_id}, otrzymano {item_var_id}"
+            )
+
+        # Weryfikacja przekroju
+        item_przekroj = item.get("id-przekroj")
+        if item_przekroj is not None and int(item_przekroj) != int(przekroj_id):
+            raise ValidationError(
+                f"Niezgodność id-przekroj w odpowiedzi GUS DBW: oczekiwano {przekroj_id}, otrzymano {item_przekroj}"
+            )
+
+        # Weryfikacja okresu
+        item_okres = item.get("id-okres")
+        if item_okres is not None and int(item_okres) != int(okres_id):
+            item_m = self.DBW_PERIOD_TO_MONTH.get(int(item_okres))
+            req_m = self.DBW_PERIOD_TO_MONTH.get(int(okres_id)) or resolved_month
+            if item_m is None or item_m != req_m:
+                raise ValidationError(
+                    f"Niezgodność id-okres w odpowiedzi GUS DBW: oczekiwano {okres_id}, otrzymano {item_okres}"
+                )
+
+        # Weryfikacja roku (w DBW: id-rok lub id-daty)
+        item_rok = item.get("id-rok") or item.get("id-daty")
+        if item_rok is not None and int(item_rok) != int(rok_int):
+            raise ValidationError(
+                f"Niezgodność roku w odpowiedzi GUS DBW: oczekiwano {rok_int}, otrzymano {item_rok}"
+            )
+
         raw_val = item.get("wartosc")
         if raw_val is None:
             raise DataNotFoundError("Brak wartości liczbowej 'wartosc' w odpowiedzi GUS DBW CPI")
 
-        dec_val = Decimal(str(raw_val).replace(" ", "").replace(",", "."))
+        try:
+            dec_val = Decimal(str(raw_val).replace(" ", "").replace(",", "."))
+        except Exception as num_err:
+            raise ValidationError(
+                f"Nieprawidłowy format wartości liczbowej w GUS DBW CPI: {raw_val}"
+            ) from num_err
 
         if is_index_base_100:
             if as_percentage_change:
@@ -624,6 +723,7 @@ class GusConnector(BaseConnector):
             unit = "PCT"
 
         val_str = self.validate_value(val_calc)
+        unit_code = self.validate_unit(unit)
         p_start = f"{rok_int:04d}-{resolved_month:02d}-01"
         last_day = calendar.monthrange(rok_int, resolved_month)[1]
         p_end = f"{rok_int:04d}-{resolved_month:02d}-{last_day:02d}"
@@ -645,7 +745,7 @@ class GusConnector(BaseConnector):
             period_end=p_end,
             frequency=self.validate_frequency("MONTHLY"),
             value_decimal=val_str,
-            unit_code=self.validate_unit(unit),
+            unit_code=unit_code,
             revision_type="FINAL",
             status="VERIFIED",
             evidence_id=evidence.evidence_id,
@@ -663,6 +763,7 @@ class GusConnector(BaseConnector):
         )
 
         return evidence, observation
+
 
     def fetch_indicator(self, indicator_code: str, **kwargs) -> Tuple[RawEvidence, Any]:
         """

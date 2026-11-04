@@ -51,6 +51,9 @@ ENV/
 instance/*_v2.db
 instance/test_*.db
 
+# Local pipeline diagnostics
+instance/logs/
+
 # OS
 .DS_Store
 Thumbs.db

@@ -388,23 +388,19 @@ def test_report_uses_only_latest_observations_from_its_run(temp_v2_db):
     assert latest[0]["run_id"] == live_run
 
 
-def test_invalid_live_ai_report_falls_back_with_integrity_notice(
-    temp_v2_db,
-    monkeypatch,
-    capsys,
-):
-    """Obce liczby/przypisy i brak URL wymuszają jawny fallback v2."""
+def test_invalid_live_ai_report_rejected_without_fallback(temp_v2_db, monkeypatch, tmp_path):
+    """Odrzucony raport AI w trybie live powoduje blad - zakaz deterministycznego fallbacku w trybie live."""
     monkeypatch.setattr(config, "OFFLINE_MODE", False)
     run_id = temp_v2_db.start_ingestion_run(provider="MANUAL", run_type="TRIGGERED")
     evidence = RawEvidence(
-        evidence_id="EVI_LIVE_REPORT",
+        evidence_id="EVI_FX_1",
         source_id="SRC_NBP",
-        source_url="https://api.nbp.pl/api/exchangerates/rates/A/EUR/2026-10-30/",
+        source_url="https://api.nbp.pl/api/exchangerates/rates/a/eur/2026-10-30/",
         document_type="API_RESPONSE",
-        content_hash="live-report",
+        content_hash="hash-nbp",
         payload_text="official",
         status_code=200,
-        retrieved_at_utc="2026-10-30T12:05:00Z",
+        retrieved_at_utc="2026-11-02T10:00:00Z",
     )
     temp_v2_db.save_evidence(evidence, run_id=run_id)
     temp_v2_db.save_observation(MacroObservation(
@@ -425,43 +421,59 @@ def test_invalid_live_ai_report_falls_back_with_integrity_notice(
         evaluator,
         "_run_llm_synthesis",
         lambda *args, **kwargs: """# Raport
-## 1. Analiza Trendów w Dostępnym Okresie
+## 1. Analiza Trendow w Dostepnym Okresie
 CPI 4,1% [775].
-## 2. Zagrożenia i Ryzyka Makroekonomiczne
+## 2. Zagrozenia i Ryzyka Makroekonomiczne
 Brak.
 ## 3. Co to oznacza dla Kowalskiego? (Perspektywa Obywatela)
 Brak.
-## 4. Co to oznacza dla Przedsiębiorców?
+## 4. Co to oznacza dla Przedsiebiorcow?
 Brak.
 ## 5. Podsumowanie i Realistyczny Werdykt
 Brak.
-## 6. Źródła danych i Metodologia
+## 6. Zrodla danych i Metodologia
 [775] GUS
 """,
     )
 
-    report = evaluator.evaluate_from_v2(
-        country="Polska",
-        storage=temp_v2_db,
-        search_news=[],
-        offline_mode=False,
-        run_id=run_id,
-    )
+    with pytest.raises(RuntimeError, match="Raport GPT odrzucony przez walidator"):
+        evaluator.evaluate_from_v2(
+            country="Polska",
+            storage=temp_v2_db,
+            search_news=[],
+            offline_mode=False,
+            run_id=run_id,
+        )
 
-    citations = [int(value) for value in re.findall(r"\[(\d+)\]", report)]
-    assert "deterministyczny fallback trybu live" in report
-    assert "Kontekst Tavily" in report
-    assert "4.3955" in report
-    assert "4.345" not in report
-    assert "[775]" not in report
-    assert "realna stopa procentowa pozostaje dodatnia" not in report
-    assert "dowodem przyszłej stabilności walut" in report
-    assert max(citations) == 1
-    assert evidence.source_url in report
-    terminal_output = capsys.readouterr().out
-    assert "Raport GPT odrzucony przez walidator" in terminal_output
-    assert "Nieznane numery przypisów" in terminal_output
+    assert evaluator.last_generation_diagnostics["generation_mode"] == "GPT_VALIDATION_REJECTED"
+    assert evaluator.last_generation_diagnostics["gpt_attempted"] is True
 
+    # Test zachowania potoku live przy odrzuceniu przez walidator:
+    # brak nowego raportu w SQLite, brak zapisu report.html, zachowanie stanu FAILED
+    report_html_file = tmp_path / "report.html"
+    report_html_file.write_text("old valid report", encoding="utf-8")
+
+    pipeline = MacroPipelineV2(db=temp_v2_db, offline_mode=False, evaluator=evaluator, diagnostics_dir=tmp_path / "logs")
+    monkeypatch.setattr(pipeline, "fetch_official_data", lambda r_id: ([evidence], [MacroObservation(
+        indicator_code="PL_FX_EUR_PLN",
+        country_code="PL",
+        period_start="2026-10-30",
+        period_end="2026-10-30",
+        frequency="DAILY",
+        value_decimal="4.3955",
+        unit_code="EUR_PLN",
+        revision_type="FINAL",
+        status="VERIFIED",
+        evidence_id=evidence.evidence_id,
+    )], [], []))
+    monkeypatch.setattr(pipeline, "search_enrichment", lambda c, r_id: [])
+
+    result = pipeline.run(country="Polska", output_html_path=str(report_html_file))
+    assert result.success is False
+    assert result.status == "FAILED"
+    assert result.report_id is None
+    assert temp_v2_db.count_table("reports") == 0
+    assert report_html_file.read_text(encoding="utf-8") == "old valid report"
 
 def test_valid_live_ai_report_is_archived_without_fallback(temp_v2_db, monkeypatch):
     """Poprawna analiza może cytować podzbiór źródeł i zachowuje tryb AI."""
@@ -553,6 +565,133 @@ Wniosek ogranicza się do zweryfikowanej obserwacji.
     assert "USD/2026-10-30" not in report_markdown
 
 
+def test_regression_run_89f71ad08c71_gpt_domain_urls_assembled_programmatically(temp_v2_db, monkeypatch):
+    """
+    Test regresyjny odpowiadający faktycznemu wynikowi GPT z przebiegu RUN_89f71ad08c71:
+    GPT wygenerował pełny raport z poprawnymi numerami przypisów [N], ale w sekcji 6 podał
+    ogólne adresy domen (np. https://stat.gov.pl i https://nbp.pl) zamiast dokładnych URL-i.
+    Końcowa bibliografia budowana jest programowo z rejestru cytowań z bezpośrednimi URL-ami,
+    raport przechodzi walidację i zostaje zapisany bez błędu i bez fallbacku.
+    """
+    monkeypatch.setattr(config, "OFFLINE_MODE", False)
+    run_id = temp_v2_db.start_ingestion_run(provider="MANUAL", run_type="TRIGGERED")
+
+    exact_cpi_url = "https://api-dbw.stat.gov.pl/api/1.1.0/variable/variable-data-section?id-zmienna=305&id-przekroj=736&id-rok=2025&id-okres=258"
+    exact_fx_url = "https://api.nbp.pl/api/exchangerates/rates/A/EUR/2026-10-30/"
+
+    evi_cpi = RawEvidence(
+        evidence_id="EVI_CPI_REG",
+        source_id="SRC_GUS_DBW",
+        source_url=exact_cpi_url,
+        document_type="API_RESPONSE",
+        content_hash="cpi-reg-hash",
+        payload_text="official cpi",
+        status_code=200,
+        retrieved_at_utc="2026-10-30T10:00:00Z",
+    )
+    temp_v2_db.save_evidence(evi_cpi, run_id=run_id)
+    temp_v2_db.save_observation(MacroObservation(
+        indicator_code="PL_CPI_YOY",
+        country_code="PL",
+        period_start="2025-12-01",
+        period_end="2025-12-31",
+        frequency="MONTHLY",
+        value_decimal="3.1",
+        unit_code="PCT",
+        revision_type="FINAL",
+        status="VERIFIED",
+        evidence_id=evi_cpi.evidence_id,
+    ), run_id=run_id)
+
+    evi_fx = RawEvidence(
+        evidence_id="EVI_FX_REG",
+        source_id="SRC_NBP",
+        source_url=exact_fx_url,
+        document_type="API_RESPONSE",
+        content_hash="fx-reg-hash",
+        payload_text="official fx",
+        status_code=200,
+        retrieved_at_utc="2026-10-30T10:00:00Z",
+    )
+    temp_v2_db.save_evidence(evi_fx, run_id=run_id)
+    temp_v2_db.save_observation(MacroObservation(
+        indicator_code="PL_FX_EUR_PLN",
+        country_code="PL",
+        period_start="2026-10-30",
+        period_end="2026-10-30",
+        frequency="DAILY",
+        value_decimal="4.3955",
+        unit_code="EUR_PLN",
+        revision_type="FINAL",
+        status="VERIFIED",
+        evidence_id=evi_fx.evidence_id,
+    ), run_id=run_id)
+
+    # Rzeczywisty wzorzec odpowiedzi modelu GPT z przebiegu RUN_89f71ad08c71:
+    # Model użył ogólnych domen https://stat.gov.pl i https://nbp.pl w sekcji 6
+    gpt_candidate_output = """# RAPORT KONDYCJI GOSPODARCZEJ: Polska
+**Data publikacji analizy:** 04.11.2026  
+**Horyzont analizowanych danych:** Grudzień 2025 | Październik 2026
+
+## 1. Analiza Trendów w Dostępnym Okresie
+
+Inflacja CPI wyniosła 3.1% [1], a kurs walutowy EUR/PLN ukształtował się na poziomie 4.3955 zł [2].
+
+## 2. Zagrożenia i Ryzyka Makroekonomiczne
+
+Pojedyncze odczyty nie stanowią podstawy do kategorycznych projekcji przyszłych decyzji.
+
+## 3. Co to oznacza dla Kowalskiego? (Perspektywa Obywatela)
+
+- **Kredyty i Raty:** Brak danych o bezpośredniej decyzji.
+- **Ceny i Zakupy:** Wskaźnik cen CPI ukształtował się na poziomie 3.1% [1].
+- **Praca i Zarobki:** Brak danych.
+
+## 4. Co to oznacza dla Przedsiębiorców?
+
+Kurs walutowy 4.3955 zł [2] wpływa na koszty importu i rozliczenia handlowe.
+
+## 5. Podsumowanie i Realistyczny Werdykt
+
+Analiza opiera się na zweryfikowanych obserwacjach oficjalnych.
+
+## 6. Źródła danych i Metodologia
+
+[1] Główny Urząd Statystyczny - https://stat.gov.pl
+[2] Narodowy Bank Polski - https://nbp.pl
+"""
+    evaluator = EconomyEvaluator()
+    monkeypatch.setattr(evaluator, "_run_llm_synthesis", lambda *args, **kwargs: gpt_candidate_output)
+
+    pipeline = MacroPipelineV2(
+        db=temp_v2_db,
+        offline_mode=False,
+        evaluator=evaluator,
+    )
+
+    report_id, report_markdown, _ = pipeline.generate_and_archive_report(
+        country="Polska",
+        search_news=[],
+        run_id=run_id,
+    )
+
+    # Weryfikacja: raport został zaakceptowany w trybie LIVE_AI_VALIDATED
+    assert report_id is not None
+    assert "analiza online zweryfikowana" in report_markdown
+
+    # Weryfikacja: końcowy raport zawiera bezpośrednie oficjalne URL-e zbudowane programowo
+    assert exact_cpi_url in report_markdown
+    assert exact_fx_url in report_markdown
+    assert "GUS" in report_markdown
+    assert "NBP" in report_markdown
+
+    # Weryfikacja zapisu w bazie danych SQLite v2
+    stored = temp_v2_db.get_latest_report("PL")
+    metadata = json.loads(stored["model_metadata_json"])
+    assert stored["report_id"] == report_id
+    assert metadata["generation_mode"] == "LIVE_AI_VALIDATED"
+
+
 def test_gpt_report_uses_gpt4o_with_terminal_streaming(monkeypatch):
     """Synteza raportu korzysta wyłącznie z GPT-4o i streamingu LangChain."""
     captured = {}
@@ -578,25 +717,21 @@ def test_gpt_report_uses_gpt4o_with_terminal_streaming(monkeypatch):
     assert captured["temperature"] == 0.2
 
 
-def test_gpt_api_error_uses_safe_deterministic_fallback(
-    temp_v2_db,
-    monkeypatch,
-    capsys,
-):
-    """Błąd GPT uruchamia fallback i nie ujawnia klucza API w terminalu."""
-    secret = "sk-super-secret-test-key"
-    monkeypatch.setattr(config, "OPENAI_API_KEY", secret)
+def test_gpt_api_error_in_live_mode_fails_safely_without_fallback(temp_v2_db, monkeypatch, tmp_path):
+    """Blad API GPT w trybie live powoduje bezpieczna awarie potoku bez zapisu raportu ani wycieku sekretow."""
     monkeypatch.setattr(config, "OFFLINE_MODE", False)
+    secret = "sk-live-secret-test-key-999888777"
+    monkeypatch.setattr(config, "OPENAI_API_KEY", secret)
     run_id = temp_v2_db.start_ingestion_run(provider="MANUAL", run_type="TRIGGERED")
     evidence = RawEvidence(
-        evidence_id="EVI_GPT_ERROR",
+        evidence_id="EVI_FX_1",
         source_id="SRC_NBP",
-        source_url="https://api.nbp.pl/api/exchangerates/rates/A/EUR/2026-10-30/",
+        source_url="https://api.nbp.pl/api/exchangerates/rates/a/eur/2026-10-30/",
         document_type="API_RESPONSE",
-        content_hash="gpt-error",
+        content_hash="hash-nbp",
         payload_text="official",
         status_code=200,
-        retrieved_at_utc="2026-10-30T12:05:00Z",
+        retrieved_at_utc="2026-11-02T10:00:00Z",
     )
     temp_v2_db.save_evidence(evidence, run_id=run_id)
     temp_v2_db.save_observation(MacroObservation(
@@ -621,26 +756,46 @@ def test_gpt_api_error_uses_safe_deterministic_fallback(
         ),
     )
 
-    report = evaluator.evaluate_from_v2(
-        country="Polska",
-        storage=temp_v2_db,
-        search_news=[],
-        offline_mode=False,
-        run_id=run_id,
-    )
-    terminal_output = capsys.readouterr().out
+    with pytest.raises(RuntimeError) as exc_info:
+        evaluator.evaluate_from_v2(
+            country="Polska",
+            storage=temp_v2_db,
+            search_news=[],
+            offline_mode=False,
+            run_id=run_id,
+        )
 
-    assert "deterministyczny fallback trybu live" in report
-    assert "Błąd API GPT" in terminal_output
-    assert "RuntimeError" in terminal_output
-    assert "quota exceeded" in terminal_output
-    assert "[REDACTED]" in terminal_output
-    assert secret not in terminal_output
+    err_text = str(exc_info.value)
+    assert secret not in err_text
+    assert "[REDACTED]" in err_text
+    assert evaluator.last_generation_diagnostics["generation_mode"] == "GPT_API_ERROR"
+    assert evaluator.last_generation_diagnostics["gpt_attempted"] is True
 
+    # Test potoku: nie zapisuje raportu do SQLite ani do pliku HTML
+    report_html_file = tmp_path / "report.html"
+    report_html_file.write_text("archived previous report", encoding="utf-8")
 
-# ==============================================================================
-# 6. INTEGRACJA Z APLIKACJĄ FLASK (SERVE_REPORT Z V2)
-# ==============================================================================
+    pipeline = MacroPipelineV2(db=temp_v2_db, offline_mode=False, evaluator=evaluator, diagnostics_dir=tmp_path / "logs")
+    monkeypatch.setattr(pipeline, "fetch_official_data", lambda r_id: ([evidence], [MacroObservation(
+        indicator_code="PL_FX_EUR_PLN",
+        country_code="PL",
+        period_start="2026-10-30",
+        period_end="2026-10-30",
+        frequency="DAILY",
+        value_decimal="4.3955",
+        unit_code="EUR_PLN",
+        revision_type="FINAL",
+        status="VERIFIED",
+        evidence_id=evidence.evidence_id,
+    )], [], []))
+    monkeypatch.setattr(pipeline, "search_enrichment", lambda c, r_id: [])
+
+    result = pipeline.run(country="Polska", output_html_path=str(report_html_file))
+    assert result.success is False
+    assert result.status == "FAILED"
+    assert result.report_id is None
+    assert temp_v2_db.count_table("reports") == 0
+    assert report_html_file.read_text(encoding="utf-8") == "archived previous report"
 
 def test_flask_serve_report_from_v2(temp_v2_db):
     """Weryfikuje, że endpoint serve_report w app.py poprawnie serwuje najnowszy raport z SQLite v2."""

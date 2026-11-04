@@ -15,7 +15,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hashlib
 import json
+import logging
 import os
+import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 import uuid
 
@@ -32,6 +35,12 @@ from modules.connectors.eurostat import EurostatConnector
 from modules.connectors.gus import GusConnector
 from modules.connectors.nbp import NbpConnector
 from modules.evaluator import EconomyEvaluator
+from modules.diagnostics import (
+    PipelineDiagnostics,
+    base_run_summary,
+    missing_report_indicators,
+    safe_error_message,
+)
 from modules.search_service import WebSearchService
 from modules.storage_v2 import SQLiteV2Storage
 
@@ -166,6 +175,7 @@ OFFLINE_FIXTURES = {
         "id-przekroj": 736,
         "id-rok": 2026,
         "id-okres": 255,
+        "id-sposob-prezentacji-miara": 5,
         "wartosc": 103.1,
         "precyzja": 1
       }]
@@ -201,11 +211,13 @@ class MacroPipelineV2:
         offline_mode: bool = False,
         search_service: Optional[WebSearchService] = None,
         evaluator: Optional[EconomyEvaluator] = None,
+        diagnostics_dir: os.PathLike[str] | str = Path("instance") / "logs",
     ):
         self.offline_mode = offline_mode or getattr(config, "OFFLINE_MODE", False)
         self.db = db or SQLiteV2Storage()
         self.search_service = search_service or WebSearchService(offline_mode=self.offline_mode)
         self.evaluator = evaluator or EconomyEvaluator()
+        self.diagnostics = PipelineDiagnostics(diagnostics_dir)
 
         # Inicjalizacja konektorów
         self.nbp = NbpConnector(offline_mode=self.offline_mode)
@@ -251,12 +263,22 @@ class MacroPipelineV2:
         errors: List[str] = []
 
         # 1. NBP - Kursy walut i stopa referencyjna
+        t0_nbp = time.perf_counter()
+        self.diagnostics.record_step(
+            run_id=run_id,
+            function="fetch_nbp",
+            stage="START",
+            input_summary="EUR, USD, reference rate",
+        )
+        nbp_errs: List[str] = []
         try:
             evi_eur, obs_eur = self.nbp.fetch_exchange_rate("EUR")
             evidence_list.append(evi_eur)
             observation_list.append(obs_eur)
         except Exception as err:
-            errors.append(f"Błąd NBP EUR: {err}")
+            msg = f"Błąd NBP EUR: {err}"
+            errors.append(msg)
+            nbp_errs.append(msg)
             qid = self.db.record_quality_event("INGESTION", run_id, "NBP_EUR_FAIL", "WARNING", str(err))
             q_events.append(qid)
 
@@ -265,7 +287,9 @@ class MacroPipelineV2:
             evidence_list.append(evi_usd)
             observation_list.append(obs_usd)
         except Exception as err:
-            errors.append(f"Błąd NBP USD: {err}")
+            msg = f"Błąd NBP USD: {err}"
+            errors.append(msg)
+            nbp_errs.append(msg)
             qid = self.db.record_quality_event("INGESTION", run_id, "NBP_USD_FAIL", "WARNING", str(err))
             q_events.append(qid)
 
@@ -274,17 +298,52 @@ class MacroPipelineV2:
             evidence_list.append(evi_rate)
             observation_list.append(obs_rate)
         except Exception as err:
-            errors.append(f"Błąd NBP Stopa Referencyjna: {err}")
+            msg = f"Błąd NBP Stopa Referencyjna: {err}"
+            errors.append(msg)
+            nbp_errs.append(msg)
             qid = self.db.record_quality_event("INGESTION", run_id, "NBP_RATE_FAIL", "WARNING", str(err))
             q_events.append(qid)
 
+        dur_nbp = (time.perf_counter() - t0_nbp) * 1000.0
+        nbp_evi_count = len([e for e in evidence_list if "NBP" in e.source_id or "EUR" in e.source_url or "USD" in e.source_url or "stopy" in e.source_url])
+        if nbp_errs:
+            self.diagnostics.record_step(
+                run_id=run_id,
+                function="fetch_nbp",
+                stage="ERROR",
+                duration_ms=dur_nbp,
+                input_summary="EUR, USD, reference rate",
+                output_summary=f"evidence_count={nbp_evi_count}",
+                error_code="NBP_CONNECTOR_ERROR",
+                error_message="; ".join(nbp_errs),
+            )
+        else:
+            self.diagnostics.record_step(
+                run_id=run_id,
+                function="fetch_nbp",
+                stage="END",
+                duration_ms=dur_nbp,
+                input_summary="EUR, USD, reference rate",
+                output_summary=f"evidence_count={nbp_evi_count}",
+            )
+
         # 2. Eurostat - HICP, bezrobocie zharmonizowane, PKB (kw/kw, r/r, wolumen)
+        t0_euro = time.perf_counter()
+        self.diagnostics.record_step(
+            run_id=run_id,
+            function="fetch_eurostat",
+            stage="START",
+            input_summary="HICP, unemployment, GDP",
+        )
+        euro_errs: List[str] = []
         try:
             evi_hicp, obs_hicp = self.eurostat.fetch_hicp()
             evidence_list.append(evi_hicp)
             observation_list.extend(obs_hicp)
         except Exception as err:
-            errors.append(f"Błąd Eurostat HICP: {err}")
+            msg = f"Błąd Eurostat HICP: {err}"
+            errors.append(msg)
+            euro_errs.append(msg)
             qid = self.db.record_quality_event("INGESTION", run_id, "EUROSTAT_HICP_FAIL", "WARNING", str(err))
             q_events.append(qid)
 
@@ -293,7 +352,9 @@ class MacroPipelineV2:
             evidence_list.append(evi_unemp)
             observation_list.extend(obs_unemp)
         except Exception as err:
-            errors.append(f"Błąd Eurostat Bezrobocie BAEL: {err}")
+            msg = f"Błąd Eurostat Bezrobocie BAEL: {err}"
+            errors.append(msg)
+            euro_errs.append(msg)
             qid = self.db.record_quality_event("INGESTION", run_id, "EUROSTAT_UNEMP_FAIL", "WARNING", str(err))
             q_events.append(qid)
 
@@ -303,26 +364,63 @@ class MacroPipelineV2:
                 evidence_list.append(evi_gdp)
                 observation_list.extend(obs_gdp)
             except Exception as err:
-                errors.append(f"Błąd Eurostat PKB ({measure_name}): {err}")
+                msg = f"Błąd Eurostat PKB ({measure_name}): {err}"
+                errors.append(msg)
+                euro_errs.append(msg)
                 qid = self.db.record_quality_event("INGESTION", run_id, f"EUROSTAT_GDP_{measure_name}_FAIL", "WARNING", str(err))
                 q_events.append(qid)
 
+        dur_euro = (time.perf_counter() - t0_euro) * 1000.0
+        euro_evi_count = len([e for e in evidence_list if "EUROSTAT" in e.source_id or "europa.eu" in e.source_url])
+        if euro_errs:
+            self.diagnostics.record_step(
+                run_id=run_id,
+                function="fetch_eurostat",
+                stage="ERROR",
+                duration_ms=dur_euro,
+                input_summary="HICP, unemployment, GDP",
+                output_summary=f"evidence_count={euro_evi_count}",
+                error_code="EUROSTAT_CONNECTOR_ERROR",
+                error_message="; ".join(euro_errs),
+            )
+        else:
+            self.diagnostics.record_step(
+                run_id=run_id,
+                function="fetch_eurostat",
+                stage="END",
+                duration_ms=dur_euro,
+                input_summary="HICP, unemployment, GDP",
+                output_summary=f"evidence_count={euro_evi_count}",
+            )
+
         # 3. GUS - BDL Stopa bezrobocia (60270), DBW CPI (305/736)
+        t0_gus = time.perf_counter()
+        self.diagnostics.record_step(
+            run_id=run_id,
+            function="fetch_gus",
+            stage="START",
+            input_summary="unemployment 60270, CPI DBW 305/736",
+        )
+        gus_errs: List[str] = []
         try:
             evi_gus_unemp, obs_gus_unemp = self.gus.fetch_registered_unemployment()
             evidence_list.append(evi_gus_unemp)
             observation_list.extend(obs_gus_unemp)
         except Exception as err:
-            errors.append(f"Błąd GUS BDL Stopa bezrobocia: {err}")
+            msg = f"Błąd GUS BDL Stopa bezrobocia: {err}"
+            errors.append(msg)
+            gus_errs.append(msg)
             qid = self.db.record_quality_event("INGESTION", run_id, "GUS_BDL_UNEMP_FAIL", "WARNING", str(err))
             q_events.append(qid)
 
         try:
-            evi_cpi, obs_cpi = self.gus.fetch_cpi_dbw(rok=2026, okres_id=255, month=9)
+            evi_cpi, obs_cpi = self.gus.fetch_cpi_dbw()
             evidence_list.append(evi_cpi)
             observation_list.append(obs_cpi)
         except Exception as err:
-            errors.append(f"Błąd GUS DBW CPI: {err}")
+            msg = f"Błąd GUS DBW CPI: {err}"
+            errors.append(msg)
+            gus_errs.append(msg)
             qid = self.db.record_quality_event("INGESTION", run_id, "GUS_DBW_CPI_FAIL", "WARNING", str(err))
             q_events.append(qid)
 
@@ -341,7 +439,32 @@ class MacroPipelineV2:
             )
             q_events.append(qid)
         except Exception as err:
-            errors.append(f"Nieoczekiwany błąd GUS Liczba bezrobotnych: {err}")
+            msg = f"Nieoczekiwany błąd GUS Liczba bezrobotnych: {err}"
+            errors.append(msg)
+            gus_errs.append(msg)
+
+        dur_gus = (time.perf_counter() - t0_gus) * 1000.0
+        gus_evi_count = len([e for e in evidence_list if "GUS" in e.source_id or "stat.gov.pl" in e.source_url])
+        if gus_errs:
+            self.diagnostics.record_step(
+                run_id=run_id,
+                function="fetch_gus",
+                stage="ERROR",
+                duration_ms=dur_gus,
+                input_summary="unemployment 60270, CPI DBW 305/736",
+                output_summary=f"evidence_count={gus_evi_count}",
+                error_code="GUS_CONNECTOR_ERROR",
+                error_message="; ".join(gus_errs),
+            )
+        else:
+            self.diagnostics.record_step(
+                run_id=run_id,
+                function="fetch_gus",
+                stage="END",
+                duration_ms=dur_gus,
+                input_summary="unemployment 60270, CPI DBW 305/736",
+                output_summary=f"evidence_count={gus_evi_count}",
+            )
 
         return evidence_list, observation_list, q_events, errors
 
@@ -355,38 +478,96 @@ class MacroPipelineV2:
         run_id: str,
     ) -> Tuple[int, int]:
         """Zapisuje dowody źródłowe oraz obserwacje w bazie SQLite v2."""
-        for evi in evidence_list:
-            self.db.save_evidence(evi, run_id=run_id)
+        t0 = time.perf_counter()
+        self.diagnostics.record_step(
+            run_id=run_id,
+            function="store_sqlite",
+            stage="START",
+            input_summary=f"evidence_count={len(evidence_list)}, observations_count={len(observation_list)}",
+        )
+        try:
+            for evi in evidence_list:
+                self.db.save_evidence(evi, run_id=run_id)
 
-        saved_obs = self.db.save_observations(observation_list, run_id=run_id)
-        return len(evidence_list), saved_obs
+            saved_obs = self.db.save_observations(observation_list, run_id=run_id)
+            dur = (time.perf_counter() - t0) * 1000.0
+            self.diagnostics.record_step(
+                run_id=run_id,
+                function="store_sqlite",
+                stage="END",
+                duration_ms=dur,
+                input_summary=f"evidence_count={len(evidence_list)}, observations_count={len(observation_list)}",
+                output_summary=f"saved_evidence={len(evidence_list)}, saved_observations={saved_obs}",
+            )
+            return len(evidence_list), saved_obs
+        except Exception as err:
+            dur = (time.perf_counter() - t0) * 1000.0
+            self.diagnostics.record_step(
+                run_id=run_id,
+                function="store_sqlite",
+                stage="ERROR",
+                duration_ms=dur,
+                input_summary=f"evidence_count={len(evidence_list)}, observations_count={len(observation_list)}",
+                error_code=type(err).__name__,
+                error_message=safe_error_message(err),
+            )
+            raise
 
     # -------------------------------------------------------------------------
     # KROK 3: Wzbogacenie o wyszukiwanie Tavily
     # -------------------------------------------------------------------------
     def search_enrichment(self, country: str, run_id: str) -> List[Dict[str, Any]]:
         """Wyszukuje analizy i komunikaty makroekonomiczne oraz zapisuje je jako dowody źródłowe."""
-        news_items = self.search_service.search_economic_news(country=country)
+        t0 = time.perf_counter()
+        self.diagnostics.record_step(
+            run_id=run_id,
+            function="search_tavily",
+            stage="START",
+            input_summary=f"country={country}",
+        )
+        try:
+            news_items = self.search_service.search_economic_news(country=country)
 
-        # Zapis każdego wycinka prasowego jako dowodu typu SEARCH_SNIPPET
-        for idx, item in enumerate(news_items):
-            url = item.get("url", "https://tavily.com")
-            payload = f"{item.get('title')}\n{item.get('content')}"
-            c_hash = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-            evi_id = f"EVI_TAVILY_{uuid.uuid4().hex[:12]}"
-            evi = RawEvidence(
-                evidence_id=evi_id,
-                source_id="SRC_TAVILY",
-                source_url=url,
-                document_type="SEARCH_SNIPPET",
-                content_hash=c_hash,
-                payload_text=payload,
-                status_code=200,
-                retrieved_at_utc=item.get("retrieved_at_utc") or datetime.now(timezone.utc).isoformat(),
+            # Zapis każdego wycinka prasowego jako dowodu typu SEARCH_SNIPPET
+            for idx, item in enumerate(news_items):
+                url = item.get("url", "https://tavily.com")
+                payload = f"{item.get('title')}\n{item.get('content')}"
+                c_hash = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+                evi_id = f"EVI_TAVILY_{uuid.uuid4().hex[:12]}"
+                evi = RawEvidence(
+                    evidence_id=evi_id,
+                    source_id="SRC_TAVILY",
+                    source_url=url,
+                    document_type="SEARCH_SNIPPET",
+                    content_hash=c_hash,
+                    payload_text=payload,
+                    status_code=200,
+                    retrieved_at_utc=item.get("retrieved_at_utc") or datetime.now(timezone.utc).isoformat(),
+                )
+                self.db.save_evidence(evi, run_id=run_id)
+
+            dur = (time.perf_counter() - t0) * 1000.0
+            self.diagnostics.record_step(
+                run_id=run_id,
+                function="search_tavily",
+                stage="END",
+                duration_ms=dur,
+                input_summary=f"country={country}",
+                output_summary=f"results_count={len(news_items)}",
             )
-            self.db.save_evidence(evi, run_id=run_id)
-
-        return news_items
+            return news_items
+        except Exception as err:
+            dur = (time.perf_counter() - t0) * 1000.0
+            self.diagnostics.record_step(
+                run_id=run_id,
+                function="search_tavily",
+                stage="ERROR",
+                duration_ms=dur,
+                input_summary=f"country={country}",
+                error_code=type(err).__name__,
+                error_message=safe_error_message(err),
+            )
+            raise
 
     # -------------------------------------------------------------------------
     # KROK 4 i 5: Generowanie i archiwizacja raportu analitycznego
@@ -407,6 +588,7 @@ class MacroPipelineV2:
             search_news=search_news,
             offline_mode=self.offline_mode,
             run_id=run_id,
+            diagnostics=self.diagnostics,
         )
 
         report_html = build_html_template(report_markdown, country)
@@ -427,20 +609,15 @@ class MacroPipelineV2:
         snap_payload = f"{country}|{report_date}|{exec_horizon}|{report_markdown}"
         snap_hash = hashlib.sha256(snap_payload.encode("utf-8")).hexdigest()
 
+        generation_diagnostics = dict(self.evaluator.last_generation_diagnostics)
         model_meta = {
             "orchestrator": "MacroPipelineV2",
             "run_id": run_id,
             "offline_mode": self.offline_mode,
             "verified_indicators_count": len(verified),
-            "generation_mode": (
-                "OFFLINE_DEMO"
-                if self.offline_mode
-                else (
-                    "LIVE_DETERMINISTIC_FALLBACK"
-                    if "deterministyczny fallback trybu live" in report_markdown
-                    else "LIVE_AI_VALIDATED"
-                )
-            ),
+            "generation_mode": generation_diagnostics.get("generation_mode"),
+            "gpt_attempted": generation_diagnostics.get("gpt_attempted", False),
+            "fallback_reason": generation_diagnostics.get("fallback_reason"),
             "search_context": (
                 "OFFLINE_DEMO_FIXTURES"
                 if self.offline_mode
@@ -448,20 +625,78 @@ class MacroPipelineV2:
             ),
         }
 
-        self.db.save_report(
-            report_id=report_id,
-            country_code="PL",
-            report_date=report_date,
-            executive_horizon=exec_horizon,
-            report_markdown=report_markdown,
-            report_html=report_html,
-            data_snapshot_hash=snap_hash,
-            model_metadata=model_meta,
+        t0_rep = time.perf_counter()
+        self.diagnostics.record_step(
+            run_id=run_id,
+            function="store_sqlite",
+            stage="START",
+            input_summary=f"report_id={report_id}, snapshot_hash={snap_hash[:8]}",
         )
+        try:
+            self.db.save_report(
+                report_id=report_id,
+                country_code="PL",
+                report_date=report_date,
+                executive_horizon=exec_horizon,
+                report_markdown=report_markdown,
+                report_html=report_html,
+                data_snapshot_hash=snap_hash,
+                model_metadata=model_meta,
+            )
+            dur_rep = (time.perf_counter() - t0_rep) * 1000.0
+            self.diagnostics.record_step(
+                run_id=run_id,
+                function="store_sqlite",
+                stage="END",
+                duration_ms=dur_rep,
+                input_summary=f"report_id={report_id}",
+                output_summary=f"report_id={report_id}, status=SAVED",
+            )
+        except Exception as err:
+            dur_rep = (time.perf_counter() - t0_rep) * 1000.0
+            self.diagnostics.record_step(
+                run_id=run_id,
+                function="store_sqlite",
+                stage="ERROR",
+                duration_ms=dur_rep,
+                input_summary=f"report_id={report_id}",
+                error_code=type(err).__name__,
+                error_message=safe_error_message(err),
+            )
+            raise
 
         if output_html_path:
-            with open(output_html_path, "w", encoding="utf-8") as f:
-                f.write(report_html)
+            t0_html = time.perf_counter()
+            self.diagnostics.record_step(
+                run_id=run_id,
+                function="write_html",
+                stage="START",
+                input_summary=f"path={output_html_path}",
+            )
+            try:
+                with open(output_html_path, "w", encoding="utf-8") as f:
+                    f.write(report_html)
+                dur_html = (time.perf_counter() - t0_html) * 1000.0
+                self.diagnostics.record_step(
+                    run_id=run_id,
+                    function="write_html",
+                    stage="END",
+                    duration_ms=dur_html,
+                    input_summary=f"path={output_html_path}",
+                    output_summary=f"bytes_written={len(report_html.encode('utf-8'))}",
+                )
+            except Exception as err:
+                dur_html = (time.perf_counter() - t0_html) * 1000.0
+                self.diagnostics.record_step(
+                    run_id=run_id,
+                    function="write_html",
+                    stage="ERROR",
+                    duration_ms=dur_html,
+                    input_summary=f"path={output_html_path}",
+                    error_code=type(err).__name__,
+                    error_message=safe_error_message(err),
+                )
+                raise
 
         return report_id, report_markdown, report_html
 
@@ -477,20 +712,66 @@ class MacroPipelineV2:
         """
         Uruchamia pełny, zintegrowany proces platformy danych v2.
         """
-        run_id = self.db.start_ingestion_run(provider="MANUAL", run_type="TRIGGERED")
-        print(f"[PipelineV2] Uruchomiono przebieg: {run_id} (offline_mode={self.offline_mode})")
-
+        run_id = f"UNAVAILABLE_{uuid.uuid4().hex[:12]}"
+        summary = base_run_summary(run_id=run_id, offline_mode=self.offline_mode)
+        q_events: List[str] = []
+        errors: List[str] = []
+        evidence_list: List[RawEvidence] = []
+        observation_list: List[MacroObservation] = []
+        search_news: List[Dict[str, Any]] = []
+        saved_obs = 0
+        run_started = False
+        self.diagnostics.event(logging.INFO, "Pipeline execution requested", run_id=run_id)
         try:
+            run_id = self.db.start_ingestion_run(provider="MANUAL", run_type="TRIGGERED")
+            run_started = True
+            summary["run_id"] = run_id
+            summary["pipeline_status"] = "STARTED"
+            self.diagnostics.write_summary(summary)
+            self.diagnostics.event(
+                logging.INFO,
+                f"Pipeline started (offline_mode={self.offline_mode})",
+                run_id=run_id,
+            )
+            print(f"[PipelineV2] Uruchomiono przebieg: {run_id} (offline_mode={self.offline_mode})")
+
             # 1. Pobieranie danych oficjalnych
             evidence_list, observation_list, q_events, errors = self.fetch_official_data(run_id)
+            self.diagnostics.event(
+                logging.INFO,
+                f"Official data fetched: evidence={len(evidence_list)}, observations={len(observation_list)}",
+                run_id=run_id,
+            )
+            for partial_error in errors:
+                self.diagnostics.event(
+                    logging.WARNING,
+                    f"Partial connector failure: {partial_error}",
+                    run_id=run_id,
+                )
             print(f"[PipelineV2] Pobrano {len(evidence_list)} dowodów oraz {len(observation_list)} obserwacji.")
 
             # 2. Zapis w bazie SQLite v2
             saved_evi, saved_obs = self.store_official_data(evidence_list, observation_list, run_id)
+            self.diagnostics.event(
+                logging.INFO,
+                f"Official data stored: evidence={saved_evi}, observations={saved_obs}",
+                run_id=run_id,
+            )
             print(f"[PipelineV2] Zapisano do bazy v2: {saved_evi} dowodów, {saved_obs} obserwacji.")
 
             # 3. Wyszukiwanie Tavily i wzbogacenie kontekstu
             search_news = self.search_enrichment(country, run_id)
+            summary["tavily_results_count"] = len(search_news)
+            summary["tavily_status"] = (
+                "OFFLINE_DEMO"
+                if self.offline_mode
+                else ("SUCCESS" if search_news else "UNAVAILABLE")
+            )
+            self.diagnostics.event(
+                logging.INFO if search_news or self.offline_mode else logging.WARNING,
+                f"Tavily status={summary['tavily_status']}, results={len(search_news)}",
+                run_id=run_id,
+            )
             print(f"[PipelineV2] Zebrano {len(search_news)} analiz i komunikatów rynkowych.")
             if not self.offline_mode and not search_news:
                 message = "Kontekst Tavily niedostępny; nie użyto fixture'ów offline."
@@ -510,6 +791,22 @@ class MacroPipelineV2:
                 run_id=run_id,
                 output_html_path=output_html_path,
             )
+            generation_diagnostics = self.evaluator.last_generation_diagnostics
+            summary.update({
+                "generation_mode": generation_diagnostics.get("generation_mode"),
+                "gpt_attempted": generation_diagnostics.get("gpt_attempted", False),
+                "fallback_reason": generation_diagnostics.get("fallback_reason"),
+                "report_id": report_id,
+            })
+            generation_level = (
+                logging.INFO
+                if summary["generation_mode"] in {"LIVE_AI_VALIDATED", "OFFLINE_DEMO"}
+                else logging.WARNING
+            )
+            generation_message = f"Report generation mode={summary['generation_mode']}"
+            if summary["fallback_reason"]:
+                generation_message += f"; reason={summary['fallback_reason']}"
+            self.diagnostics.event(generation_level, generation_message, run_id=run_id)
             print(f"[PipelineV2] Raport pomyślnie zarchiwizowany pod ID: {report_id}")
 
             status = "PARTIAL" if errors else "COMPLETED"
@@ -519,6 +816,22 @@ class MacroPipelineV2:
                 records_fetched=len(observation_list),
                 records_validated=saved_obs,
                 error_message="; ".join(errors) if errors else None,
+            )
+
+            verified = self.db.get_latest_verified_observations(
+                country_code="PL",
+                run_id=run_id,
+            )
+            summary.update({
+                "pipeline_status": status,
+                "verified_indicators_count": len(verified),
+                "missing_indicators": missing_report_indicators(verified),
+            })
+            self.diagnostics.write_summary(summary)
+            self.diagnostics.event(
+                logging.INFO if status == "COMPLETED" else logging.WARNING,
+                f"Pipeline finished with status={status}, report_id={report_id}",
+                run_id=run_id,
             )
 
             return PipelineResult(
@@ -539,24 +852,67 @@ class MacroPipelineV2:
             )
 
         except Exception as exc:
-            print(f"[PipelineV2 Error] Niepowodzenie potoku: {exc}")
-            self.db.finish_ingestion_run(
+            failure_reason = safe_error_message(exc)
+            print(f"[PipelineV2 Error] Niepowodzenie potoku: {failure_reason}")
+            self.diagnostics.event(
+                logging.ERROR,
+                f"Pipeline failed: {failure_reason}",
                 run_id=run_id,
-                status="FAILED",
-                records_fetched=0,
-                records_validated=0,
-                error_message=str(exc),
             )
+            if run_started:
+                try:
+                    self.db.finish_ingestion_run(
+                        run_id=run_id,
+                        status="FAILED",
+                        records_fetched=len(observation_list),
+                        records_validated=saved_obs,
+                        error_message=failure_reason,
+                    )
+                except Exception as finish_exc:
+                    self.diagnostics.event(
+                        logging.ERROR,
+                        f"Could not persist FAILED ingestion status: {safe_error_message(finish_exc)}",
+                        run_id=run_id,
+                    )
+
+            generation_diagnostics = self.evaluator.last_generation_diagnostics
+            gpt_attempted = generation_diagnostics.get("gpt_attempted", False)
+            gen_mode = generation_diagnostics.get("generation_mode")
+            if not gpt_attempted and not self.offline_mode:
+                gen_mode = None
+
+            try:
+                verified = self.db.get_latest_verified_observations(country_code="PL", run_id=run_id)
+            except Exception:
+                verified = []
+
+            summary.update({
+                "run_id": run_id,
+                "pipeline_status": "FAILED",
+                "fallback_reason": generation_diagnostics.get("fallback_reason") or failure_reason,
+                "gpt_attempted": gpt_attempted,
+                "generation_mode": gen_mode if gen_mode else ("OFFLINE_DEMO" if self.offline_mode else None),
+                "tavily_results_count": len(search_news),
+                "verified_indicators_count": len(verified),
+                "missing_indicators": missing_report_indicators(verified),
+                "report_id": None,
+            })
+            if summary["tavily_status"] == "NOT_RUN" and self.offline_mode:
+                summary["tavily_status"] = "NOT_RUN_OFFLINE"
+            self.diagnostics.write_summary(summary)
             return PipelineResult(
                 success=False,
                 run_id=run_id,
                 status="FAILED",
-                records_fetched=0,
-                records_validated=0,
+                records_fetched=len(observation_list),
+                records_validated=saved_obs,
                 report_id=None,
                 report_markdown="",
                 report_html="",
                 offline_mode=self.offline_mode,
                 quality_events=q_events,
-                errors=errors + [str(exc)],
+                evidence_count=len(evidence_list),
+                observations_count=len(observation_list),
+                search_news_count=len(search_news),
+                errors=errors + [failure_reason],
             )
