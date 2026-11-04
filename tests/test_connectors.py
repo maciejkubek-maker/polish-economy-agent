@@ -360,6 +360,7 @@ GUS_DBW_CPI_JSON = """
       "id-przekroj": 736,
       "id-rok": 2026,
       "id-okres": 255,
+      "id-sposob-prezentacji-miara": 5,
       "wartosc": 104.2,
       "precyzja": 1
     }
@@ -1127,7 +1128,7 @@ class TestGusConnector:
     def test_fetch_cpi_dbw_validates_variable_id_mismatch(self, monkeypatch):
         """Niezgodnosc id-zmienna w odpowiedzi API rzuca ValidationError."""
         connector = GusConnector(offline_mode=True)
-        bad_payload = json.dumps({"data": [{"id-zmienna": 999, "id-przekroj": 736, "id-rok": 2026, "id-okres": 255, "wartosc": 103.1}]})
+        bad_payload = json.dumps({"data": [{"id-zmienna": 999, "id-przekroj": 736, "id-rok": 2026, "id-okres": 255, "id-sposob-prezentacji-miara": 5, "wartosc": 103.1}]})
         connector.register_fixture("data/data-data", bad_payload)
         with pytest.raises(ValidationError, match="Niezgodność id-zmienna"):
             connector.fetch_cpi_dbw(rok=2026, okres_id=255)
@@ -1135,7 +1136,7 @@ class TestGusConnector:
     def test_fetch_cpi_dbw_validates_przekroj_id_mismatch(self, monkeypatch):
         """Niezgodnosc id-przekroj w odpowiedzi API rzuca ValidationError."""
         connector = GusConnector(offline_mode=True)
-        bad_payload = json.dumps({"data": [{"id-zmienna": 305, "id-przekroj": 999, "id-rok": 2026, "id-okres": 255, "wartosc": 103.1}]})
+        bad_payload = json.dumps({"data": [{"id-zmienna": 305, "id-przekroj": 999, "id-rok": 2026, "id-okres": 255, "id-sposob-prezentacji-miara": 5, "wartosc": 103.1}]})
         connector.register_fixture("data/data-data", bad_payload)
         with pytest.raises(ValidationError, match="Niezgodność id-przekroj"):
             connector.fetch_cpi_dbw(rok=2026, okres_id=255)
@@ -1143,7 +1144,7 @@ class TestGusConnector:
     def test_fetch_cpi_dbw_validates_okres_id_mismatch(self, monkeypatch):
         """Niezgodnosc id-okres w odpowiedzi API rzuca ValidationError."""
         connector = GusConnector(offline_mode=True)
-        bad_payload = json.dumps({"data": [{"id-zmienna": 305, "id-przekroj": 736, "id-rok": 2026, "id-okres": 999, "wartosc": 103.1}]})
+        bad_payload = json.dumps({"data": [{"id-zmienna": 305, "id-przekroj": 736, "id-rok": 2026, "id-okres": 999, "id-sposob-prezentacji-miara": 5, "wartosc": 103.1}]})
         connector.register_fixture("data/data-data", bad_payload)
         with pytest.raises(ValidationError, match="Niezgodność id-okres"):
             connector.fetch_cpi_dbw(rok=2026, okres_id=255)
@@ -1151,7 +1152,7 @@ class TestGusConnector:
     def test_fetch_cpi_dbw_validates_rok_mismatch(self, monkeypatch):
         """Niezgodnosc roku w odpowiedzi API rzuca ValidationError."""
         connector = GusConnector(offline_mode=True)
-        bad_payload = json.dumps({"data": [{"id-zmienna": 305, "id-przekroj": 736, "id-rok": 2019, "id-okres": 255, "wartosc": 103.1}]})
+        bad_payload = json.dumps({"data": [{"id-zmienna": 305, "id-przekroj": 736, "id-rok": 2019, "id-okres": 255, "id-sposob-prezentacji-miara": 5, "wartosc": 103.1}]})
         connector.register_fixture("data/data-data", bad_payload)
         with pytest.raises(ValidationError, match="Niezgodność roku"):
             connector.fetch_cpi_dbw(rok=2026, okres_id=255)
@@ -1165,6 +1166,43 @@ class TestGusConnector:
 
 
 
+
+
+    def test_fetch_cpi_dbw_rejects_single_record_without_presentation_mode_5(self):
+        """W trybie live i offline odrzuca pojedynczy rekord bez potwierdzenia id-sposob-prezentacji-miara=5."""
+        connector = GusConnector(offline_mode=True)
+        # 1. Pojedynczy rekord bez klucza id-sposob-prezentacji-miara
+        single_without_mode = json.dumps({
+            "data": [
+                {
+                    "id-zmienna": 305,
+                    "id-przekroj": 736,
+                    "id-rok": 2026,
+                    "id-okres": 255,
+                    "wartosc": 104.2
+                }
+            ]
+        })
+        connector.register_fixture("data/data-data", single_without_mode)
+        with pytest.raises(ValidationError, match="Nie znaleziono wymaganego sposobu prezentacji CPI r/r"):
+            connector.fetch_cpi_dbw(rok=2026, okres_id=255)
+
+        # 2. Pojedynczy rekord ze zlym sposobem prezentacji (np. 1 zamiast 5)
+        single_bad_mode = json.dumps({
+            "data": [
+                {
+                    "id-zmienna": 305,
+                    "id-przekroj": 736,
+                    "id-rok": 2026,
+                    "id-okres": 255,
+                    "id-sposob-prezentacji-miara": 1,
+                    "wartosc": 100.4
+                }
+            ]
+        })
+        connector.register_fixture("data/data-data", single_bad_mode)
+        with pytest.raises(ValidationError, match="Nie znaleziono wymaganego sposobu prezentacji CPI r/r"):
+            connector.fetch_cpi_dbw(rok=2026, okres_id=255)
 
     def test_fetch_cpi_dbw_rejects_missing_mode_5_without_guessing(self):
         """Konektor GUS CPI odrzuca odpowiedź bez sposobu prezentacji 5 (r/r) i nie wybiera losowo data_list[0]."""

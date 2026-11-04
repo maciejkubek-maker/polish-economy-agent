@@ -24,11 +24,11 @@ The project is an educational, local prototype. It is not an investment advisory
 ### Features
 
 - Multi-source connectors: NBP (FX, policy rate), GUS BDL & DBW (registered unemployment, CPI), and Eurostat (HICP, harmonized unemployment, quarterly GDP volume, QoQ, YoY).
-- Dynamic CPI discovery from GUS DBW with verification of variable ID 305, dimension 736, presentation mode 5 (YoY), period, and unit without hardcoded dates or methodology guessing.
+- Strict CPI discovery and ingestion from GUS DBW requiring presentation mode 5 (YoY, `id-sposob-prezentacji-miara=5`) without any fallback to `data_list[0]` or methodology guessing.
 - Strict validation: prevents variable hallucination, separates registered from LFS unemployment, distinguishes QoQ from YoY GDP growth, and rejects unverifiable observations.
 - SQLite v2 data platform: audit-ready tables for ingestion runs, raw evidence (with SHA-256 content hashes), macro observations, quality events, and generated reports.
 - Safe web search: queries Tavily for recent analyses and official communiqués with domain-level classification; search numbers are never treated as official statistical observations.
-- Structured reporting: six markdown sections with numbered footnotes, direct verified endpoint URLs, and explicit `Data unavailable` labels when inputs are missing.
+- Structured reporting: six markdown sections with numbered footnotes, direct verified endpoint URLs, header logo branding, and explicit `Data unavailable` labels when inputs are missing.
 - Live mode (GPT-only): reports in live mode are generated exclusively by OpenAI GPT, validated against official records, with Section 6 programmatically assembled from the citation registry. In case of API or validator rejection, the run fails safely (`FAILED`, `report_id=null`) without saving to SQLite or `report.html`, and without any deterministic fallback.
 - Security and hygiene: HTML escaping and tag sanitization via bleach, secret redaction in logs/summaries, and no modification to legacy databases.
 - Full debug trace & diagnostics: structured event logs (`agent.log`), run summary (`last_run.json` created at run start), and step-level execution trace (`steps.jsonl`).
@@ -132,14 +132,14 @@ The diagnostic files never store API keys, authorization headers, full prompts, 
 
 ### Tests
 
-The regression and diagnostics test suite passes **160 tests** offline:
+The regression and diagnostics test suite passes **162 tests** offline:
 
 ```bash
 uv sync --group dev
 uv run pytest -q
 ```
 
-Expected audited result: `160 passed`.
+Expected audited result: `162 passed`.
 
 <a id="report-screenshots"></a>
 
@@ -175,12 +175,12 @@ Projekt jest lokalnym prototypem. Nie jest wdrożonym systemem produkcyjnym, ofi
 ### Funkcjonalności
 
 - pobieranie wybranych kursów walut, stóp procentowych, danych o inflacji, rynku pracy i PKB przez konektory NBP, GUS i Eurostatu;
-- dynamiczne odkrywanie najnowszego CPI z GUS DBW z weryfikacją zmiennej 305, przekroju 736, sposobu prezentacji 5 (r/r), okresu i jednostki bez zgadywania metodologii;
+- bezwzględny wymóg sposobu prezentacji 5 (r/r, `id-sposob-prezentacji-miara=5`) przy odczycie CPI z GUS DBW bez akceptacji niepotwierdzonych rekordów ani zgadywania metodologii;
 - walidacja odpowiedzi źródłowych, definicji wskaźników, jednostek, okresów i częstotliwości przed zapisem;
 - audytowalny zapis w SQLite v2 z dowodami źródłowymi, zdarzeniami jakościowymi, wersjonowaniem i ochroną append-only;
 - wzbogacanie danych o wyniki Tavily sklasyfikowane jako komunikaty oficjalne lub komentarze medialne (wyniki wyszukiwania nie zastępują oficjalnych obserwacji);
 - rozdzielenie m.in. bezrobocia rejestrowanego od BAEL, wariantów CPI oraz dynamiki PKB kw/kw od r/r;
-- sześciosekcyjny raport z numerowanymi przypisami, programowo składaną bibliografią z bezpośrednimi URL-ami i jawnym oznaczeniem `Brak danych` zamiast zgadywania wartości;
+- sześciosekcyjny raport z numerowanymi przypisami, nagłówkiem z logo projektu, programowo składaną bibliografią z bezpośrednimi URL-ami i jawnym oznaczeniem `Brak danych` zamiast zgadywania wartości;
 - w trybie live wyłącznie generowanie przez model GPT z rygorystyczną kontrolą spójności (brak deterministycznego fallbacku przy błędzie);
 - bezpieczne renderowanie HTML z escapowaniem i sanityzacją oraz udostępnianie raportu przez Flask;
 - pełna diagnostyka i audytowalny trace: dziennik `agent.log`, podsumowanie `last_run.json` (inicjowane na starcie przebiegu) oraz strukturalny ślad `steps.jsonl`.
@@ -255,14 +255,14 @@ Pliki diagnostyczne nie zapisują celowo kluczy API, nagłówków autoryzacyjnyc
 
 ### Testy
 
-Zestaw regresyjny końcowej stabilizacji i pełnej diagnostyki potwierdził **160 testów** działających offline:
+Zestaw regresyjny końcowej stabilizacji i pełnej diagnostyki potwierdził **162 testy** działające offline:
 
 ```bash
 uv sync --group dev
 uv run pytest -q
 ```
 
-Oczekiwany wynik audytu: `160 passed`.
+Oczekiwany wynik audytu: `162 passed`.
 
 ### Zrzuty ekranu raportu
 

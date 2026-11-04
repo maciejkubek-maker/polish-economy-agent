@@ -327,3 +327,10 @@ print("OK")
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert result.returncode == 0, f"Subprocess failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
     assert "OK" in result.stdout
+
+
+def test_build_html_template_renders_logo():
+    """Verify that build_html_template embeds the logo in the report header."""
+    html_output = build_html_template("# Test", country="Polska")
+    assert 'class="report-logo"' in html_output
+    assert 'data:image/png;base64,' in html_output
