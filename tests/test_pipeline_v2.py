@@ -500,6 +500,7 @@ def test_valid_live_ai_report_is_archived_without_fallback(temp_v2_db, monkeypat
         )
         temp_v2_db.save_evidence(evidence, run_id=run_id)
         temp_v2_db.save_observation(MacroObservation(
+            observation_id=f"OBS_TEST_{currency}",
             indicator_code=indicator_code,
             country_code="PL",
             period_start="2026-10-30",
@@ -512,32 +513,26 @@ def test_valid_live_ai_report_is_archived_without_fallback(temp_v2_db, monkeypat
             evidence_id=evidence.evidence_id,
         ), run_id=run_id)
 
-    valid_report = """# RAPORT KONDYCJI GOSPODARCZEJ: Polska
-
-## 1. Analiza Trendów w Dostępnym Okresie
-
-Kurs EUR/PLN wyniósł 4.3955 zł/EUR [1].
-
-## 2. Zagrożenia i Ryzyka Makroekonomiczne
-
-Pojedynczy odczyt nie stanowi prognozy kursowej.
-
-## 3. Co to oznacza dla Kowalskiego? (Perspektywa Obywatela)
-
-Zmiany kursu mogą wpływać na ceny importu.
-
-## 4. Co to oznacza dla Przedsiębiorców?
-
-Odczyt może wspierać bieżące rozliczenia, ale nie przewiduje przyszłości.
-
-## 5. Podsumowanie i Realistyczny Werdykt
-
-Wniosek ogranicza się do zweryfikowanej obserwacji.
-
-## 6. Źródła danych i Metodologia
-
-[1] NBP, kurs EUR/PLN, https://api.nbp.pl/api/exchangerates/rates/A/EUR/2026-10-30/
-"""
+    valid_report = json.dumps({
+        "claims": [
+            {
+                "indicator_code": "PL_FX_EUR_PLN",
+                "observation_id": "OBS_TEST_EUR",
+                "value_decimal": "4.3955",
+                "unit_code": "EUR_PLN",
+                "period_start": "2026-10-30",
+                "period_end": "2026-10-30",
+                "citation_idx": 1,
+            }
+        ],
+        "sections": {
+            "1": "Kurs EUR/PLN wyniósł 4.3955 zł [1].",
+            "2": "Pojedynczy odczyt nie stanowi prognozy kursowej.",
+            "3": "- **Kredyty i Raty:** Brak danych.\n- **Ceny i Zakupy:** Zmiany kursu mogą wpływać na ceny importu.\n- **Praca i Zarobki:** Brak danych.",
+            "4": "Odczyt może wspierać bieżące rozliczenia, ale nie przewiduje przyszłości.",
+            "5": "Wniosek ogranicza się do zweryfikowanej obserwacji.",
+        }
+    })
     evaluator = EconomyEvaluator()
     monkeypatch.setattr(
         evaluator,
@@ -591,6 +586,7 @@ def test_regression_run_89f71ad08c71_gpt_domain_urls_assembled_programmatically(
     )
     temp_v2_db.save_evidence(evi_cpi, run_id=run_id)
     temp_v2_db.save_observation(MacroObservation(
+        observation_id="OBS_CPI_REG",
         indicator_code="PL_CPI_YOY",
         country_code="PL",
         period_start="2025-12-01",
@@ -615,6 +611,7 @@ def test_regression_run_89f71ad08c71_gpt_domain_urls_assembled_programmatically(
     )
     temp_v2_db.save_evidence(evi_fx, run_id=run_id)
     temp_v2_db.save_observation(MacroObservation(
+        observation_id="OBS_FX_REG",
         indicator_code="PL_FX_EUR_PLN",
         country_code="PL",
         period_start="2026-10-30",
@@ -627,39 +624,35 @@ def test_regression_run_89f71ad08c71_gpt_domain_urls_assembled_programmatically(
         evidence_id=evi_fx.evidence_id,
     ), run_id=run_id)
 
-    # Rzeczywisty wzorzec odpowiedzi modelu GPT z przebiegu RUN_89f71ad08c71:
-    # Model użył ogólnych domen https://stat.gov.pl i https://nbp.pl w sekcji 6
-    gpt_candidate_output = """# RAPORT KONDYCJI GOSPODARCZEJ: Polska
-**Data publikacji analizy:** 04.11.2026  
-**Horyzont analizowanych danych:** Grudzień 2025 | Październik 2026
-
-## 1. Analiza Trendów w Dostępnym Okresie
-
-Inflacja CPI wyniosła 3.1% [1], a kurs walutowy EUR/PLN ukształtował się na poziomie 4.3955 zł [2].
-
-## 2. Zagrożenia i Ryzyka Makroekonomiczne
-
-Pojedyncze odczyty nie stanowią podstawy do kategorycznych projekcji przyszłych decyzji.
-
-## 3. Co to oznacza dla Kowalskiego? (Perspektywa Obywatela)
-
-- **Kredyty i Raty:** Brak danych o bezpośredniej decyzji.
-- **Ceny i Zakupy:** Wskaźnik cen CPI ukształtował się na poziomie 3.1% [1].
-- **Praca i Zarobki:** Brak danych.
-
-## 4. Co to oznacza dla Przedsiębiorców?
-
-Kurs walutowy 4.3955 zł [2] wpływa na koszty importu i rozliczenia handlowe.
-
-## 5. Podsumowanie i Realistyczny Werdykt
-
-Analiza opiera się na zweryfikowanych obserwacjach oficjalnych.
-
-## 6. Źródła danych i Metodologia
-
-[1] Główny Urząd Statystyczny - https://stat.gov.pl
-[2] Narodowy Bank Polski - https://nbp.pl
-"""
+    gpt_candidate_output = json.dumps({
+        "claims": [
+            {
+                "indicator_code": "PL_CPI_YOY",
+                "observation_id": "OBS_CPI_REG",
+                "value_decimal": "3.1",
+                "unit_code": "PCT",
+                "period_start": "2025-12-01",
+                "period_end": "2025-12-31",
+                "citation_idx": 1,
+            },
+            {
+                "indicator_code": "PL_FX_EUR_PLN",
+                "observation_id": "OBS_FX_REG",
+                "value_decimal": "4.3955",
+                "unit_code": "EUR_PLN",
+                "period_start": "2026-10-30",
+                "period_end": "2026-10-30",
+                "citation_idx": 2,
+            }
+        ],
+        "sections": {
+            "1": "Inflacja CPI wyniosła 3.1% [1], a kurs walutowy EUR/PLN ukształtował się na poziomie 4.3955 zł [2].",
+            "2": "Pojedyncze odczyty nie stanowią podstawy do kategorycznych projekcji przyszłych decyzji.",
+            "3": "- **Kredyty i Raty:** Brak danych o bezpośredniej decyzji.\n- **Ceny i Zakupy:** Wskaźnik cen CPI ukształtował się na poziomie 3.1% [1].\n- **Praca i Zarobki:** Brak danych.",
+            "4": "Kurs walutowy 4.3955 zł [2] wpływa na koszty importu i rozliczenia handlowe.",
+            "5": "Analiza opiera się na zweryfikowanych obserwacjach oficjalnych.",
+        }
+    })
     evaluator = EconomyEvaluator()
     monkeypatch.setattr(evaluator, "_run_llm_synthesis", lambda *args, **kwargs: gpt_candidate_output)
 

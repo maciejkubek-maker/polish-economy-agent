@@ -325,6 +325,7 @@ CREATE TABLE IF NOT EXISTS reports (
     report_html TEXT,
     data_snapshot_hash TEXT NOT NULL,
     model_metadata_json TEXT,
+    publication_status TEXT NOT NULL DEFAULT 'PENDING' CHECK(publication_status IN ('PENDING', 'PUBLISHED', 'FAILED')),
     created_at_utc TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 

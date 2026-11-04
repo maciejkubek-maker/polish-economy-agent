@@ -12,27 +12,32 @@ from modules.storage_v2 import SQLiteV2Storage
 SOURCE_URL = "https://api-dbw.stat.gov.pl/api/1.1.0/data/cpi"
 
 
-def _valid_gpt_report() -> str:
-    return f"""# RAPORT KONDYCJI GOSPODARCZEJ: Polska
-
-## 1. Analiza Trendów w Dostępnym Okresie
-Inflacja CPI wyniosła 3.1% [1].
-
-## 2. Zagrożenia i Ryzyka Makroekonomiczne
-Zakres danych ogranicza siłę wniosków.
-
-## 3. Co to oznacza dla Kowalskiego? (Perspektywa Obywatela)
-Odczyt opisuje zmiany cen.
-
-## 4. Co to oznacza dla Przedsiębiorców?
-Odczyt nie jest prognozą.
-
-## 5. Podsumowanie i Realistyczny Werdykt
-Wnioski pozostają warunkowe.
-
-## 6. Źródła danych i Metodologia
-[1] GUS, CPI, {SOURCE_URL}
-"""
+def _valid_gpt_report(indicator_code: str = "PL_CPI_YOY") -> str:
+    val = "3.1" if indicator_code == "PL_CPI_YOY" else "4.3955"
+    unit = "PCT" if indicator_code == "PL_CPI_YOY" else "EUR_PLN"
+    p_start = "2026-09-01" if indicator_code == "PL_CPI_YOY" else "2026-10-30"
+    p_end = "2026-09-30" if indicator_code == "PL_CPI_YOY" else "2026-10-30"
+    claim_text = f"Inflacja CPI wyniosła {val}% [1]." if unit == "PCT" else f"Kurs EUR/PLN wyniósł {val} zł [1]."
+    return json.dumps({
+        "claims": [
+            {
+                "indicator_code": indicator_code,
+                "observation_id": f"OBS_{indicator_code}",
+                "value_decimal": val,
+                "unit_code": unit,
+                "period_start": p_start,
+                "period_end": p_end,
+                "citation_idx": 1,
+            }
+        ],
+        "sections": {
+            "1": claim_text,
+            "2": "Zakres danych ogranicza siłę wniosków.",
+            "3": "- **Kredyty i Raty:** Brak danych.\n- **Ceny i Zakupy:** Odczyt opisuje zmiany cen.\n- **Praca i Zarobki:** Brak danych.",
+            "4": "Odczyt nie jest prognozą.",
+            "5": "Wnioski pozostają warunkowe.",
+        }
+    })
 
 
 def _official_data(indicator_code: str = "PL_CPI_YOY"):
@@ -47,6 +52,7 @@ def _official_data(indicator_code: str = "PL_CPI_YOY"):
         retrieved_at_utc="2026-11-04T10:00:00Z",
     )
     observation = MacroObservation(
+        observation_id=f"OBS_{indicator_code}",
         indicator_code=indicator_code,
         country_code="PL",
         period_start="2026-09-01" if indicator_code == "PL_CPI_YOY" else "2026-10-30",
@@ -254,6 +260,7 @@ def test_validator_rejects_mismatched_footnote_attribution(tmp_path, monkeypatch
             retrieved_at_utc="2026-11-04T10:00:00Z",
         )
         obs_nbp = MacroObservation(
+            observation_id="OBS_PL_POLICY_RATE_REF",
             indicator_code="PL_POLICY_RATE_REF",
             country_code="PL",
             period_start="2026-10-01",
@@ -272,27 +279,35 @@ def test_validator_rejects_mismatched_footnote_attribution(tmp_path, monkeypatch
 
     # Obie liczby (3.1% oraz 5.75%) są zweryfikowane w bazie.
     # Jednak GPT przypisuje stopę 5.75% do źródła [1] (które jest źródłem CPI o wartości 3.1%)
-    mismatched_report = """# RAPORT KONDYCJI GOSPODARCZEJ: Polska
-
-## 1. Analiza Trendów w Dostępnym Okresie
-Stopa referencyjna NBP wynosi 5.75% [1], a inflacja CPI wynosi 3.1% [2].
-
-## 2. Zagrożenia i Ryzyka Makroekonomiczne
-Ryzyka pozostają istotne.
-
-## 3. Co to oznacza dla Kowalskiego? (Perspektywa Obywatela)
-Odczyt nie przesądza kosztu rat.
-
-## 4. Co to oznacza dla Przedsiębiorców?
-Brak prognozy.
-
-## 5. Podsumowanie i Realistyczny Werdykt
-Wnioski warunkowe.
-
-## 6. Źródła danych i Metodologia
-[1] Główny Urząd Statystyczny - https://stat.gov.pl
-[2] Narodowy Bank Polski - https://nbp.pl
-"""
+    mismatched_report = json.dumps({
+        "claims": [
+            {
+                "indicator_code": "PL_POLICY_RATE_REF",
+                "observation_id": "OBS_PL_POLICY_RATE_REF",
+                "value_decimal": "5.75",
+                "unit_code": "PCT",
+                "period_start": "2026-10-01",
+                "period_end": "2026-10-31",
+                "citation_idx": 1,
+            },
+            {
+                "indicator_code": "PL_CPI_YOY",
+                "observation_id": "OBS_PL_CPI_YOY",
+                "value_decimal": "3.1",
+                "unit_code": "PCT",
+                "period_start": "2026-09-01",
+                "period_end": "2026-09-30",
+                "citation_idx": 2,
+            }
+        ],
+        "sections": {
+            "1": "Stopa referencyjna NBP wynosi 5.75% [1], a inflacja CPI wynosi 3.1% [2].",
+            "2": "Ryzyka pozostają istotne.",
+            "3": "- **Kredyty i Raty:** Raty.\n- **Ceny i Zakupy:** Ceny.\n- **Praca i Zarobki:** Praca.",
+            "4": "Brak prognozy.",
+            "5": "Wnioski warunkowe.",
+        }
+    })
     monkeypatch.setattr(evaluator, "_run_llm_synthesis", lambda *args, **kwargs: mismatched_report)
     result = pipeline.run()
 
@@ -331,27 +346,26 @@ def test_validator_rejects_unverified_tavily_numbers(tmp_path, monkeypatch):
     monkeypatch.setattr(pipeline, "search_enrichment", lambda country, run_id: tavily_news)
 
     # GPT próbuje zacytować 3.1% jako potwierdzoną liczbę makroekonomiczną
-    gpt_claim_tavily = """# RAPORT KONDYCJI GOSPODARCZEJ: Polska
-
-## 1. Analiza Trendów w Dostępnym Okresie
-Inflacja CPI wyniosła 3.1% [2].
-
-## 2. Zagrożenia i Ryzyka Makroekonomiczne
-Niepewność co do dynamiki cen.
-
-## 3. Co to oznacza dla Kowalskiego? (Perspektywa Obywatela)
-Ceny rosną.
-
-## 4. Co to oznacza dla Przedsiębiorców?
-Koszty rosną.
-
-## 5. Podsumowanie i Realistyczny Werdykt
-Brak oficjalnego potwierdzenia.
-
-## 6. Źródła danych i Metodologia
-[1] NBP, kurs EUR/PLN, https://api.nbp.pl
-[2] Media, GUS: Wskaźniki cen, https://stat.gov.pl/wiadomosc-cpi.html
-"""
+    gpt_claim_tavily = json.dumps({
+        "claims": [
+            {
+                "indicator_code": "PL_CPI_YOY",
+                "observation_id": "OBS_UNVERIFIED_TAVILY",
+                "value_decimal": "3.1",
+                "unit_code": "PCT",
+                "period_start": "2026-10-01",
+                "period_end": "2026-10-31",
+                "citation_idx": 2,
+            }
+        ],
+        "sections": {
+            "1": "Inflacja CPI wyniosła 3.1% [2].",
+            "2": "Niepewność co do dynamiki cen.",
+            "3": "- **Kredyty i Raty:** Raty.\n- **Ceny i Zakupy:** Ceny rosną.\n- **Praca i Zarobki:** Brak.",
+            "4": "Koszty rosną.",
+            "5": "Brak oficjalnego potwierdzenia.",
+        }
+    })
     monkeypatch.setattr(evaluator, "_run_llm_synthesis", lambda *args, **kwargs: gpt_claim_tavily)
     result = pipeline.run()
 
@@ -414,33 +428,9 @@ def test_pipeline_steps_jsonl_records_structured_events(tmp_path, monkeypatch):
     storage = SQLiteV2Storage(db_path=str(tmp_path / "steps_test.db"))
     evaluator = EconomyEvaluator()
 
+    from modules.evaluator import mock_llm_json_synthesis
     def mock_synth(country, report_date, periods_summary, chronological_context, **kwargs):
-        import re
-        match = re.search(r"-\s*([^:]+):\s*([0-9.,]+)\s*%\s*[^\[]*\[(\d+)\]", chronological_context)
-        if match:
-            ind_name, val, fn = match.group(1).strip(), match.group(2).strip(), match.group(3).strip()
-            claim = f"{ind_name} wyniosła {val}% [{fn}]."
-        else:
-            claim = "Wskaźnik wyniósł 4.0% [1]."
-        return f"""# RAPORT KONDYCJI GOSPODARCZEJ: Polska
-
-## 1. Analiza Trendów w Dostępnym Okresie
-{claim}
-
-## 2. Zagrożenia i Ryzyka Makroekonomiczne
-Ryzyka makroekonomiczne.
-
-## 3. Co to oznacza dla Kowalskiego? (Perspektywa Obywatela)
-Perspektywa obywatela.
-
-## 4. Co to oznacza dla Przedsiębiorców?
-Perspektywa przedsiębiorcy.
-
-## 5. Podsumowanie i Realistyczny Werdykt
-Podsumowanie analizy.
-
-## 6. Źródła danych i Metodologia
-"""
+        return mock_llm_json_synthesis(country, report_date, periods_summary, chronological_context, **kwargs)
 
     monkeypatch.setattr(evaluator, "_run_llm_synthesis", mock_synth)
     pipeline = MacroPipelineV2(

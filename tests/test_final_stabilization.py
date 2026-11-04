@@ -88,20 +88,26 @@ def test_case_a_run_258c9a14a4be_cpi_tavily_vs_official(tmp_path, monkeypatch):
 
     evaluator = EconomyEvaluator()
     # GPT próbuje przyjąć 3.1% z doniesień Tavily
-    gpt_candidate = """# RAPORT KONDYCJI GOSPODARCZEJ: Polska
-## 1. Analiza Trendów w Dostępnym Okresie
-Inflacja CPI wyniosła 3.1% [1].
-## 2. Zagrożenia i Ryzyka Makroekonomiczne
-Niepewność cenowa.
-## 3. Co to oznacza dla Kowalskiego? (Perspektywa Obywatela)
-Wzrost cen.
-## 4. Co to oznacza dla Przedsiębiorców?
-Koszty.
-## 5. Podsumowanie i Realistyczny Werdykt
-Brak oficjalnego potwierdzenia.
-## 6. Źródła danych i Metodologia
-[1] GUS, CPI, https://stat.gov.pl
-"""
+    gpt_candidate = json.dumps({
+        "claims": [
+            {
+                "indicator_code": "PL_CPI_YOY",
+                "observation_id": "OBS_UNVERIFIED_TAVILY",
+                "value_decimal": "3.1",
+                "unit_code": "PCT",
+                "period_start": "2026-10-01",
+                "period_end": "2026-10-31",
+                "citation_idx": 1,
+            }
+        ],
+        "sections": {
+            "1": "Inflacja CPI wyniosła 3.1% [1].",
+            "2": "Niepewność cenowa.",
+            "3": "- **Kredyty i Raty:** Brak.\n- **Ceny i Zakupy:** Wzrost cen.\n- **Praca i Zarobki:** Brak.",
+            "4": "Koszty.",
+            "5": "Brak oficjalnego potwierdzenia.",
+        }
+    })
     monkeypatch.setattr(evaluator, "_run_llm_synthesis", lambda *args, **kwargs: gpt_candidate)
 
     pipeline = MacroPipelineV2(db=db, offline_mode=False, evaluator=evaluator, diagnostics_dir=tmp_path / "logs")
@@ -133,26 +139,32 @@ def test_case_b_run_89f71ad08c71_programmatic_bibliography(tmp_path, monkeypatch
     db = SQLiteV2Storage(db_path=str(tmp_path / "case_b.db"))
     full_url = "https://stat.gov.pl/obszary-tematyczne/ceny-handel/wskazniki-cen/wskazniki-cen-towarow-i-uslug-konsumpcyjnych-w-grudniu-2025-roku,2,158.html"
 
+    evi, obs = _make_evidence_and_obs("PL_CPI_YOY", "2.3", url=full_url)
     evaluator = EconomyEvaluator()
-    # Model GPT podaje ogólny adres domeny "https://stat.gov.pl" w sekcji 6
-    gpt_output_generic_url = """# RAPORT KONDYCJI GOSPODARCZEJ: Polska
-## 1. Analiza Trendów w Dostępnym Okresie
-Inflacja CPI wyniosła 2.3% [1].
-## 2. Zagrożenia i Ryzyka Makroekonomiczne
-Stabilizacja cenowa.
-## 3. Co to oznacza dla Kowalskiego? (Perspektywa Obywatela)
-Przewidywalność.
-## 4. Co to oznacza dla Przedsiębiorców?
-Planowanie.
-## 5. Podsumowanie i Realistyczny Werdykt
-Dane historyczne.
-## 6. Źródła danych i Metodologia
-[1] Główny Urząd Statystyczny - https://stat.gov.pl
-"""
+    # Model GPT zwraca JSON z twierdzeniem powiązanym ze źródłem, a sekcja 6 jest budowana programowo
+    gpt_output_generic_url = json.dumps({
+        "claims": [
+            {
+                "indicator_code": "PL_CPI_YOY",
+                "observation_id": obs.observation_id,
+                "value_decimal": "2.3",
+                "unit_code": "PCT",
+                "period_start": obs.period_start,
+                "period_end": obs.period_end,
+                "citation_idx": 1,
+            }
+        ],
+        "sections": {
+            "1": "Inflacja CPI wyniosła 2.3% [1].",
+            "2": "Stabilizacja cenowa.",
+            "3": "- **Kredyty i Raty:** Brak.\n- **Ceny i Zakupy:** Przewidywalność.\n- **Praca i Zarobki:** Brak.",
+            "4": "Planowanie.",
+            "5": "Dane historyczne.",
+        }
+    })
     monkeypatch.setattr(evaluator, "_run_llm_synthesis", lambda *args, **kwargs: gpt_output_generic_url)
 
     pipeline = MacroPipelineV2(db=db, offline_mode=False, evaluator=evaluator, diagnostics_dir=tmp_path / "logs")
-    evi, obs = _make_evidence_and_obs("PL_CPI_YOY", "2.3", url=full_url)
     monkeypatch.setattr(pipeline, "fetch_official_data", lambda rid: ([evi], [obs], [], []))
     monkeypatch.setattr(pipeline, "search_enrichment", lambda country, rid: [])
 
@@ -177,21 +189,35 @@ def test_case_c_multi_claim_single_line(tmp_path, monkeypatch):
 
     evaluator = EconomyEvaluator()
     # Dwie wartości w jednej linii z prawidłowymi przypisami
-    gpt_multi_claim = """# RAPORT KONDYCJI GOSPODARCZEJ: Polska
-## 1. Analiza Trendów w Dostępnym Okresie
-W badanym okresie inflacja CPI ukształtowała się na poziomie 2.3% [1], natomiast stopa bezrobocia rejestrowanego wyniosła 5.0% [2].
-## 2. Zagrożenia i Ryzyka Makroekonomiczne
-Stabilny poziom bezrobocia i cen.
-## 3. Co to oznacza dla Kowalskiego? (Perspektywa Obywatela)
-Bezpieczeństwo zatrudnienia.
-## 4. Co to oznacza dla Przedsiębiorców?
-Stabilność kosztów pracy.
-## 5. Podsumowanie i Realistyczny Werdykt
-Umiarkowana koniunktura.
-## 6. Źródła danych i Metodologia
-[1] GUS CPI
-[2] GUS Bezrobocie
-"""
+    gpt_multi_claim = json.dumps({
+        "claims": [
+            {
+                "indicator_code": "PL_CPI_YOY",
+                "observation_id": obs1.observation_id,
+                "value_decimal": "2.3",
+                "unit_code": "PCT",
+                "period_start": obs1.period_start,
+                "period_end": obs1.period_end,
+                "citation_idx": 1,
+            },
+            {
+                "indicator_code": "PL_UNEMPLOYMENT_REGISTERED_RATE",
+                "observation_id": obs2.observation_id,
+                "value_decimal": "5.0",
+                "unit_code": "PCT",
+                "period_start": obs2.period_start,
+                "period_end": obs2.period_end,
+                "citation_idx": 2,
+            }
+        ],
+        "sections": {
+            "1": "W badanym okresie inflacja CPI ukształtowała się na poziomie 2.3% [1], natomiast stopa bezrobocia rejestrowanego wyniosła 5.0% [2].",
+            "2": "Stabilny poziom bezrobocia i cen.",
+            "3": "- **Kredyty i Raty:** Bezpieczeństwo zatrudnienia.\n- **Ceny i Zakupy:** Stabilizacja cen.\n- **Praca i Zarobki:** Brak.",
+            "4": "Stabilność kosztów pracy.",
+            "5": "Umiarkowana koniunktura.",
+        }
+    })
     monkeypatch.setattr(evaluator, "_run_llm_synthesis", lambda *args, **kwargs: gpt_multi_claim)
 
     pipeline = MacroPipelineV2(db=db, offline_mode=False, evaluator=evaluator, diagnostics_dir=tmp_path / "logs")
@@ -333,20 +359,26 @@ def test_case_g_historical_cpi_lag_disclosure(tmp_path, monkeypatch):
     captured_context = {}
     def mock_synth(country, report_date, periods_summary, chronological_context, allow_fallback=False):
         captured_context["text"] = chronological_context
-        return """# RAPORT KONDYCJI GOSPODARCZEJ: Polska
-## 1. Analiza Trendów w Dostępnym Okresie
-Inflacja CPI z grudnia 2025 wyniosła 2.3% [1].
-## 2. Zagrożenia i Ryzyka Makroekonomiczne
-Lag danych.
-## 3. Co to oznacza dla Kowalskiego? (Perspektywa Obywatela)
-Obywatel.
-## 4. Co to oznacza dla Przedsiębiorców?
-Przedsiębiorcy.
-## 5. Podsumowanie i Realistyczny Werdykt
-Podsumowanie.
-## 6. Źródła danych i Metodologia
-[1] GUS
-"""
+        return json.dumps({
+            "claims": [
+                {
+                    "indicator_code": "PL_CPI_YOY",
+                    "observation_id": obs.observation_id,
+                    "value_decimal": "2.3",
+                    "unit_code": "PCT",
+                    "period_start": obs.period_start,
+                    "period_end": obs.period_end,
+                    "citation_idx": 1,
+                }
+            ],
+            "sections": {
+                "1": "Inflacja CPI z grudnia 2025 wyniosła 2.3% [1].",
+                "2": "Lag danych.",
+                "3": "- **Kredyty i Raty:** Brak.\n- **Ceny i Zakupy:** Obywatel.\n- **Praca i Zarobki:** Brak.",
+                "4": "Przedsiębiorcy.",
+                "5": "Podsumowanie.",
+            }
+        })
     monkeypatch.setattr(evaluator, "_run_llm_synthesis", mock_synth)
 
     pipeline = MacroPipelineV2(db=db, offline_mode=False, evaluator=evaluator, diagnostics_dir=tmp_path / "logs")
@@ -575,20 +607,26 @@ def test_os_replace_failure_recovery_and_flask_status(tmp_path, monkeypatch):
     evi, obs = _make_evidence_and_obs("PL_CPI_YOY", "2.3")
 
     evaluator = EconomyEvaluator()
-    valid_report = """# RAPORT KONDYCJI GOSPODARCZEJ: Polska
-## 1. Analiza Trendów w Dostępnym Okresie
-Inflacja CPI wynosi 2.3% [1].
-## 2. Zagrożenia i Ryzyka Makroekonomiczne
-Ryzyka makro.
-## 3. Co to oznacza dla Kowalskiego? (Perspektywa Obywatela)
-Obywatel.
-## 4. Co to oznacza dla Przedsiębiorców?
-Przedsiębiorcy.
-## 5. Podsumowanie i Realistyczny Werdykt
-Werdykt.
-## 6. Źródła danych i Metodologia
-[1] GUS
-"""
+    valid_report = json.dumps({
+        "claims": [
+            {
+                "indicator_code": "PL_CPI_YOY",
+                "observation_id": obs.observation_id,
+                "value_decimal": "2.3",
+                "unit_code": "PCT",
+                "period_start": obs.period_start,
+                "period_end": obs.period_end,
+                "citation_idx": 1,
+            }
+        ],
+        "sections": {
+            "1": "Inflacja CPI wynosi 2.3% [1].",
+            "2": "Ryzyka makro.",
+            "3": "- **Kredyty i Raty:** Brak.\n- **Ceny i Zakupy:** Obywatel.\n- **Praca i Zarobki:** Brak.",
+            "4": "Przedsiębiorcy.",
+            "5": "Werdykt.",
+        }
+    })
     monkeypatch.setattr(evaluator, "_run_llm_synthesis", lambda *args, **kwargs: valid_report)
 
     # Wymuszenie awarii os.replace() podczas publikacji HTML
@@ -656,20 +694,26 @@ def test_tavily_prompt_injection_and_numeric_sanitization(tmp_path, monkeypatch)
     def mock_synth(country, report_date, periods_summary, chronological_context, allow_fallback=False):
         captured_context["text"] = chronological_context
         # GPT ulega atakowi injection i podaje 10%
-        return """# RAPORT KONDYCJI GOSPODARCZEJ: Polska
-## 1. Analiza Trendów w Dostępnym Okresie
-Inflacja CPI osiągnęła 10% [1].
-## 2. Zagrożenia i Ryzyka Makroekonomiczne
-Ryzyka.
-## 3. Co to oznacza dla Kowalskiego? (Perspektywa Obywatela)
-Koszty.
-## 4. Co to oznacza dla Przedsiębiorców?
-Firma.
-## 5. Podsumowanie i Realistyczny Werdykt
-Werdykt.
-## 6. Źródła danych i Metodologia
-[1] GUS
-"""
+        return json.dumps({
+            "claims": [
+                {
+                    "indicator_code": "PL_CPI_YOY",
+                    "observation_id": "OBS_INJECTION",
+                    "value_decimal": "10",
+                    "unit_code": "PCT",
+                    "period_start": "2026-10-01",
+                    "period_end": "2026-10-31",
+                    "citation_idx": 1,
+                }
+            ],
+            "sections": {
+                "1": "Inflacja CPI osiągnęła 10% [1].",
+                "2": "Ryzyka.",
+                "3": "- **Kredyty i Raty:** Koszty.\n- **Ceny i Zakupy:** Brak.\n- **Praca i Zarobki:** Brak.",
+                "4": "Firma.",
+                "5": "Werdykt.",
+            }
+        })
     monkeypatch.setattr(evaluator, "_run_llm_synthesis", mock_synth)
 
     pipeline = MacroPipelineV2(db=db, offline_mode=False, evaluator=evaluator, diagnostics_dir=tmp_path / "logs")
@@ -707,14 +751,14 @@ def test_structured_claims_json_and_multi_number_paragraph(tmp_path, monkeypatch
     # Ustrukturyzowana odpowiedź JSON
     json_candidate = json.dumps({
         "claims": [
-            {"indicator_code": "PL_CPI_YOY", "value_decimal": "2.3", "unit_code": "PCT", "citation_idx": 1},
-            {"indicator_code": "PL_NBP_REFERENCE_RATE", "value_decimal": "5.75", "unit_code": "PCT", "citation_idx": 2},
-            {"indicator_code": "PL_UNEMPLOYMENT_REGISTERED_RATE", "value_decimal": "5.0", "unit_code": "PCT", "citation_idx": 3},
+            {"indicator_code": "PL_CPI_YOY", "observation_id": obs1.observation_id, "value_decimal": "2.3", "unit_code": "PCT", "period_start": obs1.period_start, "period_end": obs1.period_end, "citation_idx": 1},
+            {"indicator_code": "PL_NBP_REFERENCE_RATE", "observation_id": obs3.observation_id, "value_decimal": "5.75", "unit_code": "PCT", "period_start": obs3.period_start, "period_end": obs3.period_end, "citation_idx": 2},
+            {"indicator_code": "PL_UNEMPLOYMENT_REGISTERED_RATE", "observation_id": obs2.observation_id, "value_decimal": "5.0", "unit_code": "PCT", "period_start": obs2.period_start, "period_end": obs2.period_end, "citation_idx": 3},
         ],
         "sections": {
             "1": "W analizowanym okresie odnotowano zróżnicowaną dynamikę wskaźników makroekonomicznych: inflacja CPI ukształtowała się na poziomie 2.3% [1], stopa referencyjna NBP pozostaje na poziomie 5.75% [2], natomiast stopa bezrobocia rejestrowanego wyniosła 5.0% [3].",
             "2": "Ryzyka makroekonomiczne obejmują presję kosztową oraz uwarunkowania globalne.",
-            "3": "Dla obywateli kluczowe jest utrzymanie stóp procentowych i stabilizacja cen.",
+            "3": "- **Kredyty i Raty:** Dla obywateli kluczowe jest utrzymanie stóp procentowych.\n- **Ceny i Zakupy:** Stabilizacja cen.\n- **Praca i Zarobki:** Rynek pracy.",
             "4": "Przedsiębiorcy muszą kalkulować koszty kapitału w oparciu o obowiązujące stopy.",
             "5": "Podsumowując, obraz gospodarki cechuje się stabilnością podstawowych parametrów.",
         }
@@ -736,3 +780,118 @@ def test_structured_claims_json_and_multi_number_paragraph(tmp_path, monkeypatch
     assert "5.75%" in result.report_markdown
     # Sekcja 6 została złożona programowo
     assert "## 6. Źródła danych i Metodologia" in result.report_markdown
+
+
+# ==============================================================================
+# TEST R: Awaria procedury rollbacku (delete_report exception) i stan FAILED
+# ==============================================================================
+def test_publication_rollback_failure_marks_report_failed(tmp_path, monkeypatch):
+    """Nawet gdy usunięcie rekordu z bazy (delete_report) rzuci wyjątek podczas awarii publikacji,
+    raport ma status publication_status='FAILED', get_latest_report go ignoruje, a Flask wyświetla FAILED."""
+    monkeypatch.setattr(config, "OFFLINE_MODE", False)
+    db = SQLiteV2Storage(db_path=str(tmp_path / "rollback_fail.db"))
+    evi, obs = _make_evidence_and_obs("PL_CPI_YOY", "2.3")
+
+    evaluator = EconomyEvaluator()
+    valid_report = json.dumps({
+        "claims": [
+            {
+                "indicator_code": "PL_CPI_YOY",
+                "observation_id": obs.observation_id,
+                "value_decimal": "2.3",
+                "unit_code": "PCT",
+                "period_start": obs.period_start,
+                "period_end": obs.period_end,
+                "citation_idx": 1,
+            }
+        ],
+        "sections": {
+            "1": "Inflacja CPI wynosi 2.3% [1].",
+            "2": "Ryzyka makro.",
+            "3": "- **Kredyty i Raty:** Brak.\n- **Ceny i Zakupy:** Obywatel.\n- **Praca i Zarobki:** Brak.",
+            "4": "Przedsiębiorcy.",
+            "5": "Werdykt.",
+        }
+    })
+    monkeypatch.setattr(evaluator, "_run_llm_synthesis", lambda *args, **kwargs: valid_report)
+
+    # Wymuszenie awarii os.replace()
+    orig_replace = os.replace
+    def fail_replace(src, dst):
+        if str(dst).endswith(".html"):
+            raise OSError("Awaria dysku podczas zapisu HTML")
+        return orig_replace(src, dst)
+    monkeypatch.setattr(os, "replace", fail_replace)
+
+    # Symulacja awarii delete_report podczas procedury rollbacku
+    def fail_delete(rep_id):
+        raise RuntimeError("Błąd bazy danych podczas delete_report")
+    monkeypatch.setattr(db, "delete_report", fail_delete)
+
+    target_html = tmp_path / "report.html"
+    pipeline = MacroPipelineV2(db=db, offline_mode=False, evaluator=evaluator, diagnostics_dir=tmp_path / "logs")
+    monkeypatch.setattr(pipeline, "fetch_official_data", lambda rid: ([evi], [obs], [], []))
+    monkeypatch.setattr(pipeline, "search_enrichment", lambda country, rid: [])
+
+    result = pipeline.run(output_html_path=str(target_html))
+
+    assert result.success is False
+    assert result.status == "FAILED"
+    # Pobranie najnowszego raportu nie może zwrócić raportu w stanie FAILED/PENDING
+    assert db.get_latest_report("PL") is None
+
+    # Weryfikacja bazy SQLite - rekord raportu istnieje, ale ma publication_status='FAILED'
+    with db.get_connection() as conn:
+        row = conn.execute("SELECT publication_status FROM reports ORDER BY rowid DESC LIMIT 1").fetchone()
+        assert row is not None
+        assert row[0] == "FAILED"
+
+    # Weryfikacja Flask
+    import app
+    last_run_file = tmp_path / "logs" / "last_run.json"
+    monkeypatch.setattr(app, "get_last_run_path", lambda: last_run_file)
+    set_storage_v2(db)
+
+    with server.test_client() as client:
+        res = client.get("/")
+        content = res.get_data(as_text=True)
+        assert "STATUS: FAILED" in content
+        assert "Awaria dysku podczas zapisu HTML" in content
+
+
+# ==============================================================================
+# TEST S: Procedura restartu potoku - odzyskiwanie wiszących raportów PENDING
+# ==============================================================================
+def test_startup_recovery_transitions_pending_to_failed(tmp_path):
+    """Gdy w bazie pozostał rekord PENDING po nagłym zatrzymaniu procesu (np. crash zasilania),
+    recover_pending_reports() przy starcie potoku zmienia jego stan na FAILED."""
+    db = SQLiteV2Storage(db_path=str(tmp_path / "recovery.db"))
+    # Zapisujemy raport ze statusem PENDING
+    rep_id = "REP_PENDING_CRASH"
+    db.save_report(
+        report_id=rep_id,
+        country_code="PL",
+        report_date="2026-11-04",
+        executive_horizon="2025-12 | 2026-10",
+        report_markdown="# Test",
+        report_html="<html>Test</html>",
+        data_snapshot_hash="hash-pending",
+        model_metadata={},
+        publication_status="PENDING",
+    )
+
+    # get_latest_report("PL") nie powinien go widzieć jako PUBLISHED
+    assert db.get_latest_report("PL") is None
+
+    # Uruchomienie procedury odzyskiwania
+    recovered = db.recover_pending_reports()
+    assert recovered == 1
+
+    # Sprawdzenie stanu w bazie
+    with db.get_connection() as conn:
+        row = conn.execute("SELECT publication_status FROM reports WHERE report_id = ?", (rep_id,)).fetchone()
+        assert row is not None
+        assert row[0] == "FAILED"
+
+    # Kolejne wywołanie nie ma już raportów do odzyskania
+    assert db.recover_pending_reports() == 0
