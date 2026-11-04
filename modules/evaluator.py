@@ -470,8 +470,7 @@ class EconomyEvaluator:
           f"{report}"
       )
 
-    # Próba generowania przez GPT i niezależna kontrola wyniku.
-    fallback_reason = ""
+    # Próba generowania przez GPT i rygorystyczna kontrola wyniku (w trybie live wyłącznie GPT).
     self.last_generation_diagnostics["gpt_attempted"] = True
     try:
       candidate = self._run_llm_synthesis(
@@ -490,45 +489,26 @@ class EconomyEvaluator:
           "generation_mode": "GPT_API_ERROR",
           "fallback_reason": fallback_reason,
       })
-    else:
-      try:
-        self._validate_v2_report(candidate, citations, verified_obs)
-      except Exception as validation_err:
-        fallback_reason = (
-            "Raport GPT odrzucony przez walidator: "
-            f"{self._safe_error_message(validation_err)}"
-        )
-        self.last_generation_diagnostics.update({
-            "generation_mode": "GPT_VALIDATION_REJECTED",
-            "fallback_reason": fallback_reason,
-        })
-      else:
-        self.last_generation_diagnostics["generation_mode"] = "LIVE_AI_VALIDATED"
-        return (
-            "**Tryb generowania:** analiza online zweryfikowana przez kontrolę "
-            "integralności liczb, przypisów i URL.\n\n"
-            f"{search_notice}{candidate}"
-        )
+      raise RuntimeError(fallback_reason) from gpt_err
 
-    print(
-        "\n[Evaluator Fallback] Używam syntezy deterministycznej. "
-        f"Przyczyna: {fallback_reason}\n"
-    )
-    report = self._build_deterministic_v2_report(
-        country=country,
-        report_date=report_date,
-        periods_summary=periods_summary,
-        obs_by_code=obs_by_code,
-        obs_citation_map=obs_citation_map,
-        unverified_obs=unverified_obs,
-        search_news=search_news,
-        citations=citations,
-    )
+    try:
+      self._validate_v2_report(candidate, citations, verified_obs)
+    except Exception as validation_err:
+      fallback_reason = (
+          "Raport GPT odrzucony przez walidator: "
+          f"{self._safe_error_message(validation_err)}"
+      )
+      self.last_generation_diagnostics.update({
+          "generation_mode": "GPT_VALIDATION_REJECTED",
+          "fallback_reason": fallback_reason,
+      })
+      raise RuntimeError(fallback_reason) from validation_err
+
+    self.last_generation_diagnostics["generation_mode"] = "LIVE_AI_VALIDATED"
     return (
-        "**Tryb generowania:** deterministyczny fallback trybu live — "
-        "wynik GPT był niedostępny albo nie przeszedł kontroli "
-        "integralności.\n\n"
-        f"{search_notice}{report}"
+        "**Tryb generowania:** analiza online zweryfikowana przez kontrolę "
+        "integralności liczb, przypisów i URL.\n\n"
+        f"{search_notice}{candidate}"
     )
 
   @staticmethod

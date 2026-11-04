@@ -107,7 +107,7 @@ Then run:
 uv run python app.py
 ```
 
-Online report generation uses OpenAI GPT through LangChain with the `gpt-4o` model and streams the analysis to the terminal. `OPENAI_API_KEY` is the only key required for AI analysis. If GPT is unavailable or its report fails integrity validation, the evaluator prints the specific fallback reason and uses explicitly labelled deterministic synthesis. Live official-data calls and Tavily context require network access. If Tavily is unavailable or returns no results, the live run is marked partial and continues without search context; offline fixtures are never substituted in live mode.
+Online report generation uses OpenAI GPT through LangChain with the `gpt-4o` model and streams the analysis to the terminal. `OPENAI_API_KEY` is the only key required for AI analysis. Under the live pipeline, reports are generated strictly by GPT and validated against stored observations (exact numbers, citations, URLs, and section structure). If GPT fails or validation rejects the report, the run is marked `FAILED` without generating any deterministic substitute report, and no report is persisted to SQLite or `report.html`. The deterministic report generator is reserved exclusively for the intentional offline demo mode. Live official-data calls and Tavily context require network access. If Tavily is unavailable or returns no results, the live run is marked partial and continues without search context; offline fixtures are never substituted in live mode.
 
 ### Local diagnostics
 
@@ -120,14 +120,14 @@ The diagnostic files never intentionally store API keys, authorization headers, 
 
 ### Tests
 
-The diagnostic-logging regression suite passes **142 tests** offline:
+The final stabilization regression suite passes **150 tests** offline:
 
 ```bash
 uv sync --group dev
 uv run pytest -q
 ```
 
-Expected audited result: `142 passed`.
+Expected audited result: `150 passed`.
 
 <a id="report-screenshots"></a>
 
@@ -255,7 +255,7 @@ Następnie uruchom:
 uv run python app.py
 ```
 
-Generowanie raportu online wykorzystuje OpenAI GPT przez LangChain, model `gpt-4o`, ze streamingiem analizy w terminalu. `OPENAI_API_KEY` jest jedynym kluczem wymaganym do analizy AI. Gdy GPT jest niedostępny albo raport nie przejdzie kontroli integralności, evaluator wypisuje konkretną przyczynę i przechodzi do jawnie oznaczonej syntezy deterministycznej. Pobieranie aktualnych danych oficjalnych i kontekstu Tavily wymaga dostępu do sieci. Jeśli Tavily jest niedostępne lub nie zwróci wyników, przebieg live otrzymuje status częściowy i działa bez kontekstu wyszukiwania; fixture'y offline nigdy nie są podstawiane w trybie live.
+Generowanie raportu online wykorzystuje OpenAI GPT przez LangChain, model `gpt-4o`, ze streamingiem analizy w terminalu. `OPENAI_API_KEY` jest jedynym kluczem wymaganym do analizy AI. W trybie live raport generuje wyłącznie GPT i musi on przejść rygorystyczną walidację (struktura 6 sekcji, spójność liczb, przypisów i bezpośrednich linków URL). Błąd API GPT lub odrzucenie przez walidator oznacza natychmiastowe niepowodzenie generowania (`pipeline_status=FAILED`, `report_id=null`) — potok live NIE tworzy raportu zastępczego ani nie zapisuje nieudanej próby do bazy SQLite i pliku `report.html`. Generator deterministyczny jest zarezerwowany WYŁĄCZNIE dla świadomego trybu offline. Pobieranie aktualnych danych oficjalnych i kontekstu Tavily wymaga dostępu do sieci. Jeśli Tavily jest niedostępne lub nie zwróci wyników, przebieg live otrzymuje status częściowy i działa bez kontekstu wyszukiwania; fixture'y offline nigdy nie są podstawiane w trybie live.
 
 ### Lokalna diagnostyka
 
@@ -268,14 +268,14 @@ Pliki diagnostyczne nie zapisują celowo kluczy API, nagłówków autoryzacyjnyc
 
 ### Testy
 
-Zestaw regresyjny z diagnostyką potwierdził **142 testy** działające offline:
+Zestaw regresyjny końcowej stabilizacji potwierdził **150 testów** działających offline:
 
 ```bash
 uv sync --group dev
 uv run pytest -q
 ```
 
-Oczekiwany wynik audytu: `142 passed`.
+Oczekiwany wynik audytu: `150 passed`.
 
 ### Zrzuty ekranu raportu
 

@@ -2,6 +2,7 @@ import json
 
 import config
 from modules.connectors.base import MacroObservation, RawEvidence
+from modules.diagnostics import missing_report_indicators
 from modules.evaluator import EconomyEvaluator
 from modules.pipeline_v2 import MacroPipelineV2
 from modules.storage_v2 import SQLiteV2Storage
@@ -101,7 +102,12 @@ def test_diagnostics_distinguish_gpt_api_error(tmp_path, monkeypatch):
     result = _make_pipeline(tmp_path, monkeypatch, evaluator).run()
 
     summary = _read_summary(tmp_path)
-    assert result.success is True
+    assert result.success is False
+    assert result.status == "FAILED"
+    assert result.report_id is None
+    assert summary["pipeline_status"] == "FAILED"
+    assert summary["report_id"] is None
+    assert summary["gpt_attempted"] is True
     assert summary["generation_mode"] == "GPT_API_ERROR"
     assert summary["fallback_reason"] == "Błąd API GPT: RuntimeError: quota exceeded"
 
@@ -112,10 +118,35 @@ def test_diagnostics_distinguish_gpt_validation_rejection(tmp_path, monkeypatch)
     result = _make_pipeline(tmp_path, monkeypatch, evaluator).run()
 
     summary = _read_summary(tmp_path)
-    assert result.success is True
+    assert result.success is False
+    assert result.status == "FAILED"
+    assert result.report_id is None
+    assert summary["pipeline_status"] == "FAILED"
+    assert summary["report_id"] is None
+    assert summary["gpt_attempted"] is True
     assert summary["generation_mode"] == "GPT_VALIDATION_REJECTED"
     assert "wymaganej struktury" in summary["fallback_reason"]
     assert "Błąd API GPT" not in summary["fallback_reason"]
+
+
+def test_diagnostics_failure_before_gpt_is_not_gpt_api_error(tmp_path, monkeypatch):
+    evaluator = EconomyEvaluator()
+    pipeline = _make_pipeline(tmp_path, monkeypatch, evaluator, offline=False)
+    monkeypatch.setattr(
+        pipeline,
+        "store_official_data",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("db disk write failure")),
+    )
+    result = pipeline.run()
+
+    summary = _read_summary(tmp_path)
+    assert result.success is False
+    assert result.status == "FAILED"
+    assert summary["pipeline_status"] == "FAILED"
+    assert summary["report_id"] is None
+    assert summary["gpt_attempted"] is False
+    assert summary["generation_mode"] is None
+    assert "db disk write failure" in summary["fallback_reason"]
 
 
 def test_diagnostics_list_missing_cpi(tmp_path, monkeypatch):
@@ -133,6 +164,29 @@ def test_diagnostics_list_missing_cpi(tmp_path, monkeypatch):
     assert summary["generation_mode"] == "OFFLINE_DEMO"
     assert summary["gpt_attempted"] is False
     assert "PL_CPI_YOY" in summary["missing_indicators"]
+
+
+def test_missing_report_indicators_accounts_for_connector_aliases():
+    # Rzeczywiste kody zwracane przez konektory Eurostat i NBP:
+    # Eurostat zwraca EU_HICP_YOY zamiast PL_HICP_YOY
+    # NBP zwraca PL_NBP_REFERENCE_RATE zamiast PL_POLICY_RATE_REF
+    observations = [
+        {"indicator_code": "PL_CPI_YOY"},
+        {"indicator_code": "EU_HICP_YOY"},
+        {"indicator_code": "PL_UNEMPLOYMENT_REGISTERED_RATE"},
+        {"indicator_code": "PL_UNEMPLOYMENT_LFS_RATE"},
+        {"indicator_code": "PL_GDP_QOQ"},
+        {"indicator_code": "PL_GDP_YOY"},
+        {"indicator_code": "PL_NBP_REFERENCE_RATE"},
+        {"indicator_code": "PL_FX_EUR_PLN"},
+        {"indicator_code": "PL_FX_USD_PLN"},
+    ]
+    missing = missing_report_indicators(observations)
+    assert missing == [], f"Oczekiwano pustej listy braków przy obecności aliasów, otrzymano: {missing}"
+
+    # Gdy brakuje CPI
+    missing_without_cpi = missing_report_indicators(observations[1:])
+    assert missing_without_cpi == ["PL_CPI_YOY"]
 
 
 def test_diagnostics_persist_failed_pipeline_as_failed(tmp_path, monkeypatch):

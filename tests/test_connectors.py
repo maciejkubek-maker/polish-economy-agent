@@ -1104,6 +1104,65 @@ class TestGusConnector:
 # ==============================================================================
 # TESTY BAZOWE: BASE CONNECTOR (WALIDACJA, BEZPIECZEŃSTWO, ODPORNOŚĆ)
 # ==============================================================================
+    def test_fetch_cpi_dbw_live_discovery_discovers_latest_period(self, monkeypatch):
+        """Weryfikuje automatyczne odkrywanie najnowszego dostepnego odczytu CPI w trybie live."""
+        connector = GusConnector(offline_mode=False)
+        def mock_exec(url, **kwargs):
+            if "id-rok=2025" in url and "id-okres=258" in url:
+                payload = json.dumps({"data": [{
+                    "id-zmienna": 305, "id-przekroj": 736, "id-okres": 258, "id-daty": 2025,
+                    "id-sposob-prezentacji-miara": 5, "wartosc": 102.3, "precyzja": 1
+                }]})
+                return 200, payload, "hash-cpi-2025", "2026-11-04T12:00:00Z"
+            return 404, "", "", ""
+        monkeypatch.setattr(connector, "_execute_request", mock_exec)
+        evi, obs = connector.fetch_cpi_dbw()
+        assert obs.period_start == "2025-12-01"
+        assert obs.period_end == "2025-12-31"
+        assert obs.value_decimal == "2.3"
+        assert obs.unit_code == "PCT"
+        assert obs.metadata["rok"] == 2025
+        assert obs.metadata["okres_id"] == 258
+
+    def test_fetch_cpi_dbw_validates_variable_id_mismatch(self, monkeypatch):
+        """Niezgodnosc id-zmienna w odpowiedzi API rzuca ValidationError."""
+        connector = GusConnector(offline_mode=True)
+        bad_payload = json.dumps({"data": [{"id-zmienna": 999, "id-przekroj": 736, "id-rok": 2026, "id-okres": 255, "wartosc": 103.1}]})
+        connector.register_fixture("data/data-data", bad_payload)
+        with pytest.raises(ValidationError, match="Niezgodność id-zmienna"):
+            connector.fetch_cpi_dbw(rok=2026, okres_id=255)
+
+    def test_fetch_cpi_dbw_validates_przekroj_id_mismatch(self, monkeypatch):
+        """Niezgodnosc id-przekroj w odpowiedzi API rzuca ValidationError."""
+        connector = GusConnector(offline_mode=True)
+        bad_payload = json.dumps({"data": [{"id-zmienna": 305, "id-przekroj": 999, "id-rok": 2026, "id-okres": 255, "wartosc": 103.1}]})
+        connector.register_fixture("data/data-data", bad_payload)
+        with pytest.raises(ValidationError, match="Niezgodność id-przekroj"):
+            connector.fetch_cpi_dbw(rok=2026, okres_id=255)
+
+    def test_fetch_cpi_dbw_validates_okres_id_mismatch(self, monkeypatch):
+        """Niezgodnosc id-okres w odpowiedzi API rzuca ValidationError."""
+        connector = GusConnector(offline_mode=True)
+        bad_payload = json.dumps({"data": [{"id-zmienna": 305, "id-przekroj": 736, "id-rok": 2026, "id-okres": 999, "wartosc": 103.1}]})
+        connector.register_fixture("data/data-data", bad_payload)
+        with pytest.raises(ValidationError, match="Niezgodność id-okres"):
+            connector.fetch_cpi_dbw(rok=2026, okres_id=255)
+
+    def test_fetch_cpi_dbw_validates_rok_mismatch(self, monkeypatch):
+        """Niezgodnosc roku w odpowiedzi API rzuca ValidationError."""
+        connector = GusConnector(offline_mode=True)
+        bad_payload = json.dumps({"data": [{"id-zmienna": 305, "id-przekroj": 736, "id-rok": 2019, "id-okres": 255, "wartosc": 103.1}]})
+        connector.register_fixture("data/data-data", bad_payload)
+        with pytest.raises(ValidationError, match="Niezgodność roku"):
+            connector.fetch_cpi_dbw(rok=2026, okres_id=255)
+
+    def test_fetch_cpi_dbw_discovery_failure_raises_data_not_found(self, monkeypatch):
+        """Gdy brak odczytow w API, konektor nie zgaduje wartosci i rzuca DataNotFoundError."""
+        connector = GusConnector(offline_mode=False)
+        monkeypatch.setattr(connector, "_execute_request", lambda url, **kwargs: (404, "", "", ""))
+        with pytest.raises(DataNotFoundError, match="Nie znaleziono dostępnych odczytów CPI"):
+            connector.fetch_cpi_dbw()
+
 
 class TestBaseConnectorGuards:
     """Testy mechanizmów walidacyjnych i odpornościowych BaseConnector."""

@@ -328,7 +328,7 @@ class MacroPipelineV2:
             q_events.append(qid)
 
         try:
-            evi_cpi, obs_cpi = self.gus.fetch_cpi_dbw(rok=2026, okres_id=255, month=9)
+            evi_cpi, obs_cpi = self.gus.fetch_cpi_dbw()
             evidence_list.append(evi_cpi)
             observation_list.append(obs_cpi)
         except Exception as err:
@@ -644,18 +644,25 @@ class MacroPipelineV2:
                     )
 
             generation_diagnostics = self.evaluator.last_generation_diagnostics
-            if generation_diagnostics.get("generation_mode"):
-                summary.update({
-                    "generation_mode": generation_diagnostics["generation_mode"],
-                    "gpt_attempted": generation_diagnostics.get("gpt_attempted", False),
-                })
+            gpt_attempted = generation_diagnostics.get("gpt_attempted", False)
+            gen_mode = generation_diagnostics.get("generation_mode")
+            if not gpt_attempted and not self.offline_mode:
+                gen_mode = None
+
+            try:
+                verified = self.db.get_latest_verified_observations(country_code="PL", run_id=run_id)
+            except Exception:
+                verified = []
+
             summary.update({
                 "run_id": run_id,
                 "pipeline_status": "FAILED",
-                "fallback_reason": failure_reason,
+                "fallback_reason": generation_diagnostics.get("fallback_reason") or failure_reason,
+                "gpt_attempted": gpt_attempted,
+                "generation_mode": gen_mode if gen_mode else ("OFFLINE_DEMO" if self.offline_mode else None),
                 "tavily_results_count": len(search_news),
-                "verified_indicators_count": 0,
-                "missing_indicators": missing_report_indicators([]),
+                "verified_indicators_count": len(verified),
+                "missing_indicators": missing_report_indicators(verified),
                 "report_id": None,
             })
             if summary["tavily_status"] == "NOT_RUN" and self.offline_mode:
@@ -665,8 +672,8 @@ class MacroPipelineV2:
                 success=False,
                 run_id=run_id,
                 status="FAILED",
-                records_fetched=0,
-                records_validated=0,
+                records_fetched=len(observation_list),
+                records_validated=saved_obs,
                 report_id=None,
                 report_markdown="",
                 report_html="",

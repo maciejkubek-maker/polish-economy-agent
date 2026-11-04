@@ -28,6 +28,22 @@ EXPECTED_REPORT_INDICATORS = (
     "PL_FX_USD_PLN",
 )
 
+INDICATOR_ALIASES: dict[str, tuple[str, ...]] = {
+    "PL_CPI_YOY": ("PL_CPI_YOY",),
+    "PL_HICP_YOY": ("PL_HICP_YOY", "EU_HICP_YOY"),
+    "PL_UNEMPLOYMENT_REGISTERED_RATE": ("PL_UNEMPLOYMENT_REGISTERED_RATE",),
+    "PL_UNEMPLOYMENT_LFS_RATE": (
+        "PL_UNEMPLOYMENT_LFS_RATE",
+        "PL_UNEMPLOYMENT_HARMONIZED_RATE",
+        "EU_UNEMPLOYMENT_RATE",
+    ),
+    "PL_GDP_QOQ": ("PL_GDP_QOQ", "EU_GDP_QOQ"),
+    "PL_GDP_YOY": ("PL_GDP_YOY", "EU_GDP_YOY"),
+    "PL_POLICY_RATE_REF": ("PL_POLICY_RATE_REF", "PL_NBP_REFERENCE_RATE"),
+    "PL_FX_EUR_PLN": ("PL_FX_EUR_PLN",),
+    "PL_FX_USD_PLN": ("PL_FX_USD_PLN",),
+}
+
 _SECRET_PATTERNS = (
     re.compile(r"\bsk-[A-Za-z0-9_-]{8,}\b"),
     re.compile(r"\btvly-[A-Za-z0-9_-]{8,}\b", re.IGNORECASE),
@@ -125,8 +141,17 @@ class PipelineDiagnostics:
 
 
 def missing_report_indicators(verified_observations: Iterable[Mapping[str, Any]]) -> list[str]:
-    present = {str(item.get("indicator_code")) for item in verified_observations}
-    return [code for code in EXPECTED_REPORT_INDICATORS if code not in present]
+    present = {
+        str(item.get("indicator_code"))
+        for item in verified_observations
+        if item.get("indicator_code")
+    }
+    missing = []
+    for canonical_code in EXPECTED_REPORT_INDICATORS:
+        aliases = INDICATOR_ALIASES.get(canonical_code, (canonical_code,))
+        if not any(alias in present for alias in aliases):
+            missing.append(canonical_code)
+    return missing
 
 
 def base_run_summary(*, run_id: str, offline_mode: bool) -> dict[str, Any]:
@@ -137,7 +162,7 @@ def base_run_summary(*, run_id: str, offline_mode: bool) -> dict[str, Any]:
         "offline_mode": offline_mode,
         "model": getattr(config, "DEFAULT_OPENAI_MODEL", None),
         "gpt_attempted": False,
-        "generation_mode": "OFFLINE_DEMO" if offline_mode else "GPT_API_ERROR",
+        "generation_mode": "OFFLINE_DEMO" if offline_mode else None,
         "fallback_reason": None,
         "tavily_status": "NOT_RUN",
         "tavily_results_count": 0,
