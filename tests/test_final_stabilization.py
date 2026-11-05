@@ -20,6 +20,7 @@ N. Całkowity brak automatycznego fallbacku we wszystkich ścieżkach wykonania.
 from datetime import datetime, timezone
 import json
 import os
+import re
 from pathlib import Path
 import uuid
 import pytest
@@ -1208,3 +1209,294 @@ def test_mark_report_published_missing_record_returns_false_and_fails(tmp_path, 
         summary = json.load(f)
     assert summary["pipeline_status"] == "FAILED"
     assert summary["report_id"] is None
+
+# ==============================================================================
+
+# ==============================================================================
+# TEST X: PKB Polski i UE - identyczna wartość, podmiana przypisu kończy się FAILED
+# ==============================================================================
+def test_regression_pl_vs_eu_gdp_identical_values_swapped_footnote_fails(tmp_path, monkeypatch):
+    """PKB Polski (PL_GDP_YOY) i UE (EU_GDP_YOY) mają identyczną wartość (np. 2.5%).
+    Podmiana przypisu (przypisanie źródła unijnego do polskiego PKB) musi kończyć się FAILED."""
+    monkeypatch.setattr(config, "OFFLINE_MODE", False)
+    db_bad = SQLiteV2Storage(db_path=str(tmp_path / "gdp_bad.db"))
+
+    evi_pl, obs_pl = _make_evidence_and_obs(
+        "PL_GDP_YOY",
+        "2.5",
+        period_start="2025-10-01",
+        period_end="2025-12-31",
+        unit="PCT",
+        source_id="SRC_GUS",
+    )
+    evi_eu, obs_eu = _make_evidence_and_obs(
+        "EU_GDP_YOY",
+        "2.5",
+        period_start="2025-10-01",
+        period_end="2025-12-31",
+        unit="PCT",
+        source_id="SRC_EUROSTAT",
+    )
+
+    evaluator = EconomyEvaluator()
+
+    # 1. Błędny przypis w sekcji 1: claims poprawne, ale w tekście przypis unijny eu_fn przypisany do PKB Polski
+    def mock_synth_bad(country, report_date, periods_summary, chronological_context, allow_fallback=False):
+        pl_fn = int(re.search(r"\[(\d+)\].*indicator_code:\s*PL_GDP_YOY", chronological_context).group(1))
+        eu_fn = int(re.search(r"\[(\d+)\].*indicator_code:\s*EU_GDP_YOY", chronological_context).group(1))
+        return json.dumps({
+            "claims": [
+                {
+                    "indicator_code": "PL_GDP_YOY",
+                    "observation_id": obs_pl.observation_id,
+                    "value_decimal": "2.5",
+                    "unit_code": "PCT",
+                    "period_start": "2025-10-01",
+                    "period_end": "2025-12-31",
+                    "citation_idx": pl_fn,
+                },
+                {
+                    "indicator_code": "EU_GDP_YOY",
+                    "observation_id": obs_eu.observation_id,
+                    "value_decimal": "2.5",
+                    "unit_code": "PCT",
+                    "period_start": "2025-10-01",
+                    "period_end": "2025-12-31",
+                    "citation_idx": eu_fn,
+                }
+            ],
+            "sections": {
+                "1": f"Wzrost PKB w Polsce wyniósł 2.5% [{eu_fn}].",
+                "2": "Ryzyka makro.",
+                "3": "- **Kredyty i Raty:** Raty.\n- **Ceny i Zakupy:** Ceny.\n- **Praca i Zarobki:** Rynek.",
+                "4": "Przedsiębiorcy.",
+                "5": "Podsumowanie.",
+            }
+        })
+
+    monkeypatch.setattr(evaluator, "_run_llm_synthesis", mock_synth_bad)
+    pipeline_bad = MacroPipelineV2(db=db_bad, offline_mode=False, evaluator=evaluator, diagnostics_dir=tmp_path / "logs_bad")
+    monkeypatch.setattr(pipeline_bad, "fetch_official_data", lambda rid: ([evi_pl, evi_eu], [obs_pl, obs_eu], [], []))
+    monkeypatch.setattr(pipeline_bad, "search_enrichment", lambda country, rid: [])
+
+    result_bad = pipeline_bad.run(country="Polska", output_html_path=str(tmp_path / "report_gdp_bad.html"))
+
+    assert result_bad.success is False
+    assert result_bad.status == "FAILED"
+    assert result_bad.report_id is None
+    assert not (tmp_path / "report_gdp_bad.html").exists()
+
+    with open(tmp_path / "logs_bad" / "last_run.json", "r", encoding="utf-8") as f:
+        summary_bad = json.load(f)
+    assert summary_bad["pipeline_status"] == "FAILED"
+    assert summary_bad["generation_mode"] == "GPT_VALIDATION_REJECTED"
+    assert "Niepoprawne powiązanie przypisów ze źródłami" in summary_bad["fallback_reason"]
+
+    # 2. Prawidłowy przypis: pl_fn dla PKB Polski, eu_fn dla PKB strefy euro
+    db_good = SQLiteV2Storage(db_path=str(tmp_path / "gdp_good.db"))
+    evi_pl_g, obs_pl_g = _make_evidence_and_obs(
+        "PL_GDP_YOY",
+        "2.5",
+        period_start="2025-10-01",
+        period_end="2025-12-31",
+        unit="PCT",
+        source_id="SRC_GUS",
+    )
+    evi_eu_g, obs_eu_g = _make_evidence_and_obs(
+        "EU_GDP_YOY",
+        "2.5",
+        period_start="2025-10-01",
+        period_end="2025-12-31",
+        unit="PCT",
+        source_id="SRC_EUROSTAT",
+    )
+
+    def mock_synth_good(country, report_date, periods_summary, chronological_context, allow_fallback=False):
+        pl_fn = int(re.search(r"\[(\d+)\].*indicator_code:\s*PL_GDP_YOY", chronological_context).group(1))
+        eu_fn = int(re.search(r"\[(\d+)\].*indicator_code:\s*EU_GDP_YOY", chronological_context).group(1))
+        return json.dumps({
+            "claims": [
+                {
+                    "indicator_code": "PL_GDP_YOY",
+                    "observation_id": obs_pl_g.observation_id,
+                    "value_decimal": "2.5",
+                    "unit_code": "PCT",
+                    "period_start": "2025-10-01",
+                    "period_end": "2025-12-31",
+                    "citation_idx": pl_fn,
+                },
+                {
+                    "indicator_code": "EU_GDP_YOY",
+                    "observation_id": obs_eu_g.observation_id,
+                    "value_decimal": "2.5",
+                    "unit_code": "PCT",
+                    "period_start": "2025-10-01",
+                    "period_end": "2025-12-31",
+                    "citation_idx": eu_fn,
+                }
+            ],
+            "sections": {
+                "1": f"W badanym okresie wzrost PKB w Polsce wyniósł 2.5% [{pl_fn}], natomiast PKB w strefie euro wyniósł 2.5% [{eu_fn}].",
+                "2": "Ryzyka makro.",
+                "3": "- **Kredyty i Raty:** Raty.\n- **Ceny i Zakupy:** Ceny.\n- **Praca i Zarobki:** Rynek.",
+                "4": "Przedsiębiorcy.",
+                "5": "Podsumowanie.",
+            }
+        })
+
+    monkeypatch.setattr(evaluator, "_run_llm_synthesis", mock_synth_good)
+    pipeline_good = MacroPipelineV2(db=db_good, offline_mode=False, evaluator=evaluator, diagnostics_dir=tmp_path / "logs_good")
+    monkeypatch.setattr(pipeline_good, "fetch_official_data", lambda rid: ([evi_pl_g, evi_eu_g], [obs_pl_g, obs_eu_g], [], []))
+    monkeypatch.setattr(pipeline_good, "search_enrichment", lambda country, rid: [])
+
+    result_good = pipeline_good.run(country="Polska", output_html_path=str(tmp_path / "report_gdp_good.html"))
+
+    assert result_good.success is True
+    assert result_good.status in ("COMPLETED", "PARTIAL")
+    assert result_good.report_id is not None
+    assert (tmp_path / "report_gdp_good.html").exists()
+
+
+# ==============================================================================
+# TEST Y: HICP Polski i UE - identyczna wartość, podmiana przypisu kończy się FAILED
+# ==============================================================================
+def test_regression_pl_vs_eu_hicp_identical_values_swapped_footnote_fails(tmp_path, monkeypatch):
+    """Inflacja HICP w Polsce (PL_HICP_YOY) i w UE (EU_HICP_YOY) mają identyczną wartość (np. 3.2%).
+    Podmiana przypisu musi kończyć się FAILED ze statusem GPT_VALIDATION_REJECTED."""
+    monkeypatch.setattr(config, "OFFLINE_MODE", False)
+    db_bad = SQLiteV2Storage(db_path=str(tmp_path / "hicp_bad.db"))
+
+    evi_pl, obs_pl = _make_evidence_and_obs(
+        "PL_HICP_YOY",
+        "3.2",
+        period_start="2026-09-01",
+        period_end="2026-09-30",
+        unit="PCT",
+        source_id="SRC_EUROSTAT",
+    )
+    evi_eu, obs_eu = _make_evidence_and_obs(
+        "EU_HICP_YOY",
+        "3.2",
+        period_start="2026-09-01",
+        period_end="2026-09-30",
+        unit="PCT",
+        source_id="SRC_EUROSTAT",
+    )
+
+    evaluator = EconomyEvaluator()
+
+    # 1. Błędny przypis w sekcji 1: claims poprawne, ale w tekście przypis unijny eu_fn przypisany do HICP Polski
+    def mock_synth_hicp_bad(country, report_date, periods_summary, chronological_context, allow_fallback=False):
+        pl_fn = int(re.search(r"\[(\d+)\].*indicator_code:\s*PL_HICP_YOY", chronological_context).group(1))
+        eu_fn = int(re.search(r"\[(\d+)\].*indicator_code:\s*EU_HICP_YOY", chronological_context).group(1))
+        return json.dumps({
+            "claims": [
+                {
+                    "indicator_code": "PL_HICP_YOY",
+                    "observation_id": obs_pl.observation_id,
+                    "value_decimal": "3.2",
+                    "unit_code": "PCT",
+                    "period_start": "2026-09-01",
+                    "period_end": "2026-09-30",
+                    "citation_idx": pl_fn,
+                },
+                {
+                    "indicator_code": "EU_HICP_YOY",
+                    "observation_id": obs_eu.observation_id,
+                    "value_decimal": "3.2",
+                    "unit_code": "PCT",
+                    "period_start": "2026-09-01",
+                    "period_end": "2026-09-30",
+                    "citation_idx": eu_fn,
+                }
+            ],
+            "sections": {
+                "1": f"Zharmonizowana inflacja HICP w Polsce wyniosła 3.2% [{eu_fn}].",
+                "2": "Ryzyka makroekonomiczne.",
+                "3": "- **Kredyty i Raty:** Raty.\n- **Ceny i Zakupy:** Ceny.\n- **Praca i Zarobki:** Rynek.",
+                "4": "Przedsiębiorcy.",
+                "5": "Podsumowanie.",
+            }
+        })
+
+    monkeypatch.setattr(evaluator, "_run_llm_synthesis", mock_synth_hicp_bad)
+    pipeline_bad = MacroPipelineV2(db=db_bad, offline_mode=False, evaluator=evaluator, diagnostics_dir=tmp_path / "logs_bad")
+    monkeypatch.setattr(pipeline_bad, "fetch_official_data", lambda rid: ([evi_pl, evi_eu], [obs_pl, obs_eu], [], []))
+    monkeypatch.setattr(pipeline_bad, "search_enrichment", lambda country, rid: [])
+
+    result_bad = pipeline_bad.run(country="Polska", output_html_path=str(tmp_path / "report_hicp_bad.html"))
+
+    assert result_bad.success is False
+    assert result_bad.status == "FAILED"
+    assert result_bad.report_id is None
+    assert not (tmp_path / "report_hicp_bad.html").exists()
+
+    with open(tmp_path / "logs_bad" / "last_run.json", "r", encoding="utf-8") as f:
+        summary_bad = json.load(f)
+    assert summary_bad["pipeline_status"] == "FAILED"
+    assert summary_bad["generation_mode"] == "GPT_VALIDATION_REJECTED"
+    assert "Niepoprawne powiązanie przypisów ze źródłami" in summary_bad["fallback_reason"]
+
+    # 2. Prawidłowy przypis: pl_fn dla HICP Polski, eu_fn dla HICP w strefie euro
+    db_good = SQLiteV2Storage(db_path=str(tmp_path / "hicp_good.db"))
+    evi_pl_g, obs_pl_g = _make_evidence_and_obs(
+        "PL_HICP_YOY",
+        "3.2",
+        period_start="2026-09-01",
+        period_end="2026-09-30",
+        unit="PCT",
+        source_id="SRC_EUROSTAT",
+    )
+    evi_eu_g, obs_eu_g = _make_evidence_and_obs(
+        "EU_HICP_YOY",
+        "3.2",
+        period_start="2026-09-01",
+        period_end="2026-09-30",
+        unit="PCT",
+        source_id="SRC_EUROSTAT",
+    )
+
+    def mock_synth_hicp_good(country, report_date, periods_summary, chronological_context, allow_fallback=False):
+        pl_fn = int(re.search(r"\[(\d+)\].*indicator_code:\s*PL_HICP_YOY", chronological_context).group(1))
+        eu_fn = int(re.search(r"\[(\d+)\].*indicator_code:\s*EU_HICP_YOY", chronological_context).group(1))
+        return json.dumps({
+            "claims": [
+                {
+                    "indicator_code": "PL_HICP_YOY",
+                    "observation_id": obs_pl_g.observation_id,
+                    "value_decimal": "3.2",
+                    "unit_code": "PCT",
+                    "period_start": "2026-09-01",
+                    "period_end": "2026-09-30",
+                    "citation_idx": pl_fn,
+                },
+                {
+                    "indicator_code": "EU_HICP_YOY",
+                    "observation_id": obs_eu_g.observation_id,
+                    "value_decimal": "3.2",
+                    "unit_code": "PCT",
+                    "period_start": "2026-09-01",
+                    "period_end": "2026-09-30",
+                    "citation_idx": eu_fn,
+                }
+            ],
+            "sections": {
+                "1": f"W badanym okresie zharmonizowana inflacja HICP w Polsce wyniosła 3.2% [{pl_fn}], natomiast zharmonizowana inflacja HICP w strefie euro wyniosła 3.2% [{eu_fn}].",
+                "2": "Ryzyka makroekonomiczne.",
+                "3": "- **Kredyty i Raty:** Raty.\n- **Ceny i Zakupy:** Ceny.\n- **Praca i Zarobki:** Rynek.",
+                "4": "Przedsiębiorcy.",
+                "5": "Podsumowanie.",
+            }
+        })
+
+    monkeypatch.setattr(evaluator, "_run_llm_synthesis", mock_synth_hicp_good)
+    pipeline_good = MacroPipelineV2(db=db_good, offline_mode=False, evaluator=evaluator, diagnostics_dir=tmp_path / "logs_good")
+    monkeypatch.setattr(pipeline_good, "fetch_official_data", lambda rid: ([evi_pl_g, evi_eu_g], [obs_pl_g, obs_eu_g], [], []))
+    monkeypatch.setattr(pipeline_good, "search_enrichment", lambda country, rid: [])
+
+    result_good = pipeline_good.run(country="Polska", output_html_path=str(tmp_path / "report_hicp_good.html"))
+
+    assert result_good.success is True
+    assert result_good.status in ("COMPLETED", "PARTIAL")
+    assert result_good.report_id is not None
+    assert (tmp_path / "report_hicp_good.html").exists()

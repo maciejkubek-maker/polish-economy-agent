@@ -17,6 +17,20 @@ In run `RUN_258c9a14a4be` and subsequent audit of PR #6, key architectural issue
 4. **Header Logo Contrast:** The header logo had poor visibility when displayed against dark backgrounds without a dedicated contrast container.
 5. **Deterministic Fallback in Live Mode:** Live mode was at risk of falling back to synthetic python templates instead of failing cleanly when GPT synthesis or validation was rejected.
 
+
+### Pillar 9: Resolution of Commit addf581 Blocker - Strict Geographic Indicator Attribution
+Following the audit of commit ddf581, the final blocker regarding cross-geographic indicator compatibility was resolved:
+1. **Elimination of Geographic Substitutions (modules/evaluator.py:_are_indicators_compatible):**
+   - Removed unauthorized indicator compatibility groupings between Poland and European Union / Eurozone indicators:
+     - PL_GDP_YOY and EU_GDP_YOY are NO LONGER compatible.
+     - PL_GDP_QOQ and EU_GDP_QOQ are NO LONGER compatible.
+     - PL_HICP_YOY and EU_HICP_YOY are NO LONGER compatible.
+   - Only legitimate intra-national aliases remain compatible (e.g. PL_NBP_REFERENCE_RATE & PL_POLICY_RATE_REF, and PL_UNEMPLOYMENT_REGISTERED_RATE & PL_UNEMPLOYMENT_RATE).
+2. **Contextual Sentence Matching Hardening (modules/evaluator.py:_detect_claim_indicator):**
+   - Prioritized indicator code matching with word boundaries (\b{code}\b) and ordered HICP indicators before generic CPI keywords so distinct geographic indicators (PL vs EU) are unambiguously identified in narrative sections.
+3. **Regression Test Suite (Tests X and Y):**
+   - **Test X (	est_regression_pl_vs_eu_gdp_identical_values_swapped_footnote_fails):** Poland and EU GDP YoY share an identical value (2.5%). Swapping the EU footnote into the Polish GDP narrative sentence strictly terminates with FAILED (GPT_VALIDATION_REJECTED), whereas matching footnotes succeed.
+   - **Test Y (	est_regression_pl_vs_eu_hicp_identical_values_swapped_footnote_fails):** Poland and EU HICP YoY share an identical value (3.2%). Swapping the EU footnote into the Polish HICP narrative strictly terminates with FAILED (GPT_VALIDATION_REJECTED), whereas matching footnotes succeed.
 ---
 
 ## 2. Comprehensive Implementation Across Key Pillars

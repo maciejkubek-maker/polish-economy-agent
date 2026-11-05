@@ -129,23 +129,58 @@ def build_executive_horizon(raw_periods: list[str]) -> str:
 
 
 INDICATOR_TOPIC_KEYWORDS = {
+    "EU_HICP_YOY": [
+        "hicp w ue", "hicp w strefie euro", "hicp strefy euro", "hicp dla strefy euro",
+        "hicp ue", "hicp eu", "zharmonizowan inflacj w ue", "zharmonizowan inflacj w strefie euro",
+        "inflacj w ue", "inflacj w strefie euro", "inflacj strefy euro",
+    ],
+    "PL_HICP_YOY": [
+        "hicp w polsce", "hicp dla polski", "hicp polski", "zharmonizowan inflacj w polsce",
+        "hicp", "zharmonizowan",
+    ],
     "PL_CPI_YOY": ["cpi", "inflacj", "wzrost cen", "dynamika cen", "ceny towarów i usług"],
-    "EU_HICP_YOY": ["hicp", "zharmonizowan"],
-    "PL_HICP_YOY": ["hicp", "zharmonizowan"],
-    "PL_GDP_QOQ": ["pkb k/k", "pkb kw/kw", "gdp qoq", "kwartał do kwartału", "kwartaln dynamik pkb"],
-    "EU_GDP_QOQ": ["pkb k/k", "pkb kw/kw", "gdp qoq", "kwartał do kwartału"],
-    "PL_GDP_YOY": ["pkb r/r", "pkb rok do roku", "gdp yoy", "roczn dynamik pkb", "wzrost pkb r/r"],
-    "EU_GDP_YOY": ["pkb r/r", "pkb rok do roku", "gdp yoy", "roczn dynamik pkb"],
-    "PL_UNEMPLOYMENT_REGISTERED_RATE": ["bezroboc rejestrowan", "stopa bezrobocia rejestrowanego", "urzędach pracy", "stopa bezrobocia", "stopie bezrobocia", "bezroboci"],
-    "PL_UNEMPLOYMENT_COUNT": ["liczba bezrobotnych", "wolumen bezrobotnych", "osób bezrobotnych", "liczbie bezrobotnych"],
-    "PL_UNEMPLOYMENT_LFS_RATE": ["bael", "lfs", "zharmonizowan stopa bezrobocia"],
-    "PL_UNEMPLOYMENT_HARMONIZED_RATE": ["bael", "lfs", "zharmonizowan stopa bezrobocia"],
-    "EU_UNEMPLOYMENT_RATE": ["bael", "lfs", "zharmonizowan stopa bezrobocia"],
-    "PL_NBP_REFERENCE_RATE": ["stopa referencyjn", "stóp nbp", "stopa nbp", "rpp", "rada polityki pieniężnej"],
-    "PL_POLICY_RATE_REF": ["stopa referencyjn", "stóp nbp", "stopa nbp", "rpp", "rada polityki pieniężnej"],
-    "PL_FX_EUR_PLN": ["eur/pln", "kurs euro", "zł/eur"],
-    "PL_FX_USD_PLN": ["usd/pln", "kurs dolara", "zł/usd"],
-    "PL_REAL_INTEREST_RATE": ["realna stopa", "realnej stopy", "realne stopy"],
+    "EU_GDP_QOQ": [
+        "pkb k/k w ue", "pkb kw/kw w ue", "pkb strefy euro k/k", "pkb w strefie euro k/k", "pkb ue k/k", "gdp qoq eu",
+    ],
+    "PL_GDP_QOQ": [
+        "pkb k/k", "pkb kw/kw", "gdp qoq", "kwartał do kwartału", "kwartaln dynamik pkb",
+    ],
+    "EU_GDP_YOY": [
+        "pkb w ue", "pkb ue", "pkb strefy euro", "pkb w strefie euro", "pkb unii", "unijn pkb", "gdp yoy eu", "eu gdp",
+    ],
+    "PL_GDP_YOY": [
+        "pkb w polsce", "pkb polski", "wzrost pkb w polsce", "pkb r/r", "pkb rok do roku", "gdp yoy", "roczn dynamik pkb", "wzrost pkb r/r",
+    ],
+    "PL_UNEMPLOYMENT_REGISTERED_RATE": [
+        "bezroboc rejestrowan", "stopa bezrobocia rejestrowanego", "urzędach pracy", "stopa bezrobocia", "stopie bezrobocia", "bezroboci",
+    ],
+    "PL_UNEMPLOYMENT_COUNT": [
+        "liczba bezrobotnych", "wolumen bezrobotnych", "osób bezrobotnych", "liczbie bezrobotnych",
+    ],
+    "EU_UNEMPLOYMENT_RATE": [
+        "stopa bezrobocia w ue", "stopa bezrobocia w strefie euro", "bezrobocie w ue", "bezrobocie w strefie euro",
+    ],
+    "PL_UNEMPLOYMENT_LFS_RATE": [
+        "bael", "lfs", "zharmonizowan stopa bezrobocia",
+    ],
+    "PL_UNEMPLOYMENT_HARMONIZED_RATE": [
+        "bael", "lfs", "zharmonizowan stopa bezrobocia",
+    ],
+    "PL_NBP_REFERENCE_RATE": [
+        "stopa referencyjn", "stóp nbp", "stopa nbp", "rpp", "rada polityki pieniężnej",
+    ],
+    "PL_POLICY_RATE_REF": [
+        "stopa referencyjn", "stóp nbp", "stopa nbp", "rpp", "rada polityki pieniężnej",
+    ],
+    "PL_FX_EUR_PLN": [
+        "eur/pln", "kurs euro", "zł/eur",
+    ],
+    "PL_FX_USD_PLN": [
+        "usd/pln", "kurs dolara", "zł/usd",
+    ],
+    "PL_REAL_INTEREST_RATE": [
+        "realna stopa", "realnej stopy", "realne stopy",
+    ],
 }
 
 
@@ -750,20 +785,14 @@ class EconomyEvaluator:
       unemp_rates = {"PL_UNEMPLOYMENT_REGISTERED_RATE", "PL_UNEMPLOYMENT_RATE"}
       if ind1 in unemp_rates and ind2 in unemp_rates:
           return True
-      gdp_yoy = {"PL_GDP_YOY", "EU_GDP_YOY"}
-      if ind1 in gdp_yoy and ind2 in gdp_yoy:
-          return True
-      gdp_qoq = {"PL_GDP_QOQ", "EU_GDP_QOQ"}
-      if ind1 in gdp_qoq and ind2 in gdp_qoq:
-          return True
-      hicp = {"PL_HICP_YOY", "EU_HICP_YOY"}
-      if ind1 in hicp and ind2 in hicp:
-          return True
       return False
 
   def _detect_claim_indicator(self, text: str) -> Optional[str]:
     """Wykrywa wskaźnik makroekonomiczny na podstawie słów kluczowych w tekście kontekstowym."""
     lower = text.lower()
+    for code in INDICATOR_TOPIC_KEYWORDS:
+      if re.search(r"\b" + re.escape(code.lower()) + r"\b", lower):
+        return code
     for code, keywords in INDICATOR_TOPIC_KEYWORDS.items():
       for kw in keywords:
         if kw in lower:
