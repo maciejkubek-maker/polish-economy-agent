@@ -360,6 +360,81 @@ class EconomyEvaluator:
     chain = prompt | llm_gpt | StrOutputParser()
     return chain.invoke(inputs)
 
+  def _compute_derived_facts(
+      self,
+      verified_obs: List[Dict[str, Any]],
+      obs_citation_map: Dict[str, int],
+      report_date: Optional[str] = None,
+      now: Optional[datetime.datetime] = None,
+  ) -> Dict[str, Any]:
+      """Oblicza deterministycznie wskaźniki pochodne w Pythonie z kontrolą spójności okresów."""
+      derived_facts = {}
+      obs_by_code = {o.get("indicator_code"): o for o in verified_obs if o.get("indicator_code")}
+      ref_obs = obs_by_code.get("PL_NBP_REFERENCE_RATE") or obs_by_code.get("PL_POLICY_RATE_REF")
+      cpi_obs = obs_by_code.get("PL_CPI_YOY")
+      if ref_obs and cpi_obs and ref_obs.get("value_decimal") and cpi_obs.get("value_decimal"):
+          try:
+              ref_num = Decimal(str(ref_obs["value_decimal"]).replace(",", ".").strip())
+              cpi_num = Decimal(str(cpi_obs["value_decimal"]).replace(",", ".").strip())
+              real_num = ref_num - cpi_num
+              sign = "+" if real_num > 0 else ""
+              real_str = f"{sign}{format(real_num.normalize(), 'f')}"
+              ref_c_idx = obs_citation_map.get(ref_obs["indicator_code"])
+              cpi_c_idx = obs_citation_map.get(cpi_obs["indicator_code"])
+
+              ref_p_start = str(ref_obs.get("period_start", ""))[:10]
+              ref_p_end = str(ref_obs.get("period_end", ""))[:10]
+              cpi_p_start = str(cpi_obs.get("period_start", ""))[:10]
+              cpi_p_end = str(cpi_obs.get("period_end", ""))[:10]
+
+              if report_date:
+                  try:
+                      if "." in report_date:
+                          now_dt = datetime.datetime.strptime(report_date[:10], "%d.%m.%Y").date()
+                      else:
+                          now_dt = datetime.datetime.strptime(report_date[:10], "%Y-%m-%d").date()
+                  except Exception:
+                      now_dt = (now or datetime.datetime.now()).date()
+              else:
+                  now_dt = (now or datetime.datetime.now()).date()
+
+              try:
+                  cpi_end_dt = datetime.datetime.strptime(cpi_p_end, "%Y-%m-%d").date()
+                  cpi_lag_days = (now_dt - cpi_end_dt).days
+              except Exception:
+                  cpi_lag_days = 0
+
+              try:
+                  ref_end_dt = datetime.datetime.strptime(ref_p_end, "%Y-%m-%d").date()
+                  gap_days = abs((ref_end_dt - cpi_end_dt).days)
+              except Exception:
+                  gap_days = 0
+
+              is_current = (cpi_lag_days <= 90 and gap_days <= 90)
+
+              derived_facts["PL_REAL_INTEREST_RATE"] = {
+                  "value_decimal": real_str,
+                  "unit": "p.p.",
+                  "formula": f"stopa referencyjna NBP {ref_num}% [{ref_c_idx}] ({ref_p_end}) minus inflacja CPI {cpi_num}% [{cpi_c_idx}] ({cpi_p_end})",
+                  "ref_idx": ref_c_idx,
+                  "cpi_idx": cpi_c_idx,
+                  "ref_obs_id": ref_obs.get("observation_id"),
+                  "cpi_obs_id": cpi_obs.get("observation_id"),
+                  "ref_period": f"{ref_p_start}..{ref_p_end}",
+                  "cpi_period": f"{cpi_p_start}..{cpi_p_end}",
+                  "period_start": min(ref_p_start, cpi_p_start) if ref_p_start and cpi_p_start else (ref_p_start or cpi_p_start),
+                  "period_end": max(ref_p_end, cpi_p_end) if ref_p_end and cpi_p_end else (ref_p_end or cpi_p_end),
+                  "is_current": is_current,
+                  "is_historical": not is_current,
+                  "cpi_lag_days": cpi_lag_days,
+                  "gap_days": gap_days,
+                  "ref_val": str(ref_num),
+                  "cpi_val": str(cpi_num),
+              }
+          except (InvalidOperation, ValueError):
+              pass
+      return derived_facts
+
   # -------------------------------------------------------------------------
   # Nowa integracja z SQLite v2 (FINAL STABILIZATION)
   # -------------------------------------------------------------------------
@@ -456,28 +531,13 @@ class EconomyEvaluator:
           )
           news_citation_map[url] = c_idx
 
-    # 1. Obliczenia pochodne (Derived calculations) deterministycznie w Pythonie
-    derived_facts = {}
-    ref_obs = obs_by_code.get("PL_NBP_REFERENCE_RATE") or obs_by_code.get("PL_POLICY_RATE_REF")
-    cpi_obs = obs_by_code.get("PL_CPI_YOY")
-    if ref_obs and cpi_obs and ref_obs.get("value_decimal") and cpi_obs.get("value_decimal"):
-      try:
-        ref_num = Decimal(str(ref_obs["value_decimal"]).replace(",", ".").strip())
-        cpi_num = Decimal(str(cpi_obs["value_decimal"]).replace(",", ".").strip())
-        real_num = ref_num - cpi_num
-        sign = "+" if real_num > 0 else ""
-        real_str = f"{sign}{format(real_num.normalize(), 'f')}"
-        ref_c_idx = obs_citation_map.get(ref_obs["indicator_code"])
-        cpi_c_idx = obs_citation_map.get(cpi_obs["indicator_code"])
-        derived_facts["PL_REAL_INTEREST_RATE"] = {
-            "value_decimal": real_str,
-            "unit": "p.p.",
-            "formula": f"stopa referencyjna NBP {ref_num}% [{ref_c_idx}] minus inflacja CPI {cpi_num}% [{cpi_c_idx}]",
-            "ref_idx": ref_c_idx,
-            "cpi_idx": cpi_c_idx,
-        }
-      except (InvalidOperation, ValueError):
-        pass
+    # 1. Obliczenia pochodne (Derived calculations) deterministycznie w Pythonie z kontrolą spójności okresów
+    derived_facts = self._compute_derived_facts(
+        verified_obs=verified_obs,
+        obs_citation_map=obs_citation_map,
+        report_date=report_date,
+        now=now,
+    )
 
     # 2. Formatowanie kontekstu faktograficznego z kontrolą lagów i aktualności
     context_lines = ["### ZWERYFIKOWANE OFICJALNE ODCZYTY MAKROEKONOMICZNE (JEDYNE ŹRÓDŁO LICZB DO TABLICY 'claims'):"]
@@ -504,10 +564,20 @@ class EconomyEvaluator:
       context_lines.append("\n### WYLICZONE DETERMINISTYCZNIE WSKAŹNIKI POCHODNE:")
       for code, d in derived_facts.items():
         if code == "PL_REAL_INTEREST_RATE":
-          context_lines.append(
-              f"- Realna stopa referencyjna NBP: {d['value_decimal']} {d['unit']} "
-              f"(wyliczenie: {d['formula']})"
-          )
+          if d.get("is_historical"):
+            context_lines.append(
+                f"- Historyczna/poglądowa realna stopa referencyjna NBP: {d['value_decimal']} {d['unit']} "
+                f"(wyliczenie: {d['formula']} | UWAGA NA ROZBIEŻNOŚĆ OKRESÓW / LAG: odczyt CPI z {d['cpi_period']} jest archiwalny, "
+                f"opóźnienie ~{d['cpi_lag_days']} dni względem {report_date}, rozbieżność względem decyzji NBP ~{d['gap_days']} dni. "
+                f"BEZWZGLĘDNY ZAKAZ prezentacji tego wyliczenia jako bieżącej lub obecnej realnej stopy! "
+                f"Każde użycie tej wartości w tekście MUSI zawierać OBA przypisy [{d['ref_idx']}] i [{d['cpi_idx']}] "
+                f"oraz wyraźnie wskazywać historyczny/poglądowy charakter.)"
+            )
+          else:
+            context_lines.append(
+                f"- Realna stopa referencyjna NBP: {d['value_decimal']} {d['unit']} "
+                f"(wyliczenie: {d['formula']} | Przytoczenie tej wartości wymaga wskazania obu przypisów [{d['ref_idx']}] i [{d['cpi_idx']}].)"
+            )
 
     if unverified_obs:
       context_lines.append("\n### WSKAŹNIKI OCZEKUJĄCE NA WERYFIKACJĘ LUB BRAKUJĄCE (ZAKAZ PREZENTACJI JAKO POTWIERDZONE):")
@@ -1110,8 +1180,8 @@ class EconomyEvaluator:
                   "observation_id": f"DERIVED_{fact_k}",
                   "value_decimal": fact_v["value_decimal"],
                   "unit_code": fact_v.get("unit", "p.p."),
-                  "period_start": fact_v.get("period_start", "2026-10-01"),
-                  "period_end": fact_v.get("period_end", "2026-10-31"),
+                  "period_start": fact_v.get("period_start", ""),
+                  "period_end": fact_v.get("period_end", ""),
               }
 
       for s_num, s_content in norm_sec.items():
@@ -1156,10 +1226,20 @@ class EconomyEvaluator:
       check_urls: bool = False,
   ) -> None:
       """Deterministyczna walidacja ustrukturyzowanych twierdzeń, logiki i sekcji bez heurystyk."""
-      derived_facts = derived_facts or {}
       sections = structured_data.get("sections", {})
       claims = structured_data.get("claims", [])
       body_text = "\n\n".join(sections.get(k, "") for k in ("1", "2", "3", "4", "5"))
+      citation_by_idx = {int(c["idx"]): c for c in citations}
+      obs_citation_map = {c["indicator_code"]: int(c["idx"]) for c in citations if c.get("indicator_code")}
+
+      if not derived_facts:
+          derived_facts = self._compute_derived_facts(
+              verified_obs=verified_obs,
+              obs_citation_map=obs_citation_map,
+              report_date=report_date,
+          )
+      else:
+          derived_facts = derived_facts or {}
 
       def _reject(rule_name: str, msg: str, gpt_val: str = "", ind_att: str = "", allowed_desc: str = "", fn_desc: str = "") -> None:
           diag_detail = (
@@ -1238,10 +1318,36 @@ class EconomyEvaluator:
                       fn_desc=f"[{real_info.get('ref_idx')}], [{real_info.get('cpi_idx')}]",
                   )
 
+          # 5B. Blokada prezentacji różnicy stopy NBP i archiwalnej CPI jako bieżącej realnej stopy
+          if real_info.get("is_historical"):
+              for s_num in ("1", "2", "3", "4", "5"):
+                  sec_text = sections.get(s_num, "")
+                  for line in sec_text.splitlines():
+                      line_str = line.strip()
+                      if not line_str:
+                          continue
+                      norm_real = self._normalize_numeric_claim(real_val_str)
+                      line_nums = [self._normalize_numeric_claim(m.group(0)) for m in re.finditer(r"\-?\+?\d+(?:[.,]\d+)?", line_str)]
+                      if norm_real in line_nums:
+                          line_l = line_str.lower()
+                          is_presented_as_current = (
+                              "obecn" in line_l or "bieżąc" in line_l or "aktualn" in line_l
+                          )
+                          is_properly_qualified_as_historical = any(
+                              kw in line_l for kw in ("historyczn", "poglądow", "archiwaln", "historycznym", "historyczna", "poglądowo", "za okres", "dla okresu", "z 2025", "w 2025", "grudnia 2025", "grudniu 2025")
+                          )
+                          if is_presented_as_current and not is_properly_qualified_as_historical:
+                              _reject(
+                                  "ARCHIVAL_REAL_RATE_MISREPRESENTATION",
+                                  f"Nie wolno prezentować różnicy stopy NBP i archiwalnej inflacji CPI jako bieżącej realnej stopy procentowej w sekcji {s_num}: '{line_str}'",
+                                  gpt_val=real_val_str,
+                                  ind_att="PL_REAL_INTEREST_RATE",
+                                  allowed_desc=f"Odczyt archiwalny (CPI z {real_info.get('cpi_period')}, opóźnienie ~{real_info.get('cpi_lag_days')} dni) — dozwolony wyłącznie jako historyczny/poglądowy z podaniem okresu",
+                                  fn_desc=f"[{real_info.get('ref_idx')}], [{real_info.get('cpi_idx')}]",
+                              )
+
       # 6. Przygotowanie rejestru zweryfikowanych obserwacji dla ścisłej walidacji
-      citation_by_idx = {int(c["idx"]): c for c in citations}
       obs_by_id = {str(o.get("observation_id")): o for o in verified_obs if o.get("observation_id")}
-      obs_citation_map = {c["indicator_code"]: int(c["idx"]) for c in citations if c.get("indicator_code")}
 
       # Dodanie wyliczonych wskaźników pochodnych do rejestru dozwolonych obserwacji
       for fact_k, fact_v in derived_facts.items():
@@ -1251,8 +1357,8 @@ class EconomyEvaluator:
               "indicator_code": fact_k,
               "value_decimal": fact_v["value_decimal"],
               "unit_code": fact_v.get("unit", "p.p."),
-              "period_start": fact_v.get("period_start", "2026-10-01"),
-              "period_end": fact_v.get("period_end", "2026-10-31"),
+              "period_start": fact_v.get("period_start", ""),
+              "period_end": fact_v.get("period_end", ""),
               "status": "VERIFIED",
           }
           if fact_v.get("ref_idx"):
@@ -1365,14 +1471,16 @@ class EconomyEvaluator:
           cite_ind = c.get("indicator_code")
           if cite_ind and cite_ind != ind_code:
               # Blokada przypisania innego wskaźnika
-              _reject(
-                  "INDICATOR_MISMATCH",
-                  f"Niepoprawne powiązanie przypisów ze źródłami: Twierdzenie '{val_str}' o '{ind_code}' przypisane do źródła innego wskaźnika [{claim_fn}] ({cite_ind})",
-                  gpt_val=val_norm,
-                  ind_att=ind_code,
-                  allowed_desc=f"{cite_ind} ({c.get('value_decimal')})",
-                  fn_desc=f"[{claim_fn}] ({c.get('institution')})",
-              )
+              is_derived_cit_ok = (ind_code == "PL_REAL_INTEREST_RATE" and cite_ind in ("PL_NBP_REFERENCE_RATE", "PL_POLICY_RATE_REF", "PL_CPI_YOY"))
+              if not is_derived_cit_ok:
+                  _reject(
+                      "INDICATOR_MISMATCH",
+                      f"Niepoprawne powiązanie przypisów ze źródłami: Twierdzenie '{val_str}' o '{ind_code}' przypisane do źródła innego wskaźnika [{claim_fn}] ({cite_ind})",
+                      gpt_val=val_norm,
+                      ind_att=ind_code,
+                      allowed_desc=f"{cite_ind} ({c.get('value_decimal')})",
+                      fn_desc=f"[{claim_fn}] ({c.get('institution')})",
+                  )
 
           approved_claim_values.add(val_norm)
           approved_claims_by_pair[(val_norm, claim_fn)] = claim
@@ -1415,6 +1523,69 @@ class EconomyEvaluator:
 
                   context_segment = line_str[prev_boundary:clause_end]
                   prev_boundary = clause_end
+
+                  # A0. Weryfikacja czy liczba jest zatwierdzonym wyliczeniem pochodnym (np. PL_REAL_INTEREST_RATE)
+                  matching_derived = None
+                  matching_derived_key = None
+                  for df_k, df_v in derived_facts.items():
+                      if self._normalize_numeric_claim(df_v.get("value_decimal", "")) == num_norm:
+                          matching_derived = df_v
+                          matching_derived_key = df_k
+                          break
+
+                  if matching_derived is not None:
+                      ref_fn = matching_derived.get("ref_idx")
+                      cpi_fn = matching_derived.get("cpi_idx")
+                      all_line_fns = {int(f) for f in re.findall(r"\[(\d+)\]", line_str)}
+
+                      # 1. Obliczenie pochodne musi mieć jednoznacznie przypisane oba źródła [ref] i [cpi] w linii
+                      if not (ref_fn in all_line_fns and cpi_fn in all_line_fns):
+                          missing = []
+                          if ref_fn not in all_line_fns:
+                              missing.append(f"[{ref_fn}]")
+                          if cpi_fn not in all_line_fns:
+                              missing.append(f"[{cpi_fn}]")
+                          _reject(
+                              "UNCITED_NUMERIC_CLAIM",
+                              f"Wyliczenie pochodne '{cl_text}' bez jednoznacznego przypisania obu źródeł (brak {', '.join(missing)}) w linii: '{line_str}'",
+                              gpt_val=cl_text,
+                              ind_att=matching_derived_key,
+                              allowed_desc=f"{matching_derived['value_decimal']} {matching_derived.get('unit', '')} (wyliczenie: {matching_derived['formula']})",
+                              fn_desc=f"[{ref_fn}], [{cpi_fn}]",
+                          )
+
+                      # 2. Obserwacje bazowe stopy NBP i inflacji CPI muszą być zatwierdzone w claims
+                      ref_approved = any(c.get("indicator_code") in ("PL_NBP_REFERENCE_RATE", "PL_POLICY_RATE_REF") for c in approved_claims_by_pair.values())
+                      cpi_approved = any(c.get("indicator_code") == "PL_CPI_YOY" for c in approved_claims_by_pair.values())
+                      if not (ref_approved and cpi_approved):
+                          _reject(
+                              "UNAPPROVED_NUMERIC_CLAIM",
+                              f"Wyliczenie pochodne '{cl_text}' ({matching_derived_key}) bazuje na niezatwierdzonych obserwacjach źródłowych w tabeli claims!",
+                              gpt_val=cl_text,
+                              ind_att=matching_derived_key,
+                              allowed_desc="Wymagane zatwierdzenie w claims zarówno stopy NBP jak i inflacji CPI",
+                              fn_desc=f"[{ref_fn}], [{cpi_fn}]",
+                          )
+
+                      # 3. Kontrola archiwalności / zakaz prezentacji jako bieżącej stopy
+                      if matching_derived.get("is_historical"):
+                          line_l = line_str.lower()
+                          is_presented_as_current = ("obecn" in line_l or "bieżąc" in line_l or "aktualn" in line_l)
+                          is_qualified_historical = any(
+                              kw in line_l for kw in ("historyczn", "poglądow", "archiwaln", "historycznym", "historyczna", "poglądowo", "za okres", "dla okresu", "z 2025", "w 2025", "grudnia 2025", "grudniu 2025")
+                          )
+                          if is_presented_as_current and not is_qualified_historical:
+                              _reject(
+                                  "ARCHIVAL_REAL_RATE_MISREPRESENTATION",
+                                  f"Nie wolno prezentować różnicy stopy NBP i archiwalnej inflacji CPI jako bieżącej realnej stopy procentowej w zdaniu: '{line_str}'",
+                                  gpt_val=cl_text,
+                                  ind_att=matching_derived_key,
+                                  allowed_desc=f"Odczyt archiwalny (CPI z {matching_derived.get('cpi_period')}, opóźnienie ~{matching_derived.get('cpi_lag_days')} dni) — dozwolony wyłącznie jako historyczny/poglądowy z podaniem okresu",
+                                  fn_desc=f"[{ref_fn}], [{cpi_fn}]",
+                              )
+
+                      # Wyliczenie pochodne spełnia wszystkie kryteria
+                      continue
 
                   # A. Weryfikacja obecności przypisu dla tej liczby
                   if not fn_matches:
