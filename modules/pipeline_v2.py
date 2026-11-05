@@ -625,46 +625,8 @@ class MacroPipelineV2:
             ),
         }
 
-        t0_rep = time.perf_counter()
-        self.diagnostics.record_step(
-            run_id=run_id,
-            function="store_sqlite",
-            stage="START",
-            input_summary=f"report_id={report_id}, snapshot_hash={snap_hash[:8]}",
-        )
-        try:
-            self.db.save_report(
-                report_id=report_id,
-                country_code="PL",
-                report_date=report_date,
-                executive_horizon=exec_horizon,
-                report_markdown=report_markdown,
-                report_html=report_html,
-                data_snapshot_hash=snap_hash,
-                model_metadata=model_meta,
-            )
-            dur_rep = (time.perf_counter() - t0_rep) * 1000.0
-            self.diagnostics.record_step(
-                run_id=run_id,
-                function="store_sqlite",
-                stage="END",
-                duration_ms=dur_rep,
-                input_summary=f"report_id={report_id}",
-                output_summary=f"report_id={report_id}, status=SAVED",
-            )
-        except Exception as err:
-            dur_rep = (time.perf_counter() - t0_rep) * 1000.0
-            self.diagnostics.record_step(
-                run_id=run_id,
-                function="store_sqlite",
-                stage="ERROR",
-                duration_ms=dur_rep,
-                input_summary=f"report_id={report_id}",
-                error_code=type(err).__name__,
-                error_message=safe_error_message(err),
-            )
-            raise
-
+        temp_html_path = None
+        t0_html = None
         if output_html_path:
             t0_html = time.perf_counter()
             self.diagnostics.record_step(
@@ -674,17 +636,11 @@ class MacroPipelineV2:
                 input_summary=f"path={output_html_path}",
             )
             try:
-                with open(output_html_path, "w", encoding="utf-8") as f:
+                temp_html_path = f"{output_html_path}.tmp.{uuid.uuid4().hex[:8]}"
+                with open(temp_html_path, "w", encoding="utf-8") as f:
                     f.write(report_html)
-                dur_html = (time.perf_counter() - t0_html) * 1000.0
-                self.diagnostics.record_step(
-                    run_id=run_id,
-                    function="write_html",
-                    stage="END",
-                    duration_ms=dur_html,
-                    input_summary=f"path={output_html_path}",
-                    output_summary=f"bytes_written={len(report_html.encode('utf-8'))}",
-                )
+                    f.flush()
+                    os.fsync(f.fileno())
             except Exception as err:
                 dur_html = (time.perf_counter() - t0_html) * 1000.0
                 self.diagnostics.record_step(
@@ -696,7 +652,113 @@ class MacroPipelineV2:
                     error_code=type(err).__name__,
                     error_message=safe_error_message(err),
                 )
+                if temp_html_path and os.path.exists(temp_html_path):
+                    try:
+                        os.remove(temp_html_path)
+                    except Exception:
+                        pass
                 raise
+
+        t0_rep = time.perf_counter()
+        self.diagnostics.record_step(
+            run_id=run_id,
+            function="store_sqlite",
+            stage="START",
+            input_summary=f"report_id={report_id}, snapshot_hash={snap_hash[:8]}",
+        )
+        report_saved_in_db = False
+        try:
+            # Krok A: Zapis raportu do SQLite ze statusem PENDING (nieopublikowany)
+            self.db.save_report(
+                report_id=report_id,
+                country_code="PL",
+                report_date=report_date,
+                executive_horizon=exec_horizon,
+                report_markdown=report_markdown,
+                report_html=report_html,
+                data_snapshot_hash=snap_hash,
+                model_metadata=model_meta,
+                publication_status="PENDING",
+            )
+            report_saved_in_db = True
+            dur_rep = (time.perf_counter() - t0_rep) * 1000.0
+            self.diagnostics.record_step(
+                run_id=run_id,
+                function="store_sqlite",
+                stage="END",
+                duration_ms=dur_rep,
+                input_summary=f"report_id={report_id}",
+                output_summary=f"report_id={report_id}, status=PENDING",
+            )
+
+            # Krok B: Atomowa podmiana pliku HTML na docelową ścieżkę
+            if output_html_path and temp_html_path:
+                try:
+                    os.replace(temp_html_path, output_html_path)
+                    dur_html = (time.perf_counter() - t0_html) * 1000.0
+                    self.diagnostics.record_step(
+                        run_id=run_id,
+                        function="write_html",
+                        stage="END",
+                        duration_ms=dur_html,
+                        input_summary=f"path={output_html_path}",
+                        output_summary=f"bytes_written={len(report_html.encode('utf-8'))}",
+                    )
+                except Exception as err:
+                    dur_html = (time.perf_counter() - t0_html) * 1000.0
+                    self.diagnostics.record_step(
+                        run_id=run_id,
+                        function="write_html",
+                        stage="ERROR",
+                        duration_ms=dur_html,
+                        input_summary=f"path={output_html_path}",
+                        error_code=type(err).__name__,
+                        error_message=safe_error_message(err),
+                    )
+                    raise
+
+            # Krok C: Oznaczenie raportu jako PUBLISHED w bazie SQLite dopiero po sukcesie zapisu HTML
+            published = self.db.mark_report_published(report_id)
+            if not published:
+                raise RuntimeError(
+                    f"Publication failed: mark_report_published returned False for report_id '{report_id}'"
+                )
+
+        except Exception as pub_err:
+            # Procedura odzyskiwania po błędzie publikacji (oznaczenie FAILED, rollback SQLite i czyszczenie plików)
+            if report_saved_in_db:
+                try:
+                    self.db.mark_report_failed(report_id)
+                except Exception as fail_err:
+                    self.diagnostics.event(
+                        logging.ERROR,
+                        f"Failed to mark un-published report {report_id} as FAILED: {safe_error_message(fail_err)}",
+                        run_id=run_id,
+                    )
+                try:
+                    self.db.delete_report(report_id)
+                    self.diagnostics.event(
+                        logging.WARNING,
+                        f"Publication failed: rolled back un-published report {report_id} from SQLite v2",
+                        run_id=run_id,
+                    )
+                except Exception as del_err:
+                    self.diagnostics.event(
+                        logging.ERROR,
+                        f"Failed to delete un-published report {report_id} from SQLite v2: {safe_error_message(del_err)}",
+                        run_id=run_id,
+                    )
+            if temp_html_path and os.path.exists(temp_html_path):
+                try:
+                    os.remove(temp_html_path)
+                except Exception:
+                    pass
+            if output_html_path and os.path.exists(output_html_path):
+                try:
+                    os.remove(output_html_path)
+                except Exception:
+                    pass
+            raise
 
         return report_id, report_markdown, report_html
 
@@ -723,6 +785,8 @@ class MacroPipelineV2:
         run_started = False
         self.diagnostics.event(logging.INFO, "Pipeline execution requested", run_id=run_id)
         try:
+            # Bezpieczna procedura odzyskiwania przy starcie potoku (PENDING -> FAILED)
+            self.db.recover_pending_reports()
             run_id = self.db.start_ingestion_run(provider="MANUAL", run_type="TRIGGERED")
             run_started = True
             summary["run_id"] = run_id

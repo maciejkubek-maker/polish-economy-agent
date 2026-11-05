@@ -156,6 +156,13 @@ class SQLiteV2Storage:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?);
             """, DEFAULT_INDICATOR_CATALOG)
 
+            # Kontrola kolumny publication_status (bezpieczna, niedestrukcyjna ewolucja schematu)
+            table_info = conn.execute("PRAGMA table_info(reports)").fetchall()
+            col_names = [col[1] for col in table_info]
+            if "publication_status" not in col_names:
+                conn.execute("ALTER TABLE reports ADD COLUMN publication_status TEXT DEFAULT 'PUBLISHED';")
+            # Bezpieczna procedura odzyskiwania przy starcie: raporty niedokonczone (PENDING) -> FAILED
+            conn.execute("UPDATE reports SET publication_status = 'FAILED' WHERE publication_status = 'PENDING';")
             conn.commit()
         finally:
             conn.close()
@@ -567,8 +574,9 @@ class SQLiteV2Storage:
         data_snapshot_hash: Optional[str] = None,
         model_metadata: Optional[Dict[str, Any]] = None,
         as_of_utc: Optional[str] = None,
+        publication_status: str = "PENDING",
     ) -> str:
-        """Zapisuje raport w tabeli reports wraz z hashem migawki danych."""
+        """Zapisuje raport w tabeli reports wraz z hashem migawki danych i statusem publikacji."""
         if not data_snapshot_hash:
             data_snapshot_hash = hashlib.sha256(report_markdown.encode("utf-8")).hexdigest()
 
@@ -581,14 +589,16 @@ class SQLiteV2Storage:
             conn.execute("""
                 INSERT INTO reports (
                     report_id, country_code, report_date, as_of_utc, executive_horizon,
-                    report_markdown, report_html, data_snapshot_hash, model_metadata_json, created_at_utc
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    report_markdown, report_html, data_snapshot_hash, model_metadata_json,
+                    publication_status, created_at_utc
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(report_id) DO UPDATE SET
                     report_markdown = excluded.report_markdown,
                     report_html = excluded.report_html,
                     executive_horizon = excluded.executive_horizon,
                     data_snapshot_hash = excluded.data_snapshot_hash,
-                    model_metadata_json = excluded.model_metadata_json;
+                    model_metadata_json = excluded.model_metadata_json,
+                    publication_status = excluded.publication_status;
             """, (
                 report_id,
                 code,
@@ -599,9 +609,40 @@ class SQLiteV2Storage:
                 report_html,
                 data_snapshot_hash,
                 meta_json,
+                publication_status,
             ))
             conn.commit()
             return report_id
+        finally:
+            conn.close()
+
+    def mark_report_published(self, report_id: str) -> bool:
+        """Oznacza raport jako pomyslnie opublikowany (PUBLISHED)."""
+        conn = self.get_connection()
+        try:
+            cursor = conn.execute("UPDATE reports SET publication_status = 'PUBLISHED' WHERE report_id = ?", (report_id,))
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+    def mark_report_failed(self, report_id: str) -> bool:
+        """Oznacza raport jako nieudany (FAILED) w przypadku awarii publikacji."""
+        conn = self.get_connection()
+        try:
+            cursor = conn.execute("UPDATE reports SET publication_status = 'FAILED' WHERE report_id = ?", (report_id,))
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+    def recover_pending_reports(self) -> int:
+        """Bezpieczna procedura odzyskiwania: wycofuje niedokonczone publikacje (PENDING -> FAILED)."""
+        conn = self.get_connection()
+        try:
+            cursor = conn.execute("UPDATE reports SET publication_status = 'FAILED' WHERE publication_status = 'PENDING'")
+            conn.commit()
+            return cursor.rowcount
         finally:
             conn.close()
 
@@ -622,12 +663,24 @@ class SQLiteV2Storage:
                     report_html,
                     data_snapshot_hash,
                     model_metadata_json,
+                    publication_status,
                     created_at_utc
                 FROM reports
                 WHERE country_code IN (?, ?)
+                  AND (publication_status = 'PUBLISHED' OR publication_status IS NULL)
                 ORDER BY created_at_utc DESC
                 LIMIT 1
             """, codes).fetchone()
             return dict(row) if row else None
+        finally:
+            conn.close()
+
+    def delete_report(self, report_id: str) -> bool:
+        """Usuwa raport o podanym ID w przypadku niepowodzenia publikacji lub procedury odzyskiwania."""
+        conn = self.get_connection()
+        try:
+            cursor = conn.execute("DELETE FROM reports WHERE report_id = ?", (report_id,))
+            conn.commit()
+            return cursor.rowcount > 0
         finally:
             conn.close()
