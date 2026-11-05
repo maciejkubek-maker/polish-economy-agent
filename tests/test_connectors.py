@@ -465,7 +465,7 @@ class TestEurostatConnector:
         assert len(observations) == 3
 
         latest = observations[-1]
-        assert latest.indicator_code == "EU_HICP_YOY"
+        assert latest.indicator_code == "PL_HICP_YOY"
         assert latest.country_code == "PL"
         assert latest.period_start == "2026-09-01"
         assert latest.period_end == "2026-09-30"
@@ -488,7 +488,7 @@ class TestEurostatConnector:
 
         assert len(observations) == 3
         latest = observations[-1]
-        assert latest.indicator_code == "EU_HICP_YOY"
+        assert latest.indicator_code == "PL_HICP_YOY"
         assert latest.period_end == "2025-12-31"
         assert latest.value_decimal == "2.5"
         assert latest.metadata["dataset"] == "prc_hicp_manr"
@@ -526,8 +526,41 @@ class TestEurostatConnector:
 
         evidence, observations = connector.fetch_hicp("PL")
         assert len(observations) == 3
-        assert observations[0].indicator_code == "EU_HICP_YOY"
+        assert observations[0].indicator_code == "PL_HICP_YOY"
         assert observations[0].value_decimal == "4.2"
+
+    def test_fetch_hicp_indicator_code_and_geo_mapping_regression(self):
+        """
+        Test regresyjny dla RUN_3b54ff8da0e8:
+        Weryfikuje poprawne mapowanie kodów wskaźników HICP w zależności od parametru geo:
+        - geo='PL' (jawne i domyślne) -> indicator_code='PL_HICP_YOY', country_code='PL', source_id='SRC_EUROSTAT'
+        - geo='EU' -> indicator_code='EU_HICP_YOY', country_code='EU', source_id='SRC_EUROSTAT'
+        """
+        connector = EurostatConnector(offline_mode=True)
+        connector.register_fixture("geo=PL", EUROSTAT_TEICP000_JSON)
+        eurostat_eu_json = EUROSTAT_TEICP000_JSON.replace('"PL": 0', '"EU": 0')
+        connector.register_fixture("geo=EU", eurostat_eu_json)
+
+        # 1. Sprawdzenie dla geo=PL (jawne oraz domyślne)
+        evidence_pl, obs_pl = connector.fetch_hicp(geo="PL")
+        assert evidence_pl.source_id == "SRC_EUROSTAT"
+        assert len(obs_pl) > 0
+        for obs in obs_pl:
+            assert obs.indicator_code == "PL_HICP_YOY"
+            assert obs.country_code == "PL"
+
+        evidence_default, obs_default = connector.fetch_hicp()
+        assert evidence_default.source_id == "SRC_EUROSTAT"
+        assert obs_default[-1].indicator_code == "PL_HICP_YOY"
+        assert obs_default[-1].country_code == "PL"
+
+        # 2. Sprawdzenie dla geo=EU
+        evidence_eu, obs_eu = connector.fetch_hicp(geo="EU")
+        assert evidence_eu.source_id == "SRC_EUROSTAT"
+        assert len(obs_eu) > 0
+        for obs in obs_eu:
+            assert obs.indicator_code == "EU_HICP_YOY"
+            assert obs.country_code == "EU"
 
     def test_fetch_harmonized_unemployment_success(self):
         connector = EurostatConnector(offline_mode=True)

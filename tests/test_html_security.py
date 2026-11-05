@@ -13,17 +13,20 @@ from modules.database import EconomyDatabase
 
 @pytest.fixture(autouse=True)
 def reset_app_database():
-    """Ensure app._db is restored to its initial state before and after each test
+    """Ensure app._db and app._storage_v2 are restored to their initial state before and after each test
 
     so tests never pollute each other through the module-level database reference.
     """
     import app
     old_db = app._db
+    old_storage_v2 = app._storage_v2
     app.set_db(None)
+    app.set_storage_v2(None)
     try:
         yield
     finally:
         app.set_db(old_db)
+        app.set_storage_v2(old_storage_v2)
 
 
 # ==============================================================================

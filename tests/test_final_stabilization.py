@@ -663,12 +663,15 @@ def test_os_replace_failure_recovery_and_flask_status(tmp_path, monkeypatch):
     monkeypatch.setattr(app, "get_last_run_path", lambda: last_run_file)
     set_storage_v2(db)
 
-    with server.test_client() as client:
-        res = client.get("/")
-        content = res.get_data(as_text=True)
-        assert "STATUS: FAILED" in content
-        assert "Bieżący przebieg zakończony niepowodzeniem" in content
-        assert "Symulowany błąd I/O podczas os.replace HTML" in content
+    try:
+        with server.test_client() as client:
+            res = client.get("/")
+            content = res.get_data(as_text=True)
+            assert "STATUS: FAILED" in content
+            assert "Bieżący przebieg zakończony niepowodzeniem" in content
+            assert "Symulowany błąd I/O podczas os.replace HTML" in content
+    finally:
+        set_storage_v2(None)
 
 
 # ==============================================================================
@@ -853,11 +856,14 @@ def test_publication_rollback_failure_marks_report_failed(tmp_path, monkeypatch)
     monkeypatch.setattr(app, "get_last_run_path", lambda: last_run_file)
     set_storage_v2(db)
 
-    with server.test_client() as client:
-        res = client.get("/")
-        content = res.get_data(as_text=True)
-        assert "STATUS: FAILED" in content
-        assert "Awaria dysku podczas zapisu HTML" in content
+    try:
+        with server.test_client() as client:
+            res = client.get("/")
+            content = res.get_data(as_text=True)
+            assert "STATUS: FAILED" in content
+            assert "Awaria dysku podczas zapisu HTML" in content
+    finally:
+        set_storage_v2(None)
 
 
 # ==============================================================================
