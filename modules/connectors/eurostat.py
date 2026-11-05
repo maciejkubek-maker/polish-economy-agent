@@ -272,14 +272,16 @@ class EurostatConnector(BaseConnector):
         )
 
         dataset_updated = data.get("updated")
+        geo_norm = geo.strip().upper() if geo else "PL"
+        indicator_code = "PL_HICP_YOY" if geo_norm == "PL" else "EU_HICP_YOY"
         observations = []
         for time_code, raw_val in time_series:
             p_start, p_end = self._parse_time_period_monthly(time_code)
             val_str = self.validate_value(raw_val, min_plausible=Decimal("-20.0"), max_plausible=Decimal("100.0"))
 
             obs = MacroObservation(
-                indicator_code="EU_HICP_YOY",
-                country_code=geo,
+                indicator_code=indicator_code,
+                country_code=geo_norm,
                 period_start=p_start,
                 period_end=p_end,
                 frequency="MONTHLY",
