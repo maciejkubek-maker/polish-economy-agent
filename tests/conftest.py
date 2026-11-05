@@ -1,5 +1,6 @@
 import os
 import sqlite3
+from pathlib import Path
 import pytest
 
 # Ensure dummy keys are present in environment BEFORE config.py or other modules are loaded
@@ -10,6 +11,19 @@ os.environ["TAVILY_API_KEY"] = os.environ.get("TAVILY_API_KEY") or "mock-tavily-
 from modules.database import EconomyDatabase
 from modules.data_fetcher import IndicatorItem
 from modules.sources import CountrySourcesResponse, EconomicSource
+
+
+@pytest.fixture(autouse=True)
+def clean_flask_state(monkeypatch, tmp_path):
+    """Izoluje stan aplikacji Flask, bazy danych oraz logów last_run pomiędzy testami."""
+    import app
+    app.set_storage_v2(None)
+    app.set_db(None)
+    dummy_last_run = tmp_path / "clean_last_run.json"
+    monkeypatch.setattr(app, "get_last_run_path", lambda: dummy_last_run)
+    yield
+    app.set_storage_v2(None)
+    app.set_db(None)
 
 
 @pytest.fixture

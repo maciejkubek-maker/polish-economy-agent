@@ -438,6 +438,52 @@ class SQLiteV2Storage:
         all_obs = self.get_current_observations(country_code)
         return [o for o in all_obs if o.get("status") == "VERIFIED"]
 
+    def cleanup_mismatched_geo_current_observations(self) -> int:
+        """Usuwa niezgodne geograficznie wpisy ze zmaterializowanego widoku current_observations.
+
+        Ściśle chroniona, append-only tabela observations pozostaje nienaruszona.
+        Dla każdego usuniętego rekordu rejestrowane jest zdarzenie jakościowe w quality_events.
+        Zwraca liczbę usuniętych rekordów.
+        """
+        conn = self.get_connection()
+        try:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute("""
+                SELECT indicator_code, country_code, period_start, observation_id, value_decimal
+                FROM current_observations
+                WHERE (indicator_code LIKE 'EU_%' AND country_code IN ('PL', 'Polska'))
+                   OR (indicator_code LIKE 'PL_%' AND country_code NOT IN ('PL', 'Polska'))
+            """)
+            mismatched = [dict(r) for r in cursor.fetchall()]
+            if not mismatched:
+                return 0
+
+            deleted_count = 0
+            for row in mismatched:
+                del_cur = conn.execute("""
+                    DELETE FROM current_observations
+                    WHERE indicator_code = ? AND country_code = ? AND period_start = ?
+                """, (row["indicator_code"], row["country_code"], row["period_start"]))
+                if del_cur.rowcount > 0:
+                    deleted_count += del_cur.rowcount
+                    event_id = f"QE_{uuid.uuid4().hex[:12]}"
+                    conn.execute("""
+                        INSERT INTO quality_events (
+                            event_id, entity_type, entity_id, rule_code, severity,
+                            message, conflict_with_id, context_json, created_at_utc
+                        ) VALUES (?, 'OBSERVATION', ?, 'GEO_MISMATCH_QUARANTINE', 'WARNING',
+                                 ?, NULL, ?, CURRENT_TIMESTAMP)
+                    """, (
+                        event_id,
+                        row["observation_id"],
+                        f"Wyczyszczono niezgodny geograficznie wpis z current_observations: {row['indicator_code']} ({row['country_code']})",
+                        json.dumps(row)
+                    ))
+            conn.commit()
+            return deleted_count
+        finally:
+            conn.close()
+
     def get_latest_verified_observations(
         self,
         country_code: str = "PL",

@@ -130,29 +130,32 @@ def build_executive_horizon(raw_periods: list[str]) -> str:
 
 INDICATOR_TOPIC_KEYWORDS = {
     "EU_HICP_YOY": [
-        "hicp w ue", "hicp w strefie euro", "hicp strefy euro", "hicp dla strefy euro",
+        "eu_hicp_yoy", "hicp w ue", "hicp w strefie euro", "hicp strefy euro", "hicp dla strefy euro",
         "hicp ue", "hicp eu", "zharmonizowan inflacj w ue", "zharmonizowan inflacj w strefie euro",
         "inflacj w ue", "inflacj w strefie euro", "inflacj strefy euro",
     ],
     "PL_HICP_YOY": [
-        "hicp w polsce", "hicp dla polski", "hicp polski", "zharmonizowan inflacj w polsce",
+        "pl_hicp_yoy", "hicp w polsce", "hicp dla polski", "hicp polski", "zharmonizowan inflacj w polsce",
         "hicp", "zharmonizowan",
     ],
-    "PL_CPI_YOY": ["cpi", "inflacj", "wzrost cen", "dynamika cen", "ceny towarów i usług"],
+    "PL_CPI_YOY": [
+        "pl_cpi_yoy", "cpi", "inflacja cpi", "inflacji cpi", "cen towarów i usług konsumpcyjnych", "ceny towarów i usług",
+    ],
     "EU_GDP_QOQ": [
-        "pkb k/k w ue", "pkb kw/kw w ue", "pkb strefy euro k/k", "pkb w strefie euro k/k", "pkb ue k/k", "gdp qoq eu",
+        "eu_gdp_qoq", "pkb k/k w ue", "pkb kw/kw w ue", "pkb strefy euro k/k", "pkb w strefie euro k/k", "pkb ue k/k", "gdp qoq eu",
     ],
     "PL_GDP_QOQ": [
-        "pkb k/k", "pkb kw/kw", "gdp qoq", "kwartał do kwartału", "kwartaln dynamik pkb",
+        "pl_gdp_qoq", "pkb k/k", "pkb kw/kw", "gdp qoq", "kwartał do kwartału", "kwartaln dynamik pkb",
     ],
     "EU_GDP_YOY": [
-        "pkb w ue", "pkb ue", "pkb strefy euro", "pkb w strefie euro", "pkb unii", "unijn pkb", "gdp yoy eu", "eu gdp",
+        "eu_gdp_yoy", "eu_gdp", "gdp_eu", "pkb w ue", "pkb ue", "pkb strefy euro", "pkb w strefie euro", "pkb unii", "unijn pkb", "gdp yoy eu", "eu gdp",
     ],
     "PL_GDP_YOY": [
-        "pkb w polsce", "pkb polski", "wzrost pkb w polsce", "pkb r/r", "pkb rok do roku", "gdp yoy", "roczn dynamik pkb", "wzrost pkb r/r",
+        "pl_gdp_yoy", "pl_gdp", "pkb w polsce", "pkb polski", "wzrost pkb w polsce", "pkb r/r", "pkb rok do roku", "gdp yoy", "roczn dynamik pkb", "wzrost pkb r/r",
     ],
     "PL_UNEMPLOYMENT_REGISTERED_RATE": [
-        "bezroboc rejestrowan", "stopa bezrobocia rejestrowanego", "urzędach pracy", "stopa bezrobocia", "stopie bezrobocia", "bezroboci",
+        "pl_unemployment_registered_rate", "bezroboc rejestrowan", "stopa bezrobocia rejestrowanego", "stopy bezrobocia rejestrowanego",
+        "stopie bezrobocia rejestrowanego", "urzędach pracy", "urzędzie pracy", "pup",
     ],
     "PL_UNEMPLOYMENT_COUNT": [
         "liczba bezrobotnych", "wolumen bezrobotnych", "osób bezrobotnych", "liczbie bezrobotnych",
@@ -161,25 +164,25 @@ INDICATOR_TOPIC_KEYWORDS = {
         "stopa bezrobocia w ue", "stopa bezrobocia w strefie euro", "bezrobocie w ue", "bezrobocie w strefie euro",
     ],
     "PL_UNEMPLOYMENT_LFS_RATE": [
-        "bael", "lfs", "zharmonizowan stopa bezrobocia",
+        "pl_unemployment_lfs_rate", "bael", "lfs", "zharmonizowan stopa bezrobocia", "zharmonizowanego bezrobocia",
     ],
     "PL_UNEMPLOYMENT_HARMONIZED_RATE": [
-        "bael", "lfs", "zharmonizowan stopa bezrobocia",
+        "pl_unemployment_harmonized_rate", "bael", "lfs", "zharmonizowan stopa bezrobocia", "zharmonizowanego bezrobocia",
     ],
     "PL_NBP_REFERENCE_RATE": [
-        "stopa referencyjn", "stóp nbp", "stopa nbp", "rpp", "rada polityki pieniężnej",
+        "pl_nbp_reference_rate", "stopa referencyjn", "stóp nbp", "stopa nbp", "rpp", "rada polityki pieniężnej",
     ],
     "PL_POLICY_RATE_REF": [
-        "stopa referencyjn", "stóp nbp", "stopa nbp", "rpp", "rada polityki pieniężnej",
+        "pl_policy_rate_ref", "stopa referencyjn", "stóp nbp", "stopa nbp", "rpp", "rada polityki pieniężnej",
     ],
     "PL_FX_EUR_PLN": [
-        "eur/pln", "kurs euro", "zł/eur",
+        "pl_fx_eur_pln", "eur/pln", "kurs euro", "zł/eur",
     ],
     "PL_FX_USD_PLN": [
-        "usd/pln", "kurs dolara", "zł/usd",
+        "pl_fx_usd_pln", "usd/pln", "kurs dolara", "zł/usd",
     ],
     "PL_REAL_INTEREST_RATE": [
-        "realna stopa", "realnej stopy", "realne stopy",
+        "pl_real_interest_rate", "realna stopa", "realnej stopy", "realne stopy",
     ],
 }
 
@@ -788,16 +791,239 @@ class EconomyEvaluator:
       return False
 
   def _detect_claim_indicator(self, text: str) -> Optional[str]:
-    """Wykrywa wskaźnik makroekonomiczny na podstawie słów kluczowych w tekście kontekstowym."""
+    """Wykrywa wskaźnik makroekonomiczny na podstawie JEDNOZNACZNYCH odniesień w tekście.
+    
+    Zgodnie z wymogami audytu:
+    - Rozpoznaje jednoznaczne odniesienia metodologiczne i geograficzne.
+    - Rozróżnia metodologię (np. BAEL vs rejestrowane, CPI vs HICP, r/r vs kw/kw) oraz kraj (PL vs EU).
+    - W przypadku określeń ogólnych (np. sama 'stopa bezrobocia', samo 'PKB', sama 'inflacja')
+      NIE ZGADUJE wskaźnika (zwraca None), aby ogólne sformułowania językowe nie nadpisywały
+      zatwierdzonych kodów ze źródeł.
+    """
     lower = text.lower()
+
+    # 1. Sprawdzenie jawnych kodów wskaźników z granicami słów
     for code in INDICATOR_TOPIC_KEYWORDS:
       if re.search(r"\b" + re.escape(code.lower()) + r"\b", lower):
         return code
-    for code, keywords in INDICATOR_TOPIC_KEYWORDS.items():
-      for kw in keywords:
-        if kw in lower:
-          return code
+
+    # 2. Jednoznaczne odniesienia do bezrobocia (BAEL / LFS vs bezrobocie rejestrowane)
+    has_lfs = any(k in lower for k in ("bael", "lfs", "zharmonizowan stopa bezrobocia", "zharmonizowanego bezrobocia"))
+    has_reg = any(k in lower for k in ("rejestrowan", "urzędach pracy", "urzędzie pracy", "pup"))
+    has_eu_geo = any(k in lower for k in ("w ue", "w strefie euro", "strefy euro", "unijn"))
+    has_pl_geo = any(k in lower for k in ("w polsce", "krajow", "polsce"))
+
+    if has_lfs and not has_reg:
+      return "EU_UNEMPLOYMENT_RATE" if (has_eu_geo and not has_pl_geo) else "PL_UNEMPLOYMENT_LFS_RATE"
+    if has_reg and not has_lfs:
+      return "PL_UNEMPLOYMENT_REGISTERED_RATE"
+    if any(k in lower for k in ("liczba bezrobotnych", "wolumen bezrobotnych", "osób bezrobotnych")):
+      return "PL_UNEMPLOYMENT_COUNT"
+
+    # 3. Jednoznaczne odniesienia do inflacji (CPI vs HICP, PL vs EU)
+    has_hicp = "hicp" in lower or "zharmonizowan" in lower
+    has_cpi = "cpi" in lower or "cen towarów i usług konsumpcyjnych" in lower
+    if has_hicp and not has_cpi:
+      return "EU_HICP_YOY" if (has_eu_geo and not has_pl_geo) else "PL_HICP_YOY"
+    if has_cpi and not has_hicp:
+      return "PL_CPI_YOY"
+
+    # 4. Jednoznaczne odniesienia do PKB (r/r vs kw/kw, PL vs EU, wolumen)
+    if "pkb" in lower or "gdp" in lower or "produkt krajowy brutto" in lower:
+      if any(k in lower for k in ("mln eur", "cenach stałych z 2010", "wolumen pkb")):
+        return "EU_GDP_VOLUME" if (has_eu_geo and not has_pl_geo) else "PL_GDP_VOLUME"
+      has_qoq = any(k in lower for k in ("k/k", "kw/kw", "kwartał do kwartału", "kwartaln dynamik", "qoq"))
+      has_yoy = any(k in lower for k in ("r/r", "rok do roku", "roczn dynamik", "yoy"))
+      if has_qoq and not has_yoy:
+        return "EU_GDP_QOQ" if (has_eu_geo and not has_pl_geo) else "PL_GDP_QOQ"
+      if has_yoy and not has_qoq:
+        return "EU_GDP_YOY" if (has_eu_geo and not has_pl_geo) else "PL_GDP_YOY"
+
+    # 5. Stopy procentowe NBP
+    if any(k in lower for k in ("realna stopa", "realnej stopy", "realne stopy")):
+      return "PL_REAL_INTEREST_RATE"
+    if any(k in lower for k in ("stopa referencyjn", "stóp nbp", "stopa nbp", "rpp", "rada polityki pieniężnej")):
+      return "PL_NBP_REFERENCE_RATE"
+
+    # 6. Kursy walut
+    if any(k in lower for k in ("eur/pln", "kurs euro", "zł/eur")):
+      return "PL_FX_EUR_PLN"
+    if any(k in lower for k in ("usd/pln", "kurs dolara", "zł/usd")):
+      return "PL_FX_USD_PLN"
+
     return None
+
+  def _verify_claim_context_consistency(
+      self,
+      context_segment: str,
+      claim_ind: str,
+      matching_claim: Dict[str, Any],
+      citation_obj: Dict[str, Any],
+      cl_text: str,
+      matching_fn: int,
+      _reject_fn: Any,
+  ) -> None:
+    """Weryfikuje zgodność semantyczną kontekstu zdaniowego z zatwierdzonym wskaźnikiem.
+    
+    Zasady:
+    1. Jeśli w tekście występuje jednoznaczny kod wskaźnika lub metodologia inna niż claim_ind -> ODRZUCENIE.
+    2. Jeśli w tekście występuje jawna sprzeczność domenowa (np. mowa o PKB, a wskaźnik to bezrobocie) -> ODRZUCENIE.
+    3. Jeśli w tekście występuje jawna sprzeczność metodologiczna (np. rejestrowane vs BAEL, CPI vs HICP, r/r vs kw/kw) -> ODRZUCENIE.
+    4. Jeśli w tekście występuje jawna sprzeczność geograficzna (PL vs EU) -> ODRZUCENIE.
+    5. Ogólne sformułowania (np. 'stopa bezrobocia', 'inflacja', 'PKB') są W PEŁNI DOPUSZCZALNE.
+    """
+    lower = context_segment.lower()
+
+    # 1. Wykryty jednoznaczny wskaźnik
+    detected_ind = self._detect_claim_indicator(context_segment)
+    if detected_ind and not self._are_indicators_compatible(detected_ind, claim_ind):
+      _reject_fn(
+          "INDICATOR_MISMATCH",
+          f"Niepoprawne powiązanie przypisów ze źródłami: Twierdzenie '{cl_text}' o '{detected_ind}' przypisane do źródła innego wskaźnika [{matching_fn}] ({claim_ind})",
+          gpt_val=cl_text,
+          ind_att=detected_ind,
+          allowed_desc=f"{claim_ind} ({matching_claim.get('value_decimal')})",
+          fn_desc=f"[{matching_fn}] ({citation_obj.get('institution', '')})",
+      )
+
+    # 2. Sprzeczność domenowa makroekonomiczna
+    domain_markers = {
+        "UNEMPLOYMENT": any(k in lower for k in ("bezroboc", "urzędach pracy", "urzędzie pracy", "pup", "bael", "lfs", "bezrobotn")),
+        "INFLATION": any(k in lower for k in ("inflacj", "cpi", "hicp", "wzrost cen", "dynamika cen", "drożyzn", "ceny towarów")),
+        "GDP": any(k in lower for k in ("pkb", "gdp", "produkt krajowy brutto")),
+        "INTEREST_RATES": any(k in lower for k in ("stopa referencyjn", "stóp nbp", "stopa nbp", "stopy procentow", "stopami procentow", "rpp", "rada polityki pieniężnej", "koszt kapitału")),
+        "FX": any(k in lower for k in ("eur/pln", "usd/pln", "kurs euro", "kurs dolara", "zł/eur", "zł/usd")),
+    }
+
+    expected_domain = None
+    if "UNEMPLOYMENT" in claim_ind:
+      expected_domain = "UNEMPLOYMENT"
+    elif "CPI" in claim_ind or "HICP" in claim_ind:
+      expected_domain = "INFLATION"
+    elif "GDP" in claim_ind:
+      expected_domain = "GDP"
+    elif "RATE" in claim_ind or "POLICY" in claim_ind:
+      expected_domain = "INTEREST_RATES"
+    elif "FX" in claim_ind:
+      expected_domain = "FX"
+
+    if expected_domain:
+      other_domains_matched = [
+          d for d, matched in domain_markers.items()
+          if matched and d != expected_domain
+      ]
+      expected_matched = domain_markers.get(expected_domain, False)
+      if other_domains_matched and not expected_matched and claim_ind != "PL_REAL_INTEREST_RATE":
+        conflicting_domain = other_domains_matched[0]
+        _reject_fn(
+            "INDICATOR_MISMATCH",
+            f"Niepoprawne powiązanie przypisów ze źródłami: Twierdzenie '{cl_text}' dotyczy domeny {conflicting_domain}, lecz powiązano je ze źródłem wskaźnika {claim_ind} (domena {expected_domain})",
+            gpt_val=cl_text,
+            ind_att=conflicting_domain,
+            allowed_desc=f"{claim_ind} ({matching_claim.get('value_decimal')})",
+            fn_desc=f"[{matching_fn}] ({citation_obj.get('institution', '')})",
+        )
+
+    # 3. Sprzeczności metodologiczne wewnątrz domeny
+    # A. Bezrobocie: LFS vs Rejestrowane
+    if claim_ind in ("PL_UNEMPLOYMENT_LFS_RATE", "EU_UNEMPLOYMENT_RATE"):
+      if any(k in lower for k in ("rejestrowan", "urzędach pracy", "urzędzie pracy", "pup")):
+        _reject_fn(
+            "INDICATOR_MISMATCH",
+            f"Niepoprawne powiązanie przypisów ze źródłami: Twierdzenie '{cl_text}' o bezrobociu rejestrowanym przypisane do źródła wskaźnika BAEL/LFS [{matching_fn}] ({claim_ind})",
+            gpt_val=cl_text,
+            ind_att="PL_UNEMPLOYMENT_REGISTERED_RATE",
+            allowed_desc=f"{claim_ind} ({matching_claim.get('value_decimal')})",
+            fn_desc=f"[{matching_fn}] ({citation_obj.get('institution', '')})",
+        )
+    elif claim_ind == "PL_UNEMPLOYMENT_REGISTERED_RATE":
+      if any(k in lower for k in ("bael", "lfs", "zharmonizowan stopa bezrobocia", "zharmonizowanego bezrobocia")):
+        _reject_fn(
+            "INDICATOR_MISMATCH",
+            f"Niepoprawne powiązanie przypisów ze źródłami: Twierdzenie '{cl_text}' o bezrobociu BAEL/LFS przypisane do źródła bezrobocia rejestrowanego [{matching_fn}] ({claim_ind})",
+            gpt_val=cl_text,
+            ind_att="PL_UNEMPLOYMENT_LFS_RATE",
+            allowed_desc=f"{claim_ind} ({matching_claim.get('value_decimal')})",
+            fn_desc=f"[{matching_fn}] ({citation_obj.get('institution', '')})",
+        )
+
+    # B. Inflacja: CPI vs HICP
+    if claim_ind == "PL_CPI_YOY":
+      if any(k in lower for k in ("hicp", "zharmonizowan")):
+        _reject_fn(
+            "INDICATOR_MISMATCH",
+            f"Niepoprawne powiązanie przypisów ze źródłami: Twierdzenie '{cl_text}' o zharmonizowanej inflacji HICP przypisane do źródła CPI [{matching_fn}] ({claim_ind})",
+            gpt_val=cl_text,
+            ind_att="PL_HICP_YOY",
+            allowed_desc=f"{claim_ind} ({matching_claim.get('value_decimal')})",
+            fn_desc=f"[{matching_fn}] ({citation_obj.get('institution', '')})",
+        )
+    elif claim_ind in ("PL_HICP_YOY", "EU_HICP_YOY"):
+      if "cpi" in lower or "cen towarów i usług konsumpcyjnych" in lower:
+        _reject_fn(
+            "INDICATOR_MISMATCH",
+            f"Niepoprawne powiązanie przypisów ze źródłami: Twierdzenie '{cl_text}' o inflacji CPI przypisane do źródła HICP [{matching_fn}] ({claim_ind})",
+            gpt_val=cl_text,
+            ind_att="PL_CPI_YOY",
+            allowed_desc=f"{claim_ind} ({matching_claim.get('value_decimal')})",
+            fn_desc=f"[{matching_fn}] ({citation_obj.get('institution', '')})",
+        )
+
+    # C. PKB: r/r vs kw/kw
+    if claim_ind in ("PL_GDP_YOY", "EU_GDP_YOY"):
+      has_qoq = any(k in lower for k in ("k/k", "kw/kw", "kwartał do kwartału", "kwartaln dynamik", "qoq"))
+      has_yoy = any(k in lower for k in ("r/r", "rok do roku", "roczn dynamik", "yoy"))
+      if has_qoq and not has_yoy:
+        _reject_fn(
+            "INDICATOR_MISMATCH",
+            f"Niepoprawne powiązanie przypisów ze źródłami: Twierdzenie '{cl_text}' w ujęciu kwartał do kwartału (k/k) przypisane do źródła PKB r/r [{matching_fn}] ({claim_ind})",
+            gpt_val=cl_text,
+            ind_att="GDP_QOQ",
+            allowed_desc=f"{claim_ind} ({matching_claim.get('value_decimal')})",
+            fn_desc=f"[{matching_fn}] ({citation_obj.get('institution', '')})",
+        )
+    elif claim_ind in ("PL_GDP_QOQ", "EU_GDP_QOQ"):
+      has_qoq = any(k in lower for k in ("k/k", "kw/kw", "kwartał do kwartału", "kwartaln dynamik", "qoq"))
+      has_yoy = any(k in lower for k in ("r/r", "rok do roku", "roczn dynamik", "yoy"))
+      if has_yoy and not has_qoq:
+        _reject_fn(
+            "INDICATOR_MISMATCH",
+            f"Niepoprawne powiązanie przypisów ze źródłami: Twierdzenie '{cl_text}' w ujęciu rok do roku (r/r) przypisane do źródła PKB kw/kw [{matching_fn}] ({claim_ind})",
+            gpt_val=cl_text,
+            ind_att="GDP_YOY",
+            allowed_desc=f"{claim_ind} ({matching_claim.get('value_decimal')})",
+            fn_desc=f"[{matching_fn}] ({citation_obj.get('institution', '')})",
+        )
+
+    # 4. Sprzeczności geograficzne (PL vs EU)
+    has_eu_geo = any(k in lower for k in (
+        "w strefie euro", "dla strefy euro", "strefy euro", "w ue", "dla ue", "w unii",
+        "unijn pkb", "unijną", "unijny", "unijne", "unijnym", "unijnej", "w eu", "eu gdp", "hicp ue", "hicp eu"
+    ))
+    has_pl_geo = any(k in lower for k in (
+        "w polsce", "dla polski", "polski", "polsce", "polskie", "polskim", "polskiej", "krajowy", "krajowa", "krajowe"
+    ))
+
+    if claim_ind.startswith("PL_"):
+      if has_eu_geo and not has_pl_geo:
+        _reject_fn(
+            "GEOGRAPHIC_MISMATCH",
+            f"Niepoprawne powiązanie przypisów ze źródłami: Twierdzenie '{cl_text}' odnosi się do strefy euro/UE, lecz powiązano je z krajowym wskaźnikiem Polski [{matching_fn}] ({claim_ind})",
+            gpt_val=cl_text,
+            ind_att="EU",
+            allowed_desc=f"{claim_ind} ({matching_claim.get('value_decimal')})",
+            fn_desc=f"[{matching_fn}] ({citation_obj.get('institution', '')})",
+        )
+    elif claim_ind.startswith("EU_"):
+      if has_pl_geo and not has_eu_geo:
+        _reject_fn(
+            "GEOGRAPHIC_MISMATCH",
+            f"Niepoprawne powiązanie przypisów ze źródłami: Twierdzenie '{cl_text}' odnosi się do Polski, lecz powiązano je ze wskaźnikiem unijnym [{matching_fn}] ({claim_ind})",
+            gpt_val=cl_text,
+            ind_att="PL",
+            allowed_desc=f"{claim_ind} ({matching_claim.get('value_decimal')})",
+            fn_desc=f"[{matching_fn}] ({citation_obj.get('institution', '')})",
+        )
 
   def _parse_candidate_payload(
       self,
@@ -1239,18 +1465,17 @@ class EconomyEvaluator:
                           fn_desc=f"[{first_fn}]",
                       )
 
-                  # E. Weryfikacja jednoznacznej zgodności wskaźnika w kontekście zdaniowym
-                  detected_ind = self._detect_claim_indicator(context_segment)
+                  # E. Weryfikacja jednoznacznej zgodności wskaźnika i kontekstu zdaniowego (Etap 2)
                   claim_ind = matching_claim["indicator_code"]
-                  if detected_ind and not self._are_indicators_compatible(detected_ind, claim_ind):
-                      _reject(
-                          "INDICATOR_MISMATCH",
-                          f"Niepoprawne powiązanie przypisów ze źródłami: Twierdzenie '{cl_text}' o '{detected_ind}' przypisane do źródła innego wskaźnika [{matching_fn}] ({claim_ind})",
-                          gpt_val=num_norm,
-                          ind_att=detected_ind,
-                          allowed_desc=f"{claim_ind} ({matching_claim.get('value_decimal')})",
-                          fn_desc=f"[{matching_fn}] ({citation_by_idx.get(matching_fn, {}).get('institution', '')})",
-                      )
+                  self._verify_claim_context_consistency(
+                      context_segment=context_segment,
+                      claim_ind=claim_ind,
+                      matching_claim=matching_claim,
+                      citation_obj=citation_by_idx.get(matching_fn, {}),
+                      cl_text=cl_text,
+                      matching_fn=matching_fn,
+                      _reject_fn=_reject,
+                  )
 
       if diagnostics and run_id:
           diagnostics.event(
