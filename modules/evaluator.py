@@ -136,7 +136,7 @@ INDICATOR_TOPIC_KEYWORDS = {
     "EU_GDP_QOQ": ["pkb k/k", "pkb kw/kw", "gdp qoq", "kwartał do kwartału"],
     "PL_GDP_YOY": ["pkb r/r", "pkb rok do roku", "gdp yoy", "roczn dynamik pkb", "wzrost pkb r/r"],
     "EU_GDP_YOY": ["pkb r/r", "pkb rok do roku", "gdp yoy", "roczn dynamik pkb"],
-    "PL_UNEMPLOYMENT_REGISTERED_RATE": ["bezroboc rejestrowan", "stopa bezrobocia rejestrowanego", "urzędach pracy"],
+    "PL_UNEMPLOYMENT_REGISTERED_RATE": ["bezroboc rejestrowan", "stopa bezrobocia rejestrowanego", "urzędach pracy", "stopa bezrobocia", "stopie bezrobocia", "bezroboci"],
     "PL_UNEMPLOYMENT_COUNT": ["liczba bezrobotnych", "wolumen bezrobotnych", "osób bezrobotnych", "liczbie bezrobotnych"],
     "PL_UNEMPLOYMENT_LFS_RATE": ["bael", "lfs", "zharmonizowan stopa bezrobocia"],
     "PL_UNEMPLOYMENT_HARMONIZED_RATE": ["bael", "lfs", "zharmonizowan stopa bezrobocia"],
@@ -317,6 +317,7 @@ class EconomyEvaluator:
         streaming=True,
         callbacks=[StreamingStdOutCallbackHandler()],
         temperature=0.2,
+        model_kwargs={"response_format": {"type": "json_object"}},
     )
     chain = prompt | llm_gpt | StrOutputParser()
     return chain.invoke(inputs)
@@ -739,6 +740,27 @@ class EconomyEvaluator:
       return str(value)
     return format(number.normalize(), "f")
 
+  @staticmethod
+  def _are_indicators_compatible(ind1: str, ind2: str) -> bool:
+      if ind1 == ind2:
+          return True
+      policy_rates = {"PL_NBP_REFERENCE_RATE", "PL_POLICY_RATE_REF"}
+      if ind1 in policy_rates and ind2 in policy_rates:
+          return True
+      unemp_rates = {"PL_UNEMPLOYMENT_REGISTERED_RATE", "PL_UNEMPLOYMENT_RATE"}
+      if ind1 in unemp_rates and ind2 in unemp_rates:
+          return True
+      gdp_yoy = {"PL_GDP_YOY", "EU_GDP_YOY"}
+      if ind1 in gdp_yoy and ind2 in gdp_yoy:
+          return True
+      gdp_qoq = {"PL_GDP_QOQ", "EU_GDP_QOQ"}
+      if ind1 in gdp_qoq and ind2 in gdp_qoq:
+          return True
+      hicp = {"PL_HICP_YOY", "EU_HICP_YOY"}
+      if ind1 in hicp and ind2 in hicp:
+          return True
+      return False
+
   def _detect_claim_indicator(self, text: str) -> Optional[str]:
     """Wykrywa wskaźnik makroekonomiczny na podstawie słów kluczowych w tekście kontekstowym."""
     lower = text.lower()
@@ -990,6 +1012,7 @@ class EconomyEvaluator:
       # 7. Ścisła kontrola każdego zadeklarowanego twierdzenia w 'claims'
       required_claim_fields = ("indicator_code", "observation_id", "value_decimal", "unit_code", "period_start", "period_end", "citation_idx")
       approved_claim_values = set()
+      approved_claims_by_pair = {}
 
       for claim in claims:
           # A. Weryfikacja obecności wszystkich wymaganych pól
@@ -1059,7 +1082,7 @@ class EconomyEvaluator:
           claim_p_end = str(claim.get("period_end", "")).strip()[:10]
           exp_p_start = str(exp_obs.get("period_start", "")).strip()[:10]
           exp_p_end = str(exp_obs.get("period_end", "")).strip()[:10]
-          if (claim_p_start != exp_p_start or claim_p_end != exp_p_end) and exp_p_start != "2026-10-01":
+          if claim_p_start != exp_p_start or claim_p_end != exp_p_end:
               _reject(
                   "PERIOD_MISMATCH",
                   f"Niezgodność okresu dla {ind_code}: podano {claim_p_start}..{claim_p_end}, oczekiwano {exp_p_start}..{exp_p_end}",
@@ -1097,8 +1120,9 @@ class EconomyEvaluator:
               )
 
           approved_claim_values.add(val_norm)
+          approved_claims_by_pair[(val_norm, claim_fn)] = claim
 
-      # 8. Gwarancja, że KAŻDA liczba widoczna w treści odpowiada zatwierdzonemu twierdzeniu
+      # 8. Gwarancja, że KAŻDA liczba widoczna w treści sekcji 1-5 odpowiada zatwierdzonemu twierdzeniu i właściwemu przypisowi
       claim_pattern = re.compile(
           r"(?<![\w\[])\-?\+?\d+(?:[.,]\d+)?\s*(?:%|zł/EUR|zł/USD|PLN|zł|mln\s+EUR|pkt|p\.p\.|proc\.)(?![\w])",
           flags=re.IGNORECASE,
@@ -1106,31 +1130,98 @@ class EconomyEvaluator:
 
       for s_num in ("1", "2", "3", "4", "5"):
           sec_text = sections.get(s_num, "")
-          for cl in claim_pattern.findall(sec_text):
-              m = re.search(r"\-?\+?\d+(?:[.,]\d+)?", cl)
-              if m:
-                  num_norm = self._normalize_numeric_claim(m.group(0))
+          for line in sec_text.splitlines():
+              line_str = line.strip()
+              if not line_str:
+                  continue
+              num_matches = list(claim_pattern.finditer(line_str))
+              if not num_matches:
+                  continue
+
+              prev_boundary = 0
+              for idx, nm in enumerate(num_matches):
+                  cl_text = nm.group(0).strip()
+                  num_m = re.search(r"\-?\+?\d+(?:[.,]\d+)?", cl_text)
+                  if not num_m:
+                      continue
+                  num_norm = self._normalize_numeric_claim(num_m.group(0))
+
+                  next_start = num_matches[idx + 1].start() if idx + 1 < len(num_matches) else len(line_str)
+                  after_text = line_str[nm.end():next_start]
+
+                  fn_matches = [int(f) for f in re.findall(r"\[(\d+)\]", after_text)]
+                  if fn_matches:
+                      m_fn_last = list(re.finditer(r"\[(\d+)\]", after_text))[-1]
+                      clause_end = nm.end() + m_fn_last.end()
+                  else:
+                      before_text = line_str[prev_boundary:nm.start()]
+                      fn_matches = [int(f) for f in re.findall(r"\[(\d+)\]", before_text)]
+                      clause_end = next_start
+
+                  context_segment = line_str[prev_boundary:clause_end]
+                  prev_boundary = clause_end
+
+                  # A. Weryfikacja obecności przypisu dla tej liczby
+                  if not fn_matches:
+                      _reject(
+                          "UNCITED_NUMERIC_CLAIM",
+                          f"Twierdzenie liczbowe bez przypisu źródłowego w linii: '{line_str}'",
+                          gpt_val=cl_text,
+                          ind_att=self._detect_claim_indicator(context_segment) or "nieznany wskaźnik",
+                          allowed_desc=str(sorted(approved_claim_values)),
+                          fn_desc="brak przypisu w linii",
+                      )
+
+                  # B. Weryfikacja czy liczba w ogóle istnieje w zweryfikowanych claims
                   if num_norm not in approved_claim_values:
                       _reject(
                           "UNAPPROVED_NUMERIC_CLAIM",
-                          f"Niezweryfikowane twierdzenia liczbowe: Liczba '{cl.strip()}' w sekcji {s_num} nie posiada zatwierdzonego twierdzenia w tabeli claims!",
-                          gpt_val=cl.strip(),
-                          ind_att=self._detect_claim_indicator(cl) or "nieznany wskaźnik",
+                          f"Niezweryfikowane twierdzenia liczbowe: Liczba '{cl_text}' w sekcji {s_num} nie posiada zatwierdzonego twierdzenia w tabeli claims!",
+                          gpt_val=cl_text,
+                          ind_att=self._detect_claim_indicator(context_segment) or "nieznany wskaźnik",
                           allowed_desc=str(sorted(approved_claim_values)),
+                          fn_desc=str(fn_matches),
                       )
 
-      # 9. Weryfikacja obecności przypisu [N] w każdej linii zawierającej liczbę
-      for line in body_text.splitlines():
-          if claim_pattern.search(line) and not re.search(r"\[\d+\]", line):
-              uncited = claim_pattern.search(line).group(0).strip()
-              _reject(
-                  "UNCITED_NUMERIC_CLAIM",
-                  f"Twierdzenie liczbowe bez przypisu źródłowego w linii: '{line.strip()}'",
-                  gpt_val=uncited,
-                  ind_att=self._detect_claim_indicator(line) or "nieznany wskaźnik",
-                  allowed_desc=str(sorted(approved_claim_values)),
-                  fn_desc="brak przypisu w linii",
-              )
+                  # C. Weryfikacja czy przypis istnieje w rejestrze cytowań
+                  for fn in fn_matches:
+                      if fn not in citation_by_idx:
+                          _reject("UNKNOWN_FOOTNOTE", f"Przypis [{fn}] nie istnieje w rejestrze cytowań")
+
+                  # D. Weryfikacja czy istnieje zatwierdzone twierdzenie wiążące tę liczbę z właściwym przypisem [N]
+                  matching_claim = None
+                  matching_fn = None
+                  for fn in fn_matches:
+                      if (num_norm, fn) in approved_claims_by_pair:
+                          matching_claim = approved_claims_by_pair[(num_norm, fn)]
+                          matching_fn = fn
+                          break
+
+                  if matching_claim is None:
+                      first_fn = fn_matches[0]
+                      cite_obj = citation_by_idx.get(first_fn)
+                      exp_val = cite_obj.get("value_decimal") if cite_obj else None
+                      _reject(
+                          "VALUE_MISMATCH",
+                          f"Niepoprawne powiązanie przypisów ze źródłami: Twierdzenie '{cl_text}' powiązane z przypisem [{first_fn}] (oczekiwana wartość ze źródła: {exp_val or 'brak powiązania'})",
+                          gpt_val=num_norm,
+                          ind_att=self._detect_claim_indicator(context_segment) or "nieznany wskaźnik",
+                          allowed_desc=f"{cite_obj.get('indicator_code', 'nieznany') if cite_obj else 'nieznany'} ({exp_val})",
+                          fn_desc=f"[{first_fn}]",
+                      )
+
+                  # E. Weryfikacja jednoznacznej zgodności wskaźnika w kontekście zdaniowym
+                  detected_ind = self._detect_claim_indicator(context_segment)
+                  claim_ind = matching_claim["indicator_code"]
+                  if detected_ind and not self._are_indicators_compatible(detected_ind, claim_ind):
+                      _reject(
+                          "INDICATOR_MISMATCH",
+                          f"Niepoprawne powiązanie przypisów ze źródłami: Twierdzenie '{cl_text}' o '{detected_ind}' przypisane do źródła innego wskaźnika [{matching_fn}] ({claim_ind})",
+                          gpt_val=num_norm,
+                          ind_att=detected_ind,
+                          allowed_desc=f"{claim_ind} ({matching_claim.get('value_decimal')})",
+                          fn_desc=f"[{matching_fn}] ({citation_by_idx.get(matching_fn, {}).get('institution', '')})",
+                      )
 
       if diagnostics and run_id:
           diagnostics.event(

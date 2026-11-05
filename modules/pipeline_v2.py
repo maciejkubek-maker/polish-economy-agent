@@ -718,7 +718,11 @@ class MacroPipelineV2:
                     raise
 
             # Krok C: Oznaczenie raportu jako PUBLISHED w bazie SQLite dopiero po sukcesie zapisu HTML
-            self.db.mark_report_published(report_id)
+            published = self.db.mark_report_published(report_id)
+            if not published:
+                raise RuntimeError(
+                    f"Publication failed: mark_report_published returned False for report_id '{report_id}'"
+                )
 
         except Exception as pub_err:
             # Procedura odzyskiwania po błędzie publikacji (oznaczenie FAILED, rollback SQLite i czyszczenie plików)
@@ -747,6 +751,11 @@ class MacroPipelineV2:
             if temp_html_path and os.path.exists(temp_html_path):
                 try:
                     os.remove(temp_html_path)
+                except Exception:
+                    pass
+            if output_html_path and os.path.exists(output_html_path):
+                try:
+                    os.remove(output_html_path)
                 except Exception:
                     pass
             raise

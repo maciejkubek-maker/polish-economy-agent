@@ -895,3 +895,316 @@ def test_startup_recovery_transitions_pending_to_failed(tmp_path):
 
     # Kolejne wywołanie nie ma już raportów do odzyskania
     assert db.recover_pending_reports() == 0
+
+# ==============================================================================
+
+# ==============================================================================
+# TEST T: Dokładna zgodność okresu - brak wyjątku dla 2026-10-01 (Bloker 1)
+# ==============================================================================
+def test_period_exact_match_rejects_2026_10_01_mismatch(tmp_path, monkeypatch):
+    """Obserwacja zaczynająca się dokładnie 2026-10-01 musi zostać odrzucona przy niepoprawnym okresie w JSON."""
+    monkeypatch.setattr(config, "OFFLINE_MODE", False)
+    db = SQLiteV2Storage(db_path=str(tmp_path / "period_test.db"))
+    evi, obs = _make_evidence_and_obs(
+        "PL_POLICY_RATE_REF",
+        "5.75",
+        period_start="2026-10-01",
+        period_end="2026-10-31",
+        unit="PCT",
+        source_id="SRC_NBP",
+    )
+
+    evaluator = EconomyEvaluator()
+    # GPT zwraca zły okres (np. 2026-09-01..2026-09-30) dla obserwacji z 2026-10-01
+    bad_period_candidate = json.dumps({
+        "claims": [
+            {
+                "indicator_code": "PL_POLICY_RATE_REF",
+                "observation_id": obs.observation_id,
+                "value_decimal": "5.75",
+                "unit_code": "PCT",
+                "period_start": "2026-09-01",
+                "period_end": "2026-09-30",
+                "citation_idx": 1,
+            }
+        ],
+        "sections": {
+            "1": "Stopa referencyjna NBP wynosi 5.75% [1].",
+            "2": "Ryzyka makro.",
+            "3": "- **Kredyty i Raty:** Raty.\n- **Ceny i Zakupy:** Ceny.\n- **Praca i Zarobki:** Rynek.",
+            "4": "Przedsiębiorcy.",
+            "5": "Werdykt.",
+        }
+    })
+    monkeypatch.setattr(evaluator, "_run_llm_synthesis", lambda *args, **kwargs: bad_period_candidate)
+
+    pipeline = MacroPipelineV2(db=db, offline_mode=False, evaluator=evaluator, diagnostics_dir=tmp_path / "logs")
+    monkeypatch.setattr(pipeline, "fetch_official_data", lambda rid: ([evi], [obs], [], []))
+    monkeypatch.setattr(pipeline, "search_enrichment", lambda country, rid: [])
+
+    result = pipeline.run(country="Polska", output_html_path=str(tmp_path / "report.html"))
+
+    assert result.success is False
+    assert result.status == "FAILED"
+    assert result.report_id is None
+    assert not (tmp_path / "report.html").exists()
+
+    with open(tmp_path / "logs" / "last_run.json", "r", encoding="utf-8") as f:
+        summary = json.load(f)
+    assert summary["pipeline_status"] == "FAILED"
+    assert summary["generation_mode"] == "GPT_VALIDATION_REJECTED"
+    assert "Niezgodność okresu" in summary["fallback_reason"]
+    assert "2026-09-01..2026-09-30" in summary["fallback_reason"]
+
+
+# ==============================================================================
+# TEST U: Identyczne wartości, różne wskaźniki i błędny przypis w treści (Bloker 2)
+# ==============================================================================
+def test_regression_identical_values_wrong_footnote_in_content(tmp_path, monkeypatch):
+    """Dwa różne wskaźniki o identycznej wartości (np. CPI 5.0% i bezrobocie 5.0%).
+    Błędny przypis w sekcji raportu musi zostać bezwzględnie odrzucony, a poprawny zaakceptowany."""
+    monkeypatch.setattr(config, "OFFLINE_MODE", False)
+    db_bad = SQLiteV2Storage(db_path=str(tmp_path / "bad.db"))
+
+    evi_cpi, obs_cpi = _make_evidence_and_obs(
+        "PL_CPI_YOY",
+        "5.0",
+        period_start="2026-09-01",
+        period_end="2026-09-30",
+        unit="PCT",
+        source_id="SRC_GUS_CPI",
+    )
+    evi_unemp, obs_unemp = _make_evidence_and_obs(
+        "PL_UNEMPLOYMENT_REGISTERED_RATE",
+        "5.0",
+        period_start="2026-09-01",
+        period_end="2026-09-30",
+        unit="PCT",
+        source_id="SRC_GUS_UNEMP",
+    )
+
+    evaluator = EconomyEvaluator()
+
+    # 1. Błędny przypis w sekcji 1 (przypisuje [2] do twierdzenia o inflacji CPI)
+    bad_footnote_candidate = json.dumps({
+        "claims": [
+            {
+                "indicator_code": "PL_CPI_YOY",
+                "observation_id": obs_cpi.observation_id,
+                "value_decimal": "5.0",
+                "unit_code": "PCT",
+                "period_start": "2026-09-01",
+                "period_end": "2026-09-30",
+                "citation_idx": 1,
+            },
+            {
+                "indicator_code": "PL_UNEMPLOYMENT_REGISTERED_RATE",
+                "observation_id": obs_unemp.observation_id,
+                "value_decimal": "5.0",
+                "unit_code": "PCT",
+                "period_start": "2026-09-01",
+                "period_end": "2026-09-30",
+                "citation_idx": 2,
+            }
+        ],
+        "sections": {
+            "1": "Inflacja CPI ukształtowała się na poziomie 5.0% [2].",
+            "2": "Ryzyka makroekonomiczne.",
+            "3": "- **Kredyty i Raty:** Raty.\n- **Ceny i Zakupy:** Ceny.\n- **Praca i Zarobki:** Stopa bezrobocia rejestrowanego wyniosła 5.0% [2].",
+            "4": "Przedsiębiorcy.",
+            "5": "Podsumowanie.",
+        }
+    })
+
+    monkeypatch.setattr(evaluator, "_run_llm_synthesis", lambda *args, **kwargs: bad_footnote_candidate)
+    pipeline_bad = MacroPipelineV2(db=db_bad, offline_mode=False, evaluator=evaluator, diagnostics_dir=tmp_path / "logs_bad")
+    monkeypatch.setattr(pipeline_bad, "fetch_official_data", lambda rid: ([evi_cpi, evi_unemp], [obs_cpi, obs_unemp], [], []))
+    monkeypatch.setattr(pipeline_bad, "search_enrichment", lambda country, rid: [])
+
+    result_bad = pipeline_bad.run(country="Polska", output_html_path=str(tmp_path / "report_bad.html"))
+
+    assert result_bad.success is False
+    assert result_bad.status == "FAILED"
+    assert result_bad.report_id is None
+    assert not (tmp_path / "report_bad.html").exists()
+
+    with open(tmp_path / "logs_bad" / "last_run.json", "r", encoding="utf-8") as f:
+        summary_bad = json.load(f)
+    assert summary_bad["pipeline_status"] == "FAILED"
+    assert summary_bad["generation_mode"] == "GPT_VALIDATION_REJECTED"
+    assert "Niepoprawne powiązanie przypisów ze źródłami" in summary_bad["fallback_reason"]
+
+    # 2. Poprawne powiązanie przypisów w treści sekcji
+    db_good = SQLiteV2Storage(db_path=str(tmp_path / "good.db"))
+    evi_cpi_g, obs_cpi_g = _make_evidence_and_obs(
+        "PL_CPI_YOY",
+        "5.0",
+        period_start="2026-09-01",
+        period_end="2026-09-30",
+        unit="PCT",
+        source_id="SRC_GUS_CPI",
+    )
+    evi_unemp_g, obs_unemp_g = _make_evidence_and_obs(
+        "PL_UNEMPLOYMENT_REGISTERED_RATE",
+        "5.0",
+        period_start="2026-09-01",
+        period_end="2026-09-30",
+        unit="PCT",
+        source_id="SRC_GUS_UNEMP",
+    )
+
+    good_footnote_candidate = json.dumps({
+        "claims": [
+            {
+                "indicator_code": "PL_CPI_YOY",
+                "observation_id": obs_cpi_g.observation_id,
+                "value_decimal": "5.0",
+                "unit_code": "PCT",
+                "period_start": "2026-09-01",
+                "period_end": "2026-09-30",
+                "citation_idx": 1,
+            },
+            {
+                "indicator_code": "PL_UNEMPLOYMENT_REGISTERED_RATE",
+                "observation_id": obs_unemp_g.observation_id,
+                "value_decimal": "5.0",
+                "unit_code": "PCT",
+                "period_start": "2026-09-01",
+                "period_end": "2026-09-30",
+                "citation_idx": 2,
+            }
+        ],
+        "sections": {
+            "1": "W badanym okresie inflacja CPI ukształtowała się na poziomie 5.0% [1], natomiast stopa bezrobocia rejestrowanego wyniosła 5.0% [2].",
+            "2": "Ryzyka makroekonomiczne.",
+            "3": "- **Kredyty i Raty:** Raty.\n- **Ceny i Zakupy:** Wskaźnik cen CPI ukształtował się na poziomie 5.0% [1].\n- **Praca i Zarobki:** Stopa bezrobocia rejestrowanego wynosi 5.0% [2].",
+            "4": "Przedsiębiorcy.",
+            "5": "Podsumowanie.",
+        }
+    })
+
+    monkeypatch.setattr(evaluator, "_run_llm_synthesis", lambda *args, **kwargs: good_footnote_candidate)
+    pipeline_good = MacroPipelineV2(db=db_good, offline_mode=False, evaluator=evaluator, diagnostics_dir=tmp_path / "logs_good")
+    monkeypatch.setattr(pipeline_good, "fetch_official_data", lambda rid: ([evi_cpi_g, evi_unemp_g], [obs_cpi_g, obs_unemp_g], [], []))
+    monkeypatch.setattr(pipeline_good, "search_enrichment", lambda country, rid: [])
+
+    result_good = pipeline_good.run(country="Polska", output_html_path=str(tmp_path / "report_good.html"))
+
+    assert result_good.success is True
+    assert result_good.status in ("COMPLETED", "PARTIAL")
+    assert result_good.report_id is not None
+    assert (tmp_path / "report_good.html").exists()
+
+
+# ==============================================================================
+# TEST V: mark_report_published zwraca False - publikacja FAILED (Bloker 3)
+# ==============================================================================
+def test_mark_report_published_false_fails_publication(tmp_path, monkeypatch):
+    """Gdy mark_report_published zwraca False, publikacja musi zakończyć się FAILED; nie zwracać sukcesu."""
+    monkeypatch.setattr(config, "OFFLINE_MODE", False)
+    db = SQLiteV2Storage(db_path=str(tmp_path / "pub_false.db"))
+    evi, obs = _make_evidence_and_obs("PL_CPI_YOY", "2.3")
+
+    evaluator = EconomyEvaluator()
+    valid_report = json.dumps({
+        "claims": [
+            {
+                "indicator_code": "PL_CPI_YOY",
+                "observation_id": obs.observation_id,
+                "value_decimal": "2.3",
+                "unit_code": "PCT",
+                "period_start": obs.period_start,
+                "period_end": obs.period_end,
+                "citation_idx": 1,
+            }
+        ],
+        "sections": {
+            "1": "Inflacja CPI wynosi 2.3% [1].",
+            "2": "Ryzyka makro.",
+            "3": "- **Kredyty i Raty:** Brak.\n- **Ceny i Zakupy:** Obywatel.\n- **Praca i Zarobki:** Brak.",
+            "4": "Przedsiębiorcy.",
+            "5": "Werdykt.",
+        }
+    })
+    monkeypatch.setattr(evaluator, "_run_llm_synthesis", lambda *args, **kwargs: valid_report)
+
+    # Symulacja: mark_report_published zwraca False
+    monkeypatch.setattr(db, "mark_report_published", lambda rep_id: False)
+
+    target_html = tmp_path / "report_should_not_exist.html"
+    pipeline = MacroPipelineV2(db=db, offline_mode=False, evaluator=evaluator, diagnostics_dir=tmp_path / "logs")
+    monkeypatch.setattr(pipeline, "fetch_official_data", lambda rid: ([evi], [obs], [], []))
+    monkeypatch.setattr(pipeline, "search_enrichment", lambda country, rid: [])
+
+    result = pipeline.run(output_html_path=str(target_html))
+
+    assert result.success is False
+    assert result.status == "FAILED"
+    assert result.report_id is None
+    assert not target_html.exists()
+    assert db.get_latest_report("PL") is None
+
+    with open(tmp_path / "logs" / "last_run.json", "r", encoding="utf-8") as f:
+        summary = json.load(f)
+    assert summary["pipeline_status"] == "FAILED"
+    assert summary["report_id"] is None
+    assert "mark_report_published returned False" in summary["fallback_reason"]
+
+
+# ==============================================================================
+# TEST W: mark_report_published dla nieobecnego rekordu zwraca False i FAILED (Bloker 3)
+# ==============================================================================
+def test_mark_report_published_missing_record_returns_false_and_fails(tmp_path, monkeypatch):
+    """mark_report_published dla nieobecnego rekordu zwraca False oraz próba publikacji kończy się FAILED."""
+    monkeypatch.setattr(config, "OFFLINE_MODE", False)
+    db = SQLiteV2Storage(db_path=str(tmp_path / "missing_rec.db"))
+
+    # 1. Bezpośrednie wywołanie dla nieistniejącego rekordu zwraca False
+    missing_id = "REP_NON_EXISTENT_9999"
+    assert db.mark_report_published(missing_id) is False
+
+    # 2. Gdy rekord raportu nie został zapisany w bazie (nieobecny rekord), pipeline.run kończy się FAILED
+    evi, obs = _make_evidence_and_obs("PL_CPI_YOY", "2.3")
+    evaluator = EconomyEvaluator()
+    valid_report = json.dumps({
+        "claims": [
+            {
+                "indicator_code": "PL_CPI_YOY",
+                "observation_id": obs.observation_id,
+                "value_decimal": "2.3",
+                "unit_code": "PCT",
+                "period_start": obs.period_start,
+                "period_end": obs.period_end,
+                "citation_idx": 1,
+            }
+        ],
+        "sections": {
+            "1": "Inflacja CPI wynosi 2.3% [1].",
+            "2": "Ryzyka makro.",
+            "3": "- **Kredyty i Raty:** Brak.\n- **Ceny i Zakupy:** Obywatel.\n- **Praca i Zarobki:** Brak.",
+            "4": "Przedsiębiorcy.",
+            "5": "Werdykt.",
+        }
+    })
+    monkeypatch.setattr(evaluator, "_run_llm_synthesis", lambda *args, **kwargs: valid_report)
+
+    # Symulacja: save_report nie zapisało rekordu do tabeli reports (rekord nieobecny w bazie)
+    monkeypatch.setattr(db, "save_report", lambda *args, **kwargs: None)
+
+    target_html = tmp_path / "report_missing_record.html"
+    pipeline = MacroPipelineV2(db=db, offline_mode=False, evaluator=evaluator, diagnostics_dir=tmp_path / "logs")
+    monkeypatch.setattr(pipeline, "fetch_official_data", lambda rid: ([evi], [obs], [], []))
+    monkeypatch.setattr(pipeline, "search_enrichment", lambda country, rid: [])
+
+    result = pipeline.run(output_html_path=str(target_html))
+
+    assert result.success is False
+    assert result.status == "FAILED"
+    assert result.report_id is None
+    assert not target_html.exists()
+    assert db.get_latest_report("PL") is None
+
+    with open(tmp_path / "logs" / "last_run.json", "r", encoding="utf-8") as f:
+        summary = json.load(f)
+    assert summary["pipeline_status"] == "FAILED"
+    assert summary["report_id"] is None

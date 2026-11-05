@@ -1,6 +1,6 @@
 # Final Stabilization & Live Mode Hardening Audit Report
 
-**Date:** 2026-11-04  
+**Date:** 2026-11-05  
 **Branch:** `feature/final-stabilization`  
 **Base commit:** `997b9b3` (`origin/main`, merge PR #5)  
 **Execution Environment:** Isolated worktree `.worktrees/final-stabilization`  
@@ -79,6 +79,26 @@ In run `RUN_258c9a14a4be` and subsequent audit of PR #6, key architectural issue
 - If `last_run.json` records `pipeline_status=FAILED`, the `/` endpoint displays a clear failure card with `run_id`, timestamp, error category, and root cause.
 - Under no circumstances does the web dashboard display an archival report as the current run outcome.
 
+
+### Pillar 8: Resolution of Commit 93549ec Audit Blockers & Native JSON Hardening
+Following the audit of commit `93549ec`, the three final PR #6 blockers and model response hardening were implemented:
+1. **Blocker 1 (Strict Period Exact Match without Date Exceptions - `modules/evaluator.py:1062`):**
+   - Removed the exception `and exp_p_start != "2026-10-01"`.
+   - Now enforces strict equality of `period_start` and `period_end` against the database observation for every single claim without any exceptional dates.
+   - Covered by Test T (`test_period_exact_match_rejects_2026_10_01_mismatch`).
+2. **Blocker 2 (Unambiguous Number-Claim & Footnote Attribution - `modules/evaluator.py:1099–1133`):**
+   - Eliminated the global number matching set `approved_claim_values` as a sufficient condition for accepting numbers.
+   - Every individual occurrence of a numerical claim in sections 1 through 5 is resolved to its immediate footnote citation `[N]`, matched against `approved_claims_by_pair[(val_norm, fn)]`, and contextually checked against `_detect_claim_indicator(context_segment)` and `_are_indicators_compatible()`.
+   - Mismatched footnotes or using an identical number from a different indicator triggers immediate `INDICATOR_MISMATCH` or `VALUE_MISMATCH` rejection.
+   - Covered by Test U (`test_regression_identical_values_wrong_footnote_in_content`).
+3. **Blocker 3 (Verification of `mark_report_published` Return State - `modules/pipeline_v2.py:721`):**
+   - Evaluates the boolean result of `self.db.mark_report_published(report_id)`.
+   - If `False` (e.g. database update failure, concurrency conflict, or missing report row), publication is aborted with `RuntimeError`, transitioning to `FAILED`, rolling back SQLite records, and removing any output HTML files.
+   - Covered by Test V (`test_mark_report_published_false_fails_publication`) and Test W (`test_mark_report_published_missing_record_returns_false_and_fails`).
+4. **Native Structured JSON Mode in ChatOpenAI:**
+   - Configured `model_kwargs={"response_format": {"type": "json_object"}}` on `ChatOpenAI` during report synthesis.
+   - Application-side schema parsing (`_parse_candidate_payload`) and deterministic verification (`_validate_structured_report`) are strictly preserved as mandatory gates.
+
 ---
 
 ## 3. Comprehensive Test Suite Execution & Audit Results
@@ -91,30 +111,30 @@ platform win32 -- Python 3.11.16, pytest-9.2.0, pluggy-1.7.0
 rootdir: E:\Programy\PycharmProjects\polish-economy-agent\.worktrees\final-stabilization
 configfile: pyproject.toml
 plugins: anyio-4.15.1, langsmith-0.12.4
-collected 183 items
+collected 187 items
 
 tests\test_ambiguous_formats.py .....                                    [  2%]
-tests\test_cache_freshness.py ......                                     [  6%]
+tests\test_cache_freshness.py ......                                     [  5%]
 tests\test_connectors.py ............................................... [ 31%]
-.....                                                                    [ 34%]
-tests\test_database_init.py .....                                        [ 37%]
-tests\test_diagnostics.py ................                               [ 45%]
-tests\test_executive_horizon.py ........                                 [ 50%]
-tests\test_final_stabilization.py .....................                  [ 61%]
-tests\test_html_security.py ..................                           [ 71%]
-tests\test_indicators_storage.py ......                                  [ 74%]
+.....                                                                    [ 33%]
+tests\test_database_init.py .....                                        [ 36%]
+tests\test_diagnostics.py ................                               [ 44%]
+tests\test_executive_horizon.py ........                                 [ 49%]
+tests\test_final_stabilization.py .........................              [ 62%]
+tests\test_html_security.py ..................                           [ 72%]
+tests\test_indicators_storage.py ......                                  [ 75%]
 tests\test_migrator.py ............                                      [ 81%]
 tests\test_pipeline_v2.py .................                              [ 90%]
 tests\test_record_updates.py .....                                       [ 93%]
 tests\test_schema_v2_design.py ............                              [100%]
 
-============================ 183 passed in 11.33s =============================
+============================ 187 passed in 11.26s =============================
 ```
 
-- **Total Tests:** 183
-- **Passed:** 183
+- **Total Tests:** 187
+- **Passed:** 187
 - **Failed:** 0
-- **Duration:** 11.33 seconds
+- **Duration:** 11.26 seconds
 
 ### Key Test Coverage Breakdown
 - **Test A:** Rejection of Tavily 3.1% inflation vs official 2.3% GUS observation (reproducing `RUN_258c9a14a4be`).
@@ -136,6 +156,10 @@ tests\test_schema_v2_design.py ............                              [100%]
 - **Test Q:** Structured claims JSON with multiple numbers in single paragraph.
 - **Test R:** Rollback failure resilience (simulating `delete_report` error; confirms `publication_status='FAILED'` and Flask `/` handles failure).
 - **Test S:** Startup recovery transitioning lingering `PENDING` reports to `FAILED`.
+- **Test T:** Strict exact match for period dates; rejects candidate when period diverges even for observations starting on `2026-10-01` (Blocker 1).
+- **Test U:** Regression verification for identical values across distinct indicators (e.g. CPI 5.0% vs Unemployment 5.0%); ensures wrong footnote attribution in narrative is rejected and correct attribution passes (Blocker 2).
+- **Test V:** Atomic publication fails with status `FAILED` and rolls back state when `mark_report_published(report_id)` returns `False` (Blocker 3).
+- **Test W:** Verification of missing/non-existent record handling during report publication (`mark_report_published` returns `False` and pipeline ends in `FAILED`) (Blocker 3).
 
 ---
 
