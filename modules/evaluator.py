@@ -16,6 +16,11 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 from modules.diagnostics import safe_error_message
+from modules.report_indicator_policy import (
+    FreshnessStatus,
+    IndicatorPriority,
+    ReportIndicatorPolicy,
+)
 from modules.storage_v2 import SQLiteV2Storage
 
 logger = logging.getLogger("modules.evaluator")
@@ -181,6 +186,14 @@ INDICATOR_TOPIC_KEYWORDS = {
     "PL_FX_USD_PLN": [
         "pl_fx_usd_pln", "usd/pln", "kurs dolara", "zł/usd",
     ],
+    "PL_WAGE_AVERAGE_GROSS": [
+        "pl_wage_average_gross", "pl_wage_avg_enterprise", "przeciętne wynagrodzenie",
+        "średnie wynagrodzenie", "średnia płaca", "wynagrodzenie brutto", "płaca w sektorze",
+    ],
+    "PL_EMPLOYMENT_GROWTH": [
+        "pl_employment_growth", "pl_employment_count", "pl_employment", "przeciętne zatrudnienie",
+        "zatrudnienie w sektorze przedsiębiorstw",
+    ],
     "PL_REAL_INTEREST_RATE": [
         "pl_real_interest_rate", "realna stopa", "realnej stopy", "realne stopy",
     ],
@@ -302,7 +315,16 @@ class EconomyEvaluator:
                 "   - Wszelkie liczby pochodzące z nieoficjalnych doniesień prasowych (np. szacunki medialne 3,1%)"
                 " są NIEZAUFANE i KATEGORYCZNIE NIE MOGĄ być podawane jako oficjalne odczyty. Jeśli oficjalny rejestr"
                 " podaje 2,3%, to jedyną oficjalną wartością jest 2,3% [N].\n"
-                "5. Całkowity zakaz odwołań do AI, promptów, modeli czy skryptów.\n\n"
+                "5. Całkowity zakaz odwołań do AI, promptów, modeli czy skryptów.\n"
+                "6. OBOWIĄZKOWA HIERARCHIA WSKAŹNIKÓW POLSKIEJ GOSPODARKI (POLITYKA JAKOŚCI DANYCH):\n"
+                "   - Sekcja 3 'Co to oznacza dla Kowalskiego?':\n"
+                "     * 'Ceny i Zakupy': nadrzędnym punktem odniesienia MUSI być inflacja konsumencka CPI GUS (PL_CPI_YOY). Wskaźnik HICP (Eurostat) może być wymieniony wyłącznie jako tło unijne. Zakaz zastępowania CPI przez HICP.\n"
+                "     * 'Praca i Zarobki': nadrzędnym punktem odniesienia MUSI być stopa bezrobocia rejestrowanego GUS (PL_UNEMPLOYMENT_REGISTERED_RATE). Bezrobocie BAEL/LFS jest wyłącznie uzupełniającym wskaźnikiem ankietowym. Zakaz zastępowania bezrobocia rejestrowanego przez BAEL. Jeśli bezrobocie rejestrowane to szereg roczny z BDL (np. za 2025 r.), należy to jawnie wskazać jako roczną bazę odniesienia na koniec roku.\n"
+                "     * 'Kredyty i Raty': stopa referencyjna NBP obowiązuje od daty decyzji RPP do kolejnego posiedzenia decyzyjnego. Podawaj ją jako obowiązującą stawkę wraz z datą decyzji RPP. Nie sugeruj, że jest to odczyt nieaktualny.\n"
+                "   - Sekcja 1 ('Analiza Trendów') oraz Sekcja 5 ('Podsumowanie'):\n"
+                "     * Wzrost PKB r/r (PL_GDP_YOY) ma bezwzględny priorytet nad dynamiką kw/kw (PL_GDP_QOQ) oraz technicznym wolumenem w mln EUR (PL_GDP_VOLUME).\n"
+                "   - DEFINICJA TRENDU: Pojedynczy odczyt (np. dzienny kurs EUR/PLN lub USD/PLN, pojedynczy kwartał PKB) nie stanowi trendu. Zakaz wnioskowania o trwałym trendzie z pojedynczej obserwacji.\n"
+                "   - BRAKUJĄCE DANE: W przypadku braku bieżących potwierdzonych odczytów wskaźników Priorytetu A, jawnie poinformuj o braku danych w rejestrach GUS/NBP zamiast zastępować je wskaźnikami pomocniczymi.\n\n"
                 "WYMAGANY FORMAT ODPOWIEDZI (WYŁĄCZNIE CZYSTY OBIEKT JSON):\n"
                 "Odpowiedz WYŁĄCZNIE poprawnym obiektem JSON o następującym schemacie:\n"
                 "{{\n"
@@ -548,8 +570,22 @@ class EconomyEvaluator:
         now=now,
     )
 
+    # 1B. Ewaluacja wskaźników wg formalnej polityki hierarchii i jakości
+    policy_plan = ReportIndicatorPolicy.evaluate(
+        verified_obs=verified_obs,
+        citations=citations,
+        report_date=report_date,
+        now=now,
+        country_code="PL",
+    )
+    periods_summary = policy_plan.executive_horizon_summary or periods_summary
+
     # 2. Formatowanie kontekstu faktograficznego z kontrolą lagów i aktualności
-    context_lines = ["### ZWERYFIKOWANE OFICJALNE ODCZYTY MAKROEKONOMICZNE (JEDYNE ŹRÓDŁO LICZB DO TABLICY 'claims'):"]
+    context_lines = [
+        policy_plan.ordered_context_prompt,
+        "",
+        "### ZWERYFIKOWANE OFICJALNE ODCZYTY MAKROEKONOMICZNE (JEDYNE ŹRÓDŁO LICZB DO TABLICY 'claims'):",
+    ]
     today_dt = now.date()
     for o in verified_obs:
       c_num = obs_citation_map[o["indicator_code"]]
@@ -563,8 +599,11 @@ class EconomyEvaluator:
       try:
         p_end_dt = datetime.datetime.strptime(o["period_end"][:10], "%Y-%m-%d").date()
         lag_days = (today_dt - p_end_dt).days
-        if lag_days > 90:
+        is_nbp_rate = "NBP" in o.get("source_id", "") and ("RATE" in o["indicator_code"] or "POLICY" in o["indicator_code"])
+        if lag_days > 90 and not is_nbp_rate:
           line_str += f" -> [UWAGA NA LAG PUBLIKACYJNY: odczyt historyczny z okresu zakończonego {o['period_end']}, opóźnienie ~{lag_days} dni względem {report_date}. ZAKAZ nazywania go bieżącą wartością z {report_date}!]"
+        elif is_nbp_rate:
+          line_str += f" -> [OBOWIĄZUJĄCA DECYZJA RPP: oficjalna stopa NBP obowiązująca od {o['period_start']} r. do kolejnej decyzji RPP. W pełni aktualna stawka prawna.]"
       except Exception:
         pass
       context_lines.append(line_str)
@@ -867,6 +906,12 @@ class EconomyEvaluator:
       unemp_rates = {"PL_UNEMPLOYMENT_REGISTERED_RATE", "PL_UNEMPLOYMENT_RATE"}
       if ind1 in unemp_rates and ind2 in unemp_rates:
           return True
+      wage_aliases = {"PL_WAGE_AVERAGE_GROSS", "PL_WAGE_AVG_ENTERPRISE"}
+      if ind1 in wage_aliases and ind2 in wage_aliases:
+          return True
+      employment_aliases = {"PL_EMPLOYMENT_GROWTH", "PL_EMPLOYMENT_COUNT", "PL_EMPLOYMENT"}
+      if ind1 in employment_aliases and ind2 in employment_aliases:
+          return True
       return False
 
   def _detect_claim_indicator(self, text: str) -> Optional[str]:
@@ -930,6 +975,12 @@ class EconomyEvaluator:
     if any(k in lower for k in ("usd/pln", "kurs dolara", "zł/usd")):
       return "PL_FX_USD_PLN"
 
+    # 7. Wynagrodzenia i zatrudnienie
+    if any(k in lower for k in ("przeciętne wynagrodzenie", "średnie wynagrodzenie", "średnia płaca", "wynagrodzenie brutto", "płaca w sektorze")):
+      return "PL_WAGE_AVERAGE_GROSS"
+    if any(k in lower for k in ("przeciętne zatrudnienie", "zatrudnienie w sektorze")):
+      return "PL_EMPLOYMENT_GROWTH"
+
     return None
 
   def _verify_claim_context_consistency(
@@ -972,6 +1023,8 @@ class EconomyEvaluator:
         "GDP": any(k in lower for k in ("pkb", "gdp", "produkt krajowy brutto")),
         "INTEREST_RATES": any(k in lower for k in ("stopa referencyjn", "stóp nbp", "stopa nbp", "stopy procentow", "stopami procentow", "rpp", "rada polityki pieniężnej", "koszt kapitału")),
         "FX": any(k in lower for k in ("eur/pln", "usd/pln", "kurs euro", "kurs dolara", "zł/eur", "zł/usd")),
+        "WAGES": any(k in lower for k in ("wynagrodzen", "płac", "zarobk", "pensj")),
+        "EMPLOYMENT": any(k in lower for k in ("zatrudnien", "etat")),
     }
 
     expected_domain = None
@@ -985,6 +1038,10 @@ class EconomyEvaluator:
       expected_domain = "INTEREST_RATES"
     elif "FX" in claim_ind:
       expected_domain = "FX"
+    elif "WAGE" in claim_ind:
+      expected_domain = "WAGES"
+    elif "EMPLOYMENT" in claim_ind:
+      expected_domain = "EMPLOYMENT"
 
     if expected_domain:
       other_domains_matched = [
@@ -1741,20 +1798,27 @@ class EconomyEvaluator:
       citations: List[Dict[str, Any]],
   ) -> str:
       """Składa pełny tekst raportu programowo dopiero po pomyślnej walidacji."""
+      def clean_sec(sec_id: str) -> str:
+          text = sections.get(sec_id, "").strip()
+          lines = text.split("\n")
+          if lines and re.match(r"^#+\s*(?:\d+\.|\bsekcja\s*\d+\b)", lines[0].strip(), re.IGNORECASE):
+              text = "\n".join(lines[1:]).strip()
+          return text
+
       body_parts = [
           f"# RAPORT KONDYCJI GOSPODARCZEJ: {country}",
           f"**Data publikacji analizy:** {report_date}  ",
           f"**Horyzont analizowanych danych:** {periods_summary}",
           "",
-          f"## 1. Analiza Trendów w Dostępnym Okresie\n{sections.get('1', '').strip()}",
+          f"## 1. Analiza Trendów w Dostępnym Okresie\n{clean_sec('1')}",
           "",
-          f"## 2. Zagrożenia i Ryzyka Makroekonomiczne\n{sections.get('2', '').strip()}",
+          f"## 2. Zagrożenia i Ryzyka Makroekonomiczne\n{clean_sec('2')}",
           "",
-          f"## 3. Co to oznacza dla Kowalskiego? (Perspektywa Obywatela)\n{sections.get('3', '').strip()}",
+          f"## 3. Co to oznacza dla Kowalskiego? (Perspektywa Obywatela)\n{clean_sec('3')}",
           "",
-          f"## 4. Co to oznacza dla Przedsiębiorców?\n{sections.get('4', '').strip()}",
+          f"## 4. Co to oznacza dla Przedsiębiorców?\n{clean_sec('4')}",
           "",
-          f"## 5. Podsumowanie i Realistyczny Werdykt\n{sections.get('5', '').strip()}",
+          f"## 5. Podsumowanie i Realistyczny Werdykt\n{clean_sec('5')}",
       ]
       body = "\n".join(body_parts).rstrip()
       used_indices = {int(v) for v in re.findall(r"\[(\d+)\]", body)}
