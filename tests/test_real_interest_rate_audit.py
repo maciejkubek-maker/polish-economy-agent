@@ -288,11 +288,19 @@ def test_derived_calculation_unreferenced_rejected():
         require_json=True,
     )
 
+    derived_facts = evaluator._compute_derived_facts(
+        verified_obs=verified_obs,
+        obs_citation_map={c["indicator_code"]: c["idx"] for c in citations},
+        report_date="05.11.2026",
+        allow_historical=True,
+    )
+
     with pytest.raises(ValueError) as excinfo:
         evaluator._validate_structured_report(
             structured_data=parsed,
             citations=citations,
             verified_obs=verified_obs,
+            derived_facts=derived_facts,
             report_date="05.11.2026",
             run_id="RUN_TEST",
         )
@@ -486,10 +494,18 @@ def test_derived_calculation_archival_cpi_properly_qualified_passes():
         require_json=True,
     )
 
+    derived_facts = evaluator._compute_derived_facts(
+        verified_obs=verified_obs,
+        obs_citation_map={c["indicator_code"]: c["idx"] for c in citations},
+        report_date="05.11.2026",
+        allow_historical=True,
+    )
+
     evaluator._validate_structured_report(
         structured_data=parsed,
         citations=citations,
         verified_obs=verified_obs,
+        derived_facts=derived_facts,
         report_date="05.11.2026",
         run_id="RUN_HISTORICAL_QUALIFIED_PASS",
     )
@@ -554,7 +570,7 @@ def test_full_e2e_real_rate_pipeline_mock_sqlite_flask(tmp_path, monkeypatch):
         "sections": {
             "1": "Inflacja CPI wynosi 2.3% [1], Zharmonizowany HICP 4.0% [7], a PKB r/r 4.0% [6].",
             "2": "Ryzyka gospodarcze i perspektywy wzrostu PKB k/k 1.1% [4], wolumen 154972.9 mln EUR [5].",
-            "3": "- **Kredyty i Raty:** Stopa referencyjna NBP wynosi 3.75% [8]. W ujęciu poglądowym dla inflacji CPI z grudnia 2025 roku (2.3% [1]) historyczna realna stopa referencyjna wynosiła +1.45 p.p.\n- **Ceny i Zakupy:** Kurs EUR/PLN wynosi 4.3916 [2], USD/PLN 3.9101 [3].\n- **Praca i Zarobki:** Stopa bezrobocia BAEL/LFS wynosi 3.4% [9], a rejestrowanego 5.7% [10].",
+            "3": "- **Kredyty i Raty:** Stopa referencyjna NBP wynosi 3.75% [8], inflacja CPI to 2.3% [1]. Ze względu na opóźnienie publikacji CPI pominięto wyliczenie bieżącej realnej stopy procentowej.\n- **Ceny i Zakupy:** Kurs EUR/PLN wynosi 4.3916 [2], USD/PLN 3.9101 [3].\n- **Praca i Zarobki:** Stopa bezrobocia BAEL/LFS wynosi 3.4% [9], a rejestrowanego 5.7% [10].",
             "4": "Sytuacja przedsiębiorstw w obliczu stóp procentowych.",
             "5": "Podsumowanie wskaźników makroekonomicznych.",
         }
@@ -585,14 +601,14 @@ def test_full_e2e_real_rate_pipeline_mock_sqlite_flask(tmp_path, monkeypatch):
     assert report_row is not None
     assert report_row["report_id"] == result.report_id
     assert report_row["publication_status"] == "PUBLISHED"
-    assert "+1.45 p.p." in report_row["report_markdown"]
+    assert "+1.45 p.p." not in report_row["report_markdown"]
     assert "3.75%" in report_row["report_markdown"]
     assert "2.3%" in report_row["report_markdown"]
 
     # Weryfikacja pliku HTML
     assert out_html_path.exists()
     html_text = out_html_path.read_text(encoding="utf-8")
-    assert "+1.45 p.p." in html_text
+    assert "+1.45 p.p." not in html_text
     assert "3.75%" in html_text
     assert "2.3%" in html_text
     assert "3.4%" in html_text
@@ -608,9 +624,256 @@ def test_full_e2e_real_rate_pipeline_mock_sqlite_flask(tmp_path, monkeypatch):
         resp = client.get("/")
         assert resp.status_code == 200
         rendered = resp.get_data(as_text=True)
-        assert "+1.45 p.p." in rendered
+        assert "+1.45 p.p." not in rendered
         assert "3.75%" in rendered
         assert "2.3%" in rendered
     finally:
         set_storage_v2(original_storage)
         set_db(original_db)
+
+
+def test_collision_regular_indicator_1_45_pct_not_confused_with_real_rate():
+    """Weryfikuje eliminację kolizji wartości:
+    Zwykły wskaźnik o wartości 1.45% (np. EU_GDP_YOY) NIE MOŻE zostać uznany
+    za realną stopę procentową 1.45 p.p.
+    Testuje:
+    1. Poprawną akceptację EU_GDP_YOY = 1.45% [2] bez wymogu przypisów [8] i [1].
+    2. Negatywne odrzucenie próby podszycia się pod realną stopę z jednostką % lub przypisem [2].
+    3. Negatywne odrzucenie przypisania jednostki p.p. do wskaźnika procentowego EU_GDP_YOY.
+    4. Koegzystencję w jednym raporcie EU_GDP_YOY = 1.45% [2] oraz realnej stopy = +1.45 p.p. [8][1].
+    """
+    evaluator = EconomyEvaluator()
+
+    # Rejestr obserwacji z kolizją wartości 1.45
+    verified_obs = [
+        {
+            "observation_id": "OBS_CPI",
+            "indicator_code": "PL_CPI_YOY",
+            "name_pl": "Inflacja CPI r/r",
+            "country_code": "PL",
+            "value_decimal": "2.3",
+            "unit_code": "PCT",
+            "period_start": "2026-09-01",
+            "period_end": "2026-09-30",
+            "source_id": "SRC_GUS_DBW",
+            "source_url": "https://stat.gov.pl/cpi",
+            "status": "VERIFIED",
+        },
+        {
+            "observation_id": "OBS_EU_GDP",
+            "indicator_code": "EU_GDP_YOY",
+            "name_pl": "Wzrost PKB w Unii Europejskiej r/r",
+            "country_code": "EU",
+            "value_decimal": "1.45",
+            "unit_code": "PCT",
+            "period_start": "2026-04-01",
+            "period_end": "2026-06-30",
+            "source_id": "SRC_EUROSTAT",
+            "source_url": "https://ec.europa.eu/eurostat/gdp",
+            "status": "VERIFIED",
+        },
+        {
+            "observation_id": "OBS_NBP_REF",
+            "indicator_code": "PL_NBP_REFERENCE_RATE",
+            "name_pl": "Stopa referencyjna NBP",
+            "country_code": "PL",
+            "value_decimal": "3.75",
+            "unit_code": "PCT",
+            "period_start": "2026-09-05",
+            "period_end": "2026-09-05",
+            "source_id": "SRC_NBP",
+            "source_url": "https://nbp.pl/stopy",
+            "status": "VERIFIED",
+        },
+    ]
+
+    citations = [
+        {
+            "idx": 1,
+            "institution": "GUS",
+            "indicator_code": "PL_CPI_YOY",
+            "indicator_name": "Inflacja CPI r/r",
+            "period": "2026-09-01 – 2026-09-30",
+            "url": "https://stat.gov.pl/cpi",
+            "is_official": True,
+            "value_decimal": "2.3",
+        },
+        {
+            "idx": 2,
+            "institution": "Eurostat",
+            "indicator_code": "EU_GDP_YOY",
+            "indicator_name": "Wzrost PKB w Unii Europejskiej r/r",
+            "period": "2026-04-01 – 2026-06-30",
+            "url": "https://ec.europa.eu/eurostat/gdp",
+            "is_official": True,
+            "value_decimal": "1.45",
+        },
+        {
+            "idx": 8,
+            "institution": "NBP",
+            "indicator_code": "PL_NBP_REFERENCE_RATE",
+            "indicator_name": "Stopa referencyjna NBP",
+            "period": "2026-09-05 – 2026-09-05",
+            "url": "https://nbp.pl/stopy",
+            "is_official": True,
+            "value_decimal": "3.75",
+        },
+    ]
+
+    # Derived facts: 3.75 - 2.3 = +1.45 p.p.
+    derived_facts = evaluator._compute_derived_facts(
+        verified_obs=verified_obs,
+        obs_citation_map={"PL_CPI_YOY": 1, "EU_GDP_YOY": 2, "PL_NBP_REFERENCE_RATE": 8},
+        report_date="05.10.2026",
+    )
+    assert "PL_REAL_INTEREST_RATE" in derived_facts
+    assert derived_facts["PL_REAL_INTEREST_RATE"]["value_decimal"] == "+1.45"
+
+    # SCENARIUSZ 1 (POZYTYWNY): Raport zawiera wyłącznie twierdzenie o EU_GDP_YOY = 1.45% [2]
+    # Liczba 1.45% musi zostać poprawnie zwalidowana jako PKB, a NIE jako realna stopa!
+    cand_gdp = {
+        "claims": [
+            {
+                "indicator_code": "EU_GDP_YOY",
+                "observation_id": "OBS_EU_GDP",
+                "value_decimal": "1.45",
+                "unit_code": "PCT",
+                "period_start": "2026-04-01",
+                "period_end": "2026-06-30",
+                "citation_idx": 2,
+            }
+        ],
+        "sections": {
+            "1": "Wzrost PKB w Unii Europejskiej wyniósł 1.45% [2].",
+            "2": "Ryzyka gospodarcze stabilne.",
+            "3": "Dla obywatela stabilnie.",
+            "4": "Przedsiębiorcy planują inwestycje.",
+            "5": "Podsumowanie wskaźników.",
+        }
+    }
+    parsed_gdp = evaluator._parse_candidate_payload(cand_gdp, citations, verified_obs, require_json=True)
+    evaluator._validate_structured_report(
+        structured_data=parsed_gdp,
+        citations=citations,
+        verified_obs=verified_obs,
+        derived_facts=derived_facts,
+        report_date="05.10.2026",
+        run_id="RUN_COLLISION_PASS_GDP",
+    )
+
+    # SCENARIUSZ 2 (NEGATYWNY): Próba podszycia się pod realną stopę ze źródłem PKB [2]
+    # Realna stopa referencyjna wynosi 1.45% [2] -> ODRZUCENIE (INDICATOR_MISMATCH / UNIT_MISMATCH)
+    cand_fake_real = {
+        "claims": [
+            {
+                "indicator_code": "EU_GDP_YOY",
+                "observation_id": "OBS_EU_GDP",
+                "value_decimal": "1.45",
+                "unit_code": "PCT",
+                "period_start": "2026-04-01",
+                "period_end": "2026-06-30",
+                "citation_idx": 2,
+            }
+        ],
+        "sections": {
+            "1": "Dane ogólne.",
+            "2": "Ryzyka.",
+            "3": "Realna stopa referencyjna wynosi 1.45% [2].",
+            "4": "Biznes.",
+            "5": "Werdykt.",
+        }
+    }
+    parsed_fake = evaluator._parse_candidate_payload(cand_fake_real, citations, verified_obs, require_json=True)
+    with pytest.raises(ValueError) as exc_fake:
+        evaluator._validate_structured_report(
+            structured_data=parsed_fake,
+            citations=citations,
+            verified_obs=verified_obs,
+            derived_facts=derived_facts,
+            report_date="05.10.2026",
+            run_id="RUN_COLLISION_FAIL_DOMAIN",
+        )
+    assert "innego wskaźnika" in str(exc_fake.value) or "INDICATOR_MISMATCH" in str(exc_fake.value) or "INTEREST_RATES" in str(exc_fake.value)
+
+    # SCENARIUSZ 3 (NEGATYWNY): PKB przypisane z jednostką p.p. zamiast %
+    # Wzrost PKB w Unii Europejskiej wyniósł 1.45 p.p. [2] -> ODRZUCENIE (UNIT_MISMATCH)
+    cand_unit_fail = {
+        "claims": [
+            {
+                "indicator_code": "EU_GDP_YOY",
+                "observation_id": "OBS_EU_GDP",
+                "value_decimal": "1.45",
+                "unit_code": "PCT",
+                "period_start": "2026-04-01",
+                "period_end": "2026-06-30",
+                "citation_idx": 2,
+            }
+        ],
+        "sections": {
+            "1": "Wzrost PKB w Unii Europejskiej wyniósł 1.45 p.p. [2].",
+            "2": "Ryzyka.",
+            "3": "Dla obywatela.",
+            "4": "Biznes.",
+            "5": "Werdykt.",
+        }
+    }
+    parsed_unit = evaluator._parse_candidate_payload(cand_unit_fail, citations, verified_obs, require_json=True)
+    with pytest.raises(ValueError) as exc_unit:
+        evaluator._validate_structured_report(
+            structured_data=parsed_unit,
+            citations=citations,
+            verified_obs=verified_obs,
+            derived_facts=derived_facts,
+            report_date="05.10.2026",
+            run_id="RUN_COLLISION_FAIL_UNIT",
+        )
+    assert "Niezgodność jednostki" in str(exc_unit.value)
+
+    # SCENARIUSZ 4 (KOEGZYSTENCJA): Oba wskaźniki (1.45% PKB oraz +1.45 p.p. realna stopa) w jednym raporcie
+    cand_both = {
+        "claims": [
+            {
+                "indicator_code": "EU_GDP_YOY",
+                "observation_id": "OBS_EU_GDP",
+                "value_decimal": "1.45",
+                "unit_code": "PCT",
+                "period_start": "2026-04-01",
+                "period_end": "2026-06-30",
+                "citation_idx": 2,
+            },
+            {
+                "indicator_code": "PL_CPI_YOY",
+                "observation_id": "OBS_CPI",
+                "value_decimal": "2.3",
+                "unit_code": "PCT",
+                "period_start": "2026-09-01",
+                "period_end": "2026-09-30",
+                "citation_idx": 1,
+            },
+            {
+                "indicator_code": "PL_NBP_REFERENCE_RATE",
+                "observation_id": "OBS_NBP_REF",
+                "value_decimal": "3.75",
+                "unit_code": "PCT",
+                "period_start": "2026-09-05",
+                "period_end": "2026-09-05",
+                "citation_idx": 8,
+            },
+        ],
+        "sections": {
+            "1": "Wzrost PKB w Unii Europejskiej wyniósł 1.45% [2]. Inflacja CPI wynosi 2.3% [1].",
+            "2": "Ryzyka makroekonomiczne.",
+            "3": "Stopa referencyjna NBP wynosi 3.75% [8], co w połączeniu z inflacją 2.3% [1] daje realną stopę referencyjną na poziomie +1.45 p.p. [8][1].",
+            "4": "Przedsiębiorcy.",
+            "5": "Podsumowanie.",
+        }
+    }
+    parsed_both = evaluator._parse_candidate_payload(cand_both, citations, verified_obs, require_json=True)
+    evaluator._validate_structured_report(
+        structured_data=parsed_both,
+        citations=citations,
+        verified_obs=verified_obs,
+        derived_facts=derived_facts,
+        report_date="05.10.2026",
+        run_id="RUN_COLLISION_COEXISTENCE_PASS",
+    )

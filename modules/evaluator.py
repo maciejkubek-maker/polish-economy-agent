@@ -366,6 +366,7 @@ class EconomyEvaluator:
       obs_citation_map: Dict[str, int],
       report_date: Optional[str] = None,
       now: Optional[datetime.datetime] = None,
+      allow_historical: bool = False,
   ) -> Dict[str, Any]:
       """Oblicza deterministycznie wskaźniki pochodne w Pythonie z kontrolą spójności okresów."""
       derived_facts = {}
@@ -411,6 +412,14 @@ class EconomyEvaluator:
                   gap_days = 0
 
               is_current = (cpi_lag_days <= 90 and gap_days <= 90)
+
+              if not is_current and not allow_historical:
+                  logger.info(
+                      f"[_compute_derived_facts] Pominięto wyliczenie bieżącej realnej stopy procentowej: "
+                      f"nieporównywalne lub archiwalne odczyty (cpi_lag_days={cpi_lag_days}, gap_days={gap_days} > 90 dni; "
+                      f"CPI z {cpi_p_end}, NBP z {ref_p_end}). Zakaz wyliczania bieżącej realnej stopy z przestarzałego CPI."
+                  )
+                  return derived_facts
 
               derived_facts["PL_REAL_INTEREST_RATE"] = {
                   "value_decimal": real_str,
@@ -1232,11 +1241,26 @@ class EconomyEvaluator:
       citation_by_idx = {int(c["idx"]): c for c in citations}
       obs_citation_map = {c["indicator_code"]: int(c["idx"]) for c in citations if c.get("indicator_code")}
 
-      if not derived_facts:
+      # Sprawdzenie czy w zestawie danych występuje archiwalny odczyt CPI w relacji do stóp NBP
+      all_computed_facts = self._compute_derived_facts(
+          verified_obs=verified_obs,
+          obs_citation_map=obs_citation_map,
+          report_date=report_date,
+          allow_historical=True,
+      )
+      archival_real_info = (
+          all_computed_facts.get("PL_REAL_INTEREST_RATE")
+          if all_computed_facts.get("PL_REAL_INTEREST_RATE", {}).get("is_historical")
+          else None
+      )
+
+      if derived_facts is None:
+          # Domyślnie w trybie produkcyjnym: pomijamy wyliczenie gdy dane są przestarzałe/nieporównywalne
           derived_facts = self._compute_derived_facts(
               verified_obs=verified_obs,
               obs_citation_map=obs_citation_map,
               report_date=report_date,
+              allow_historical=False,
           )
       else:
           derived_facts = derived_facts or {}
@@ -1318,33 +1342,42 @@ class EconomyEvaluator:
                       fn_desc=f"[{real_info.get('ref_idx')}], [{real_info.get('cpi_idx')}]",
                   )
 
-          # 5B. Blokada prezentacji różnicy stopy NBP i archiwalnej CPI jako bieżącej realnej stopy
-          if real_info.get("is_historical"):
-              for s_num in ("1", "2", "3", "4", "5"):
-                  sec_text = sections.get(s_num, "")
-                  for line in sec_text.splitlines():
-                      line_str = line.strip()
-                      if not line_str:
-                          continue
-                      norm_real = self._normalize_numeric_claim(real_val_str)
-                      line_nums = [self._normalize_numeric_claim(m.group(0)) for m in re.finditer(r"\-?\+?\d+(?:[.,]\d+)?", line_str)]
-                      if norm_real in line_nums:
-                          line_l = line_str.lower()
-                          is_presented_as_current = (
-                              "obecn" in line_l or "bieżąc" in line_l or "aktualn" in line_l
+      # 5B. Blokada prezentacji różnicy stopy NBP i archiwalnej CPI jako bieżącej realnej stopy
+      if archival_real_info is not None:
+          arch_val_str = archival_real_info["value_decimal"]
+          norm_arch = self._normalize_numeric_claim(arch_val_str)
+          for s_num in ("1", "2", "3", "4", "5"):
+              sec_text = sections.get(s_num, "")
+              for line in sec_text.splitlines():
+                  line_str = line.strip()
+                  if not line_str:
+                      continue
+                  line_nums = [self._normalize_numeric_claim(m.group(0)) for m in re.finditer(r"\-?\+?\d+(?:[.,]\d+)?", line_str)]
+                  line_l = line_str.lower()
+                  is_omission_note = any(
+                      neg in line_l for neg in ("pominięt", "nie wylicza", "brak wyliczeni", "nie kalkuluj", "zaniechan", "nie oblicza")
+                  )
+                  if is_omission_note:
+                      continue
+
+                  has_numeric_real_val = (norm_arch in line_nums)
+                  has_real_mention = ("realn" in line_l and "stop" in line_l)
+                  if has_numeric_real_val or has_real_mention:
+                      is_presented_as_current = (
+                          "obecn" in line_l or "bieżąc" in line_l or "aktualn" in line_l
+                      )
+                      is_properly_qualified_as_historical = any(
+                          kw in line_l for kw in ("historyczn", "poglądow", "archiwaln", "historycznym", "historyczna", "poglądowo", "za okres", "dla okresu", "z 2025", "w 2025", "grudnia 2025", "grudniu 2025")
+                      )
+                      if is_presented_as_current and not is_properly_qualified_as_historical:
+                          _reject(
+                              "ARCHIVAL_REAL_RATE_MISREPRESENTATION",
+                              f"Nie wolno prezentować różnicy stopy NBP i archiwalnej inflacji CPI jako bieżącej realnej stopy procentowej w sekcji {s_num}: '{line_str}'",
+                              gpt_val=arch_val_str,
+                              ind_att="PL_REAL_INTEREST_RATE",
+                              allowed_desc=f"Odczyt archiwalny (CPI z {archival_real_info.get('cpi_period')}, opóźnienie ~{archival_real_info.get('cpi_lag_days')} dni) — dozwolony wyłącznie jako historyczny/poglądowy z podaniem okresu",
+                              fn_desc=f"[{archival_real_info.get('ref_idx')}], [{archival_real_info.get('cpi_idx')}]",
                           )
-                          is_properly_qualified_as_historical = any(
-                              kw in line_l for kw in ("historyczn", "poglądow", "archiwaln", "historycznym", "historyczna", "poglądowo", "za okres", "dla okresu", "z 2025", "w 2025", "grudnia 2025", "grudniu 2025")
-                          )
-                          if is_presented_as_current and not is_properly_qualified_as_historical:
-                              _reject(
-                                  "ARCHIVAL_REAL_RATE_MISREPRESENTATION",
-                                  f"Nie wolno prezentować różnicy stopy NBP i archiwalnej inflacji CPI jako bieżącej realnej stopy procentowej w sekcji {s_num}: '{line_str}'",
-                                  gpt_val=real_val_str,
-                                  ind_att="PL_REAL_INTEREST_RATE",
-                                  allowed_desc=f"Odczyt archiwalny (CPI z {real_info.get('cpi_period')}, opóźnienie ~{real_info.get('cpi_lag_days')} dni) — dozwolony wyłącznie jako historyczny/poglądowy z podaniem okresu",
-                                  fn_desc=f"[{real_info.get('ref_idx')}], [{real_info.get('cpi_idx')}]",
-                              )
 
       # 6. Przygotowanie rejestru zweryfikowanych obserwacji dla ścisłej walidacji
       obs_by_id = {str(o.get("observation_id")): o for o in verified_obs if o.get("observation_id")}
@@ -1525,13 +1558,36 @@ class EconomyEvaluator:
                   prev_boundary = clause_end
 
                   # A0. Weryfikacja czy liczba jest zatwierdzonym wyliczeniem pochodnym (np. PL_REAL_INTEREST_RATE)
+                  # Wymagane: zgodność wartości, jednostka p.p. (nie %), kontekst wyliczenia (realna stopa)
+                  # oraz powiązanie obu przypisów z konkretnym twierdzeniem.
                   matching_derived = None
                   matching_derived_key = None
+                  is_pp_unit = bool(
+                      re.search(r"(?:p\.p\.|pp|pkt\s*proc|punkt(?:ów|y)?\s+procentow(?:ych|e))", cl_text, re.IGNORECASE)
+                      or re.search(r"^\s*(?:p\.p\.|pp|pkt\s*proc)", after_text, re.IGNORECASE)
+                  )
+                  is_pct_unit = bool(
+                      re.search(r"(?:%|proc|procent)", cl_text, re.IGNORECASE)
+                      or re.search(r"^\s*(?:%|proc|procent)", after_text, re.IGNORECASE)
+                  )
+                  is_real_rate_ctx = bool(
+                      re.search(r"realn(?:a|ą|ej|ym|e)?\s+stop(?:a|ą|y|ę|ie)?|stop(?:a|ą|y|ę|ie)?\s+realn(?:a|ą|ej|ym|e)?", line_str, re.IGNORECASE)
+                      or re.search(r"realn(?:a|ą|ej|ym|e)?\s+stop(?:a|ą|y|ę|ie)?|stop(?:a|ą|y|ę|ie)?\s+realn(?:a|ą|ej|ym|e)?", context_segment, re.IGNORECASE)
+                  )
+
                   for df_k, df_v in derived_facts.items():
-                      if self._normalize_numeric_claim(df_v.get("value_decimal", "")) == num_norm:
-                          matching_derived = df_v
-                          matching_derived_key = df_k
-                          break
+                      df_val_norm = self._normalize_numeric_claim(df_v.get("value_decimal", ""))
+                      if df_val_norm == num_norm:
+                          # Zabezpieczenie przed kolizją: zwykły wskaźnik o wartości 1.45% nie może zostać uznany za realną stopę 1.45 p.p.
+                          if df_k == "PL_REAL_INTEREST_RATE":
+                              if is_pp_unit and not is_pct_unit and is_real_rate_ctx:
+                                  matching_derived = df_v
+                                  matching_derived_key = df_k
+                                  break
+                          else:
+                              matching_derived = df_v
+                              matching_derived_key = df_k
+                              break
 
                   if matching_derived is not None:
                       ref_fn = matching_derived.get("ref_idx")
@@ -1634,6 +1690,27 @@ class EconomyEvaluator:
                           ind_att=self._detect_claim_indicator(context_segment) or "nieznany wskaźnik",
                           allowed_desc=f"{cite_obj.get('indicator_code', 'nieznany') if cite_obj else 'nieznany'} ({exp_val})",
                           fn_desc=f"[{first_fn}]",
+                      )
+
+                  # Weryfikacja zgodności jednostki w tekście z jednostką zatwierdzonego wskaźnika
+                  exp_unit = matching_claim.get("unit_code", "PCT")
+                  if exp_unit in ("PCT", "%") and is_pp_unit:
+                      _reject(
+                          "UNIT_MISMATCH",
+                          f"Niezgodność jednostki dla {matching_claim['indicator_code']}: w tekście podano '{cl_text}' (jednostka p.p.), podczas gdy oficjalny wskaźnik wyrażony jest w %",
+                          gpt_val=cl_text,
+                          ind_att=matching_claim["indicator_code"],
+                          allowed_desc=f"{exp_unit} ({matching_claim.get('value_decimal')})",
+                          fn_desc=f"[{matching_fn}]",
+                      )
+                  if exp_unit in ("p.p.", "PP", "pkt proc") and is_pct_unit:
+                      _reject(
+                          "UNIT_MISMATCH",
+                          f"Niezgodność jednostki dla {matching_claim['indicator_code']}: w tekście podano '{cl_text}' (jednostka %), podczas gdy oficjalny wskaźnik wyrażony jest w p.p.",
+                          gpt_val=cl_text,
+                          ind_att=matching_claim["indicator_code"],
+                          allowed_desc=f"{exp_unit} ({matching_claim.get('value_decimal')})",
+                          fn_desc=f"[{matching_fn}]",
                       )
 
                   # E. Weryfikacja jednoznacznej zgodności wskaźnika i kontekstu zdaniowego (Etap 2)
