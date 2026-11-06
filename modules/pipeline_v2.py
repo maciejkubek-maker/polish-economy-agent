@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hashlib
 import json
+import re
 import logging
 import os
 import time
@@ -601,9 +602,13 @@ class MacroPipelineV2:
             country_code="PL",
             run_id=run_id,
         )
-        raw_periods = [o["period_start"] for o in verified]
-        from modules.evaluator import build_executive_horizon
-        exec_horizon = build_executive_horizon(raw_periods)
+        m_horiz = re.search(r"\*\*Horyzont analizowanych danych:\*\*\s*(.+)", report_markdown)
+        if m_horiz:
+            exec_horizon = m_horiz.group(1).strip()
+        else:
+            raw_periods = [o["period_start"] for o in verified]
+            from modules.evaluator import build_executive_horizon
+            exec_horizon = build_executive_horizon(raw_periods)
 
         # Deterministyczny hash migawki
         snap_payload = f"{country}|{report_date}|{exec_horizon}|{report_markdown}"

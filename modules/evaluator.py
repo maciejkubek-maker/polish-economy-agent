@@ -1801,9 +1801,19 @@ class EconomyEvaluator:
       def clean_sec(sec_id: str) -> str:
           text = sections.get(sec_id, "").strip()
           lines = text.split("\n")
-          if lines and re.match(r"^#+\s*(?:\d+\.|\bsekcja\s*\d+\b)", lines[0].strip(), re.IGNORECASE):
-              text = "\n".join(lines[1:]).strip()
-          return text
+          while lines:
+              first_line = lines[0].strip()
+              if not first_line:
+                  lines = lines[1:]
+                  continue
+              if re.match(r"^#+\s*(?:\d+\.|\bsekcja\s*\d+\b|analiza|zagrożenia|co to oznacza|podsumowanie)", first_line, re.IGNORECASE):
+                  lines = lines[1:]
+                  continue
+              if re.match(r"^\*\*(?:\d+\.|\bsekcja\s*\d+\b|analiza|zagrożenia|co to oznacza|podsumowanie).*?\*\*$", first_line, re.IGNORECASE):
+                  lines = lines[1:]
+                  continue
+              break
+          return "\n".join(lines).strip()
 
       body_parts = [
           f"# RAPORT KONDYCJI GOSPODARCZEJ: {country}",
@@ -1915,17 +1925,24 @@ class EconomyEvaluator:
     m_ref_1 = media_refs[0] if len(media_refs) > 0 else ""
     m_ref_2 = media_refs[1] if len(media_refs) > 1 else ""
 
+    wage_val, wage_p = get_val("PL_WAGE_AVERAGE_GROSS")
+    emp_val, emp_p = get_val("PL_EMPLOYMENT_GROWTH")
+
     # Sekcja 1
+    wage_emp_text = ""
+    if wage_val != "Brak danych":
+      wage_emp_text += f" Przeciętne wynagrodzenie w sektorze przedsiębiorstw wyniosło {wage_val}."
+    if emp_val != "Brak danych":
+      wage_emp_text += f" Poziom zatrudnienia ukształtował się na poziomie {emp_val}."
+
     sec1 = (
-        f"Polska gospodarka w analizowanym horyzoncie czasowym charakteryzuje się zróżnicowaną dynamiką "
-        f"i asynchronicznym spływem wskaźników makroekonomicznych. "
-        f"Roczny wskaźnik inflacji konsumenckiej CPI wyniósł {cpi_val}, podczas gdy zharmonizowany wskaźnik HICP osiągnął {hicp_val}. "
-        f"Dynamika Produktu Krajowego Brutto w ujęciu kwartał do kwartału ukształtowała się na poziomie {gdp_qoq_val}, "
-        f"a w ujęciu rocznym (r/r) wyniosła {gdp_yoy_val}. "
-        f"Na rynku pracy stopa bezrobocia rejestrowanego wyniosła {unemp_rate_val}, natomiast stopa bezrobocia zharmonizowanego "
-        f"według metodologii BAEL/Eurostat ukształtowała się na poziomie {unemp_harm_val}. "
-        f"Rada Polityki Pieniężnej utrzymuje stopę referencyjną NBP na poziomie {ref_rate_val}, "
-        f"a kursy walutowe wynoszą odpowiednio: EUR/PLN {eur_pln_val} oraz USD/PLN {usd_pln_val}."
+        f"Kluczowe wskaźniki krajowe polskiej gospodarki wyznaczają obraz stabilizacji przy zróżnicowanej dynamice sektorowej. "
+        f"Główny wskaźnik inflacji konsumenckiej CPI wyniósł {cpi_val}, natomiast zharmonizowany wskaźnik HICP osiągnął {hicp_val} jako pomocnicza miara unijna. "
+        f"Na rynku pracy stopa bezrobocia rejestrowanego wyniosła {unemp_rate_val}, a badanie ankietowe BAEL/Eurostat wykazało stopę bezrobocia zharmonizowanego {unemp_harm_val}.{wage_emp_text} "
+        f"Wzrost Produktu Krajowego Brutto w ujęciu rocznym (r/r) wyniósł {gdp_yoy_val}, a dynamika w ujęciu kwartał do kwartału ukształtowała się na poziomie {gdp_qoq_val}. "
+        f"Rada Polityki Pieniężnej utrzymuje stopę referencyjną NBP na poziomie {ref_rate_val} (stawka prawnie obowiązująca od {ref_p} r. do kolejnej decyzji RPP). "
+        f"Wymiar walutowy wyznaczają średnie kursy NBP z tabeli A: EUR/PLN {eur_pln_val} oraz USD/PLN {usd_pln_val}. "
+        f"Pojedyncze odczyty kursów walutowych oraz kwartalne odczyty PKB stanowią punktowe obserwacje faktograficzne i nie mogą być utożsamiane z trwałym trendem makroekonomicznym."
     )
 
     # Sekcja 2
@@ -1938,13 +1955,22 @@ class EconomyEvaluator:
     )
 
     # Sekcja 3
+    wage_emp_sec3 = ""
+    if wage_val != "Brak danych":
+      wage_emp_sec3 += f" Przeciętne wynagrodzenie ({wage_val}) wspiera siłę nabywczą."
+    if emp_val != "Brak danych":
+      wage_emp_sec3 += f" Poziom zatrudnienia ({emp_val}) stabilizuje rynek pracy."
+
     sec3 = (
-        f"- **Kredyty i Raty:** Odczyt stopy referencyjnej NBP wynosi {ref_rate_val}. Sam ten odczyt nie pozwala "
-        f"przewidzieć kolejnych decyzji RPP ani poziomu rat kredytów.\n"
-        f"- **Ceny i Zakupy:** Odczyty CPI ({cpi_val}) i HICP ({hicp_val}) opisują dynamikę cen w swoich "
-        f"odrębnych definicjach i okresach; nie należy ich traktować zamiennie.\n"
-        f"- **Praca i Zarobki:** Stopa bezrobocia rejestrowanego na poziomie {unemp_rate_val} (zharmonizowane: {unemp_harm_val}) "
-        f"pochodzi z innej metodologii niż BAEL/Eurostat. Te dwa odczyty nie wystarczają do prognozy zatrudnienia lub wynagrodzeń."
+        f"- **Ceny i Zakupy:** Głównym punktem odniesienia dla budżetów domowych jest inflacja konsumencka CPI GUS ({cpi_val}). "
+        f"Zharmonizowany wskaźnik HICP ({hicp_val}) pełni funkcję pomocniczego tła unijnego i nie zastępuje koszyka krajowego. "
+        f"Dynamika cen determinuje bezpośrednią siłę nabywczą konsumentów.\n\n"
+        f"- **Praca i Zarobki:** Podstawowym wskaźnikiem sytuacji pracowniczej jest stopa bezrobocia rejestrowanego GUS ({unemp_rate_val}). "
+        f"Odczyt bezrobocia zharmonizowanego BAEL/Eurostat ({unemp_harm_val}) stanowi uzupełnienie ankietowe o odmiennej metodologii; "
+        f"wskaźników tych nie należy traktować zamiennie.{wage_emp_sec3}\n\n"
+        f"- **Kredyty i Raty:** Obowiązująca stopa referencyjna NBP wynosi {ref_rate_val} (stawka prawnie wiążąca od {ref_p} r. do kolejnej decyzji RPP). "
+        f"Wysokość rat kredytów powiązanych ze stawkami WIBOR pozostaje bezpośrednio zdeterminowana tą decyzją; "
+        f"stawka ta pozostaje w pełni aktualna."
     )
 
     # Sekcja 4
@@ -1957,11 +1983,11 @@ class EconomyEvaluator:
 
     # Sekcja 5
     sec5 = (
-        f"Bieżący obraz opiera się na odczycie PKB ({gdp_yoy_val} r/r), stopie referencyjnej ({ref_rate_val}) i rynku "
-        f"pracy ({unemp_harm_val}), publikowanych z różną częstotliwością i opóźnieniem. Dane te opisują stan na wskazane "
-        f"okresy, lecz nie stanowią samodzielnej prognozy kolejnego kwartału. Scenariusz poprawy wymagałby m.in. mocniejszego "
-        f"popytu i inwestycji, natomiast scenariusz słabszy wiązałby się z utrzymaniem presji kosztowej lub pogorszeniem "
-        f"koniunktury zewnętrznej."
+        f"Syntetyczny obraz polskiej gospodarki opiera się na rocznym wzroście PKB ({gdp_yoy_val} r/r), "
+        f"obowiązującej stopie referencyjnej NBP ({ref_rate_val}) oraz sytuacji na rynku pracy ({unemp_rate_val} bezrobocia rejestrowanego, "
+        f"przy uzupełniającym odczycie BAEL {unemp_harm_val}). "
+        f"Wskaźnik PKB r/r pozostaje wiodącą miarą dynamiki gospodarczej, przewyższając wagą interpretacyjną wahania kwartalne i wolumeny techniczne. "
+        f"Pojedyncze notowania walutowe ({eur_pln_val} EUR/PLN, {usd_pln_val} USD/PLN) nie stanowią trwałego trendu i wymagają ostrożnej interpretacji."
     )
 
     # Sekcja 6: Wykaz źródeł
