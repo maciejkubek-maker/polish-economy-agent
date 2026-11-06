@@ -163,7 +163,47 @@ class SQLiteV2Storage:
                 conn.execute("ALTER TABLE reports ADD COLUMN publication_status TEXT DEFAULT 'PUBLISHED';")
             # Bezpieczna procedura odzyskiwania przy starcie: raporty niedokonczone (PENDING) -> FAILED
             conn.execute("UPDATE reports SET publication_status = 'FAILED' WHERE publication_status = 'PENDING';")
+
+            # Kontrola kolumny metadata_json w observations (bezpieczna, idempotentna migracja)
+            self._migrate_observations_metadata_column(conn)
             conn.commit()
+        finally:
+            conn.close()
+
+    def _migrate_observations_metadata_column(self, conn: sqlite3.Connection) -> bool:
+        """Idempotentna migracja: dodaje kolumnę metadata_json do tabeli observations, jeśli nie istnieje.
+        
+        Niedestrukcyjna operacja: nie modyfikuje ani nie usuwa żadnych historycznych obserwacji.
+        """
+        table_info = conn.execute("PRAGMA table_info(observations)").fetchall()
+        col_names = [col[1] for col in table_info]
+        if "metadata_json" not in col_names:
+            conn.execute("ALTER TABLE observations ADD COLUMN metadata_json TEXT;")
+            return True
+        return False
+
+    def migrate_schema(self) -> Dict[str, bool]:
+        """Publiczny punkt wejścia do bezpiecznej, idempotentnej migracji schematu SQLite v2.
+        
+        Zwraca słownik ze statusem zaaplikowanych migracji bez modyfikacji ani usuwania
+        historycznych danych w tabelach append-only.
+        """
+        conn = self.get_connection()
+        try:
+            migrated_meta = self._migrate_observations_metadata_column(conn)
+
+            table_info = conn.execute("PRAGMA table_info(reports)").fetchall()
+            col_names = [col[1] for col in table_info]
+            migrated_reports = False
+            if "publication_status" not in col_names:
+                conn.execute("ALTER TABLE reports ADD COLUMN publication_status TEXT DEFAULT 'PUBLISHED';")
+                migrated_reports = True
+
+            conn.commit()
+            return {
+                "observations_metadata_json": migrated_meta,
+                "reports_publication_status": migrated_reports,
+            }
         finally:
             conn.close()
 
@@ -599,8 +639,12 @@ class SQLiteV2Storage:
                     o.value_decimal,
                     o.unit_code,
                     o.status,
+                    o.metadata_json,
                     o.evidence_id,
-                    o.observed_at_utc
+                    o.observed_at_utc,
+                    se.source_id,
+                    se.source_url,
+                    se.run_id
                 FROM observations o
                 LEFT JOIN indicator_catalog ic ON o.indicator_code = ic.indicator_code
                 LEFT JOIN source_evidence se ON o.evidence_id = se.evidence_id
@@ -631,7 +675,12 @@ class SQLiteV2Storage:
         finally:
             conn.close()
 
-    def get_observation_history(self, indicator_code: str, country_code: str = "PL") -> List[Dict[str, Any]]:
+    def get_observation_history(
+        self,
+        indicator_code: str,
+        country_code: str = "PL",
+        run_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         """Zwraca pełną historię rewizji i odczytów danego wskaźnika."""
         codes = ("PL", "Polska") if country_code in ("PL", "Polska", "Poland") else (country_code, country_code)
         conn = self.get_connection()
@@ -650,12 +699,18 @@ class SQLiteV2Storage:
                     o.version_number,
                     o.supersedes_id,
                     o.status,
+                    o.metadata_json,
                     o.evidence_id,
-                    o.observed_at_utc
+                    o.observed_at_utc,
+                    se.source_id,
+                    se.source_url,
+                    se.run_id
                 FROM observations o
+                LEFT JOIN source_evidence se ON o.evidence_id = se.evidence_id
                 WHERE o.indicator_code = ? AND o.country_code IN (?, ?)
+                  AND (? IS NULL OR se.run_id = ?)
                 ORDER BY o.period_start ASC, o.version_number ASC
-            """, (indicator_code, codes[0], codes[1])).fetchall()
+            """, (indicator_code, codes[0], codes[1], run_id, run_id)).fetchall()
             results = []
             for r in rows:
                 d = dict(r)
