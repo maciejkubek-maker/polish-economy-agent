@@ -355,13 +355,14 @@ class SQLiteV2Storage:
                 revision_type = obs.revision_type or "FINAL"
 
             obs_date = obs.observed_at_utc or datetime.now(timezone.utc).isoformat()
+            meta_json = json.dumps(obs.metadata) if getattr(obs, "metadata", None) else None
 
             conn.execute("""
                 INSERT INTO observations (
                     observation_id, indicator_code, country_code, period_start, period_end,
                     frequency, value_decimal, unit_code, revision_type, version_number,
-                    supersedes_id, evidence_id, status, observed_at_utc, validated_at_utc
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    supersedes_id, evidence_id, status, metadata_json, observed_at_utc, validated_at_utc
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(observation_id) DO NOTHING;
             """, (
                 obs.observation_id,
@@ -377,6 +378,7 @@ class SQLiteV2Storage:
                 supersedes_id,
                 obs.evidence_id,
                 obs.status,
+                meta_json,
                 obs_date,
             ))
             conn.commit()
@@ -419,8 +421,10 @@ class SQLiteV2Storage:
                     co.observed_at_utc,
                     co.updated_at_utc,
                     o.evidence_id,
+                    o.metadata_json,
                     se.source_id,
-                    se.source_url
+                    se.source_url,
+                    se.run_id
                 FROM current_observations co
                 LEFT JOIN indicator_catalog ic ON co.indicator_code = ic.indicator_code
                 LEFT JOIN unit_catalog uc ON co.unit_code = uc.unit_code
@@ -429,7 +433,20 @@ class SQLiteV2Storage:
                 WHERE co.country_code IN (?, ?)
                 ORDER BY ic.target_macro_area ASC, co.indicator_code ASC
             """, codes).fetchall()
-            return [dict(r) for r in rows]
+            results = []
+            for r in rows:
+                d = dict(r)
+                meta_raw = d.get("metadata_json")
+                if meta_raw:
+                    try:
+                        d["metadata"] = json.loads(meta_raw)
+                    except Exception:
+                        d["metadata"] = {}
+                else:
+                    d["metadata"] = {}
+                d["is_current_table"] = bool(d.get("metadata", {}).get("is_current_table"))
+                results.append(d)
+            return results
         finally:
             conn.close()
 
@@ -514,6 +531,7 @@ class SQLiteV2Storage:
                         o.revision_type,
                         o.version_number,
                         o.status,
+                        o.metadata_json,
                         o.evidence_id,
                         o.observed_at_utc,
                         se.source_id,
@@ -537,7 +555,25 @@ class SQLiteV2Storage:
                 WHERE recency_rank = 1
                 ORDER BY indicator_code ASC
             """, (codes[0], codes[1], run_id, run_id)).fetchall()
-            return [dict(r) for r in rows]
+            results = []
+            for r in rows:
+                d = dict(r)
+                meta_raw = d.get("metadata_json")
+                if meta_raw:
+                    try:
+                        d["metadata"] = json.loads(meta_raw)
+                    except Exception:
+                        d["metadata"] = {}
+                else:
+                    d["metadata"] = {}
+
+                if d.get("metadata", {}).get("is_current_table"):
+                    is_same_run = (run_id is None or d.get("run_id") == run_id)
+                    d["is_current_table"] = bool(is_same_run)
+                else:
+                    d["is_current_table"] = False
+                results.append(d)
+            return results
         finally:
             conn.close()
 
@@ -573,7 +609,25 @@ class SQLiteV2Storage:
                   AND (? IS NULL OR se.run_id = ?)
                 ORDER BY o.observed_at_utc DESC
             """, (codes[0], codes[1], run_id, run_id)).fetchall()
-            return [dict(r) for r in rows]
+            results = []
+            for r in rows:
+                d = dict(r)
+                meta_raw = d.get("metadata_json")
+                if meta_raw:
+                    try:
+                        d["metadata"] = json.loads(meta_raw)
+                    except Exception:
+                        d["metadata"] = {}
+                else:
+                    d["metadata"] = {}
+
+                if d.get("metadata", {}).get("is_current_table"):
+                    is_same_run = (run_id is None or d.get("run_id") == run_id)
+                    d["is_current_table"] = bool(is_same_run)
+                else:
+                    d["is_current_table"] = False
+                results.append(d)
+            return results
         finally:
             conn.close()
 
@@ -602,7 +656,25 @@ class SQLiteV2Storage:
                 WHERE o.indicator_code = ? AND o.country_code IN (?, ?)
                 ORDER BY o.period_start ASC, o.version_number ASC
             """, (indicator_code, codes[0], codes[1])).fetchall()
-            return [dict(r) for r in rows]
+            results = []
+            for r in rows:
+                d = dict(r)
+                meta_raw = d.get("metadata_json")
+                if meta_raw:
+                    try:
+                        d["metadata"] = json.loads(meta_raw)
+                    except Exception:
+                        d["metadata"] = {}
+                else:
+                    d["metadata"] = {}
+
+                if d.get("metadata", {}).get("is_current_table"):
+                    is_same_run = (run_id is None or d.get("run_id") == run_id)
+                    d["is_current_table"] = bool(is_same_run)
+                else:
+                    d["is_current_table"] = False
+                results.append(d)
+            return results
         finally:
             conn.close()
 

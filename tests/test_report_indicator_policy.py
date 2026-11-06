@@ -400,3 +400,116 @@ def test_14_gus_dbw_monthly_registered_unemployment_5_8_percent():
     assert obs.metadata["gus_dbw_zmienna"] == 875
     assert obs.metadata["gus_dbw_przekroj"] == 143
     assert obs.metadata["territory_id"] == 33617
+
+def test_15_nbp_current_table_flag_propagation_e2e_sqlite(tmp_path):
+    """15. E2E: Flaga NBP is_current_table przekazywana niezawodnie przez rzeczywisty zapis i odczyt SQLite v2.
+    
+    Weryfikuje:
+    - Zapis obserwacji z metadata['is_current_table'] do rzeczywistej bazy SQLite v2.
+    - Odczyt przez get_latest_verified_observations z deserializacją metadata i walidacją run_id.
+    - Ocenę przez ReportIndicatorPolicy.evaluate:
+      * Bieżąca decyzja (3.75%) z potwierdzeniem tabeli dla danego run_id otrzymuje status EFFECTIVE.
+      * Historyczna stopa (5.75%) lub brak potwierdzenia dla danego run_id otrzymuje status ARCHIVAL.
+    """
+    db_file = str(tmp_path / "macro_test_v2.db")
+    storage = SQLiteV2Storage(db_file)
+    now_nov = datetime(2026, 11, 6)
+
+    # 1. Przebieg historyczny: stopa 5.75% z 2023 r., brak potwierdzenia bieżącej tabeli
+    run_hist = storage.start_ingestion_run(provider="NBP_API", run_type="TRIGGERED")
+    evi_hist = RawEvidence(
+        evidence_id="EVI_NBP_HIST",
+        source_id="SRC_NBP",
+        source_url="https://api.nbp.pl/api/exchangerates/tables/A/",
+        document_type="API_RESPONSE",
+        payload_text="<xml>hist</xml>",
+        content_hash="hash_hist",
+        status_code=200,
+        retrieved_at_utc="2023-10-05T12:00:00Z",
+    )
+    storage.save_evidence(evi_hist, run_id=run_hist)
+    obs_hist = MacroObservation(
+        observation_id="OBS_NBP_HIST_575",
+        indicator_code="PL_NBP_REFERENCE_RATE",
+        country_code="PL",
+        period_start="2023-10-05",
+        period_end="2023-10-05",
+        frequency="IRREGULAR",
+        value_decimal="5.75",
+        unit_code="PCT",
+        revision_type="FINAL",
+        status="VERIFIED",
+        evidence_id=evi_hist.evidence_id,
+        metadata={"is_current_table": False},
+    )
+    storage.save_observation(obs_hist, run_id=run_hist)
+    storage.finish_ingestion_run(run_hist, status="COMPLETED", records_fetched=1, records_validated=1)
+
+    obs_from_db_hist = storage.get_latest_verified_observations(run_id=run_hist)
+    citations_hist = [
+        {"idx": 1, "indicator_code": "PL_NBP_REFERENCE_RATE", "institution": "NBP", "period": "2023-10-05", "is_official": True}
+    ]
+    plan_hist = ReportIndicatorPolicy.evaluate(
+        obs_from_db_hist, citations_hist, report_date="06.11.2026", now=now_nov, run_id=run_hist
+    )
+    eval_hist = next(it for it in plan_hist.core_indicators if it.indicator_code == "PL_NBP_REFERENCE_RATE")
+    assert eval_hist.value_decimal == "5.75"
+    assert eval_hist.freshness == FreshnessStatus.ARCHIVAL
+    assert "Archiwalna stopa referencyjna" in eval_hist.status_note
+
+    # 2. Przebieg bieżący: stopa 3.75% z 2026 r., z oficjalnej bieżącej tabeli NBP (is_current_table=True)
+    run_curr = storage.start_ingestion_run(provider="NBP_API", run_type="TRIGGERED")
+    evi_curr = RawEvidence(
+        evidence_id="EVI_NBP_CURR",
+        source_id="SRC_NBP",
+        source_url="https://api.nbp.pl/api/exchangerates/tables/A/",
+        document_type="API_RESPONSE",
+        payload_text="<xml>curr</xml>",
+        content_hash="hash_curr",
+        status_code=200,
+        retrieved_at_utc="2026-11-06T12:00:00Z",
+    )
+    storage.save_evidence(evi_curr, run_id=run_curr)
+    obs_curr = MacroObservation(
+        observation_id="OBS_NBP_CURR_375",
+        indicator_code="PL_NBP_REFERENCE_RATE",
+        country_code="PL",
+        period_start="2026-03-05",
+        period_end="2026-03-05",
+        frequency="IRREGULAR",
+        value_decimal="3.75",
+        unit_code="PCT",
+        revision_type="FINAL",
+        status="VERIFIED",
+        evidence_id=evi_curr.evidence_id,
+        metadata={"is_current_table": True},
+    )
+    storage.save_observation(obs_curr, run_id=run_curr)
+    storage.finish_ingestion_run(run_curr, status="COMPLETED", records_fetched=1, records_validated=1)
+
+    obs_from_db_curr = storage.get_latest_verified_observations(run_id=run_curr)
+    nbp_curr_row = next(r for r in obs_from_db_curr if r["indicator_code"] == "PL_NBP_REFERENCE_RATE")
+    assert nbp_curr_row["metadata"]["is_current_table"] is True
+    assert nbp_curr_row["is_current_table"] is True
+    assert nbp_curr_row["run_id"] == run_curr
+
+    citations_curr = [
+        {"idx": 1, "indicator_code": "PL_NBP_REFERENCE_RATE", "institution": "NBP", "period": "2026-03-05", "is_official": True}
+    ]
+    plan_curr = ReportIndicatorPolicy.evaluate(
+        obs_from_db_curr, citations_curr, report_date="06.11.2026", now=now_nov, run_id=run_curr
+    )
+    eval_curr = next(it for it in plan_curr.core_indicators if it.indicator_code == "PL_NBP_REFERENCE_RATE")
+    assert eval_curr.value_decimal == "3.75"
+    assert eval_curr.freshness == FreshnessStatus.EFFECTIVE
+    assert "stopa NBP obowiązująca od 05.03.2026 r." in plan_curr.executive_horizon_summary
+
+    # 3. Zapytanie z innego run_id: brak potwierdzenia aktualności tabeli w tym przebiegu
+    run_other = storage.start_ingestion_run(provider="NBP_API", run_type="TRIGGERED")
+    obs_global = storage.get_latest_verified_observations()
+    plan_mismatch = ReportIndicatorPolicy.evaluate(
+        obs_global, citations_curr, report_date="06.11.2026", now=now_nov, run_id=run_other
+    )
+    eval_mismatch = next(it for it in plan_mismatch.core_indicators if it.indicator_code == "PL_NBP_REFERENCE_RATE")
+    assert eval_mismatch.freshness == FreshnessStatus.ARCHIVAL
+

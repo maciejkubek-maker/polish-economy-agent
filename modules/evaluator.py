@@ -577,6 +577,7 @@ class EconomyEvaluator:
         report_date=report_date,
         now=now,
         country_code="PL",
+        run_id=run_id,
     )
     periods_summary = policy_plan.executive_horizon_summary or periods_summary
 

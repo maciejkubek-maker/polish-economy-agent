@@ -199,6 +199,7 @@ class ReportIndicatorPolicy:
         report_date: str,
         now: Optional[datetime] = None,
         country_code: str = "PL",
+        run_id: Optional[str] = None,
     ) -> PolicyReportPlan:
         """Dokonuje pełnej programowej ewaluacji zestawu danych wg polityki jakości."""
         now_dt = (now or datetime.now()).date()
@@ -293,7 +294,12 @@ class ReportIndicatorPolicy:
                 )
 
                 meta = obs.get("metadata") or {}
-                is_confirmed_current_table = bool(meta.get("is_current_table") or obs.get("is_current_table"))
+                obs_run_id = obs.get("run_id")
+                is_run_valid = (run_id is None or obs_run_id is None or obs_run_id == run_id)
+                is_confirmed_current_table = bool(
+                    (meta.get("is_current_table") or obs.get("is_current_table"))
+                    and is_run_valid
+                )
                 days_since_decision = (now_dt - start_dt).days if start_dt else 9999
                 is_recent = days_since_decision <= 90
 

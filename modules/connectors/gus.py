@@ -710,14 +710,22 @@ class GusConnector(BaseConnector):
                 f"Brak danych w GUS DBW dla zmienna={var_id}, przekroj={przekroj_id}, rok={rok_int}, okres={okres_id}"
             )
 
+        # Wymagaj jednoznacznego potwierdzenia terytorium Polska (id-pozycja-1=33617)
+        # Zakaz fallbacku akceptującego pojedynczy rekord bez sprawdzenia terytorium
         item = next((it for it in data_list if it.get("id-pozycja-1") == position_id), None)
         if item is None:
-            if len(data_list) == 1:
-                item = data_list[0]
-            else:
-                raise DataNotFoundError(
-                    f"Nie znaleziono pozycji Polska (id-pozycja-1={position_id}) w odpowiedzi GUS DBW dla zmiennej {var_id}"
-                )
+            present_positions = [it.get("id-pozycja-1") for it in data_list]
+            raise ValidationError(
+                f"Brak lub niezgodność identyfikatora terytorium Polska (oczekiwano id-pozycja-1={position_id}) "
+                f"w odpowiedzi GUS DBW dla zmiennej {var_id}. Dostępne pozycje: {present_positions}. "
+                "Odrzucono brak lub niezgodność identyfikatora terytorium."
+            )
+
+        if item.get("id-pozycja-1") != position_id:
+            raise ValidationError(
+                f"Niezgodność identyfikatora terytorium w wybranym rekordzie GUS DBW: "
+                f"oczekiwano {position_id}, otrzymano {item.get('id-pozycja-1')}"
+            )
 
         item_var_id = item.get("id-zmienna")
         if item_var_id is not None and int(item_var_id) != int(var_id):
