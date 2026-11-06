@@ -202,11 +202,24 @@ class ReportIndicatorPolicy:
     ) -> PolicyReportPlan:
         """Dokonuje pełnej programowej ewaluacji zestawu danych wg polityki jakości."""
         now_dt = (now or datetime.now()).date()
-        obs_by_code: Dict[str, Dict[str, Any]] = {}
+        now_iso = now_dt.isoformat()
+
+        # Odrzucanie obserwacji mających datę końca okresu w przyszłości (okresy jeszcze niezakończone)
+        # chyba że dotyczą jawnie określonej prognozy (której nie wolno prezentować jako oficjalnego odczytu)
+        valid_obs: List[Dict[str, Any]] = []
         for o in verified_obs:
+            p_end = str(o.get("period_end", ""))[:10]
+            is_forecast = (o.get("revision_type") == "FORECAST" or (o.get("metadata") or {}).get("is_forecast") is True)
+            if p_end and p_end > now_iso:
+                # Niezakończony okres w przyszłości nie może być oficjalnym odczytem
+                continue
+            valid_obs.append(o)
+
+        obs_candidates: Dict[str, List[Dict[str, Any]]] = {}
+        for o in valid_obs:
             c = o.get("indicator_code")
             if c:
-                obs_by_code[c] = o
+                obs_candidates.setdefault(c, []).append(o)
 
         citation_by_code: Dict[str, int] = {}
         for c in citations:
@@ -215,11 +228,23 @@ class ReportIndicatorPolicy:
                 citation_by_code[ind] = int(c["idx"])
 
         def _find_obs(aliases: List[str]) -> Tuple[Optional[Dict[str, Any]], Optional[int]]:
+            candidates: List[Dict[str, Any]] = []
             for a in aliases:
-                if a in obs_by_code:
-                    c_idx = citation_by_code.get(a)
-                    return obs_by_code[a], c_idx
-            return None, None
+                if a in obs_candidates:
+                    candidates.extend(obs_candidates[a])
+            if not candidates:
+                return None, None
+
+            def _rank_obs(o: Dict[str, Any]) -> Tuple[int, str, str]:
+                freq = str(o.get("frequency", "")).upper()
+                p_end = str(o.get("period_end", ""))[:10]
+                p_start = str(o.get("period_start", ""))[:10]
+                freq_score = 2 if freq == "MONTHLY" else (1 if freq in ("QUARTERLY", "DAILY", "IRREGULAR") else 0)
+                return (freq_score, p_end, p_start)
+
+            best_obs = max(candidates, key=_rank_obs)
+            c_idx = citation_by_code.get(best_obs.get("indicator_code", ""))
+            return best_obs, c_idx
 
         def _evaluate_item(item_def: Dict[str, Any], priority: IndicatorPriority) -> EvaluatedIndicator:
             code = item_def["code"]
@@ -249,27 +274,70 @@ class ReportIndicatorPolicy:
             p_end = str(obs.get("period_end", ""))[:10]
             freq = str(obs.get("frequency", "")).upper().strip()
 
-            # Specjalna reguła NBP: stopy procentowe to decyzje prawne (EFFECTIVE)
-            is_policy_rate = code in ("PL_NBP_REFERENCE_RATE", "PL_POLICY_RATE_REF") or "NBP" in obs.get("source_id", "") and "RATE" in code
+            # Specjalna reguła NBP: stopy procentowe to decyzje prawne
+            is_policy_rate = code in ("PL_NBP_REFERENCE_RATE", "PL_POLICY_RATE_REF") or ("NBP" in obs.get("source_id", "") and "RATE" in code)
             if is_policy_rate:
-                return EvaluatedIndicator(
-                    indicator_code=code,
-                    name_pl=name,
-                    priority=priority,
-                    rank=rank,
-                    domain=domain,
-                    observation=obs,
-                    citation_idx=c_idx,
-                    freshness=FreshnessStatus.EFFECTIVE,
-                    lag_days=0,
-                    frequency="EFFECTIVE_DECISION",
-                    value_decimal=val,
-                    unit_code=unit,
-                    period_start=p_start,
-                    period_end=p_end,
-                    status_note=f"Oficjalna stopa referencyjna NBP obowiązująca od {p_start} r. do kolejnej decyzji RPP.",
-                    presentation_rule=rule,
+                start_dt = None
+                if p_start:
+                    try:
+                        start_dt = datetime.strptime(p_start, "%Y-%m-%d").date()
+                    except Exception:
+                        pass
+
+                all_rate_obs = []
+                for a in aliases:
+                    all_rate_obs.extend(obs_candidates.get(a, []))
+
+                has_newer_decision = any(
+                    str(ro.get("period_start", ""))[:10] > p_start for ro in all_rate_obs
                 )
+
+                meta = obs.get("metadata") or {}
+                is_confirmed_current_table = bool(meta.get("is_current_table") or obs.get("is_current_table"))
+                days_since_decision = (now_dt - start_dt).days if start_dt else 9999
+                is_recent = days_since_decision <= 90
+
+                if not has_newer_decision and (is_confirmed_current_table or is_recent):
+                    status_note = f"Oficjalna stopa referencyjna NBP obowiązująca od {p_start} r. do kolejnej decyzji RPP."
+                    return EvaluatedIndicator(
+                        indicator_code=code,
+                        name_pl=name,
+                        priority=priority,
+                        rank=rank,
+                        domain=domain,
+                        observation=obs,
+                        citation_idx=c_idx,
+                        freshness=FreshnessStatus.EFFECTIVE,
+                        lag_days=0,
+                        frequency="EFFECTIVE_DECISION",
+                        value_decimal=val,
+                        unit_code=unit,
+                        period_start=p_start,
+                        period_end=p_end,
+                        status_note=status_note,
+                        presentation_rule=rule,
+                    )
+                else:
+                    reason_archival = "Zastąpiona przez nowszą decyzję RPP" if has_newer_decision else f"Odczyt archiwalny z {p_start} r. bez potwierdzenia w bieżącym oficjalnym zestawieniu stóp NBP"
+                    status_note = f"Archiwalna stopa referencyjna NBP z {p_start} r. ({reason_archival}). Zakaz prezentowania jako stawki bieżącej."
+                    return EvaluatedIndicator(
+                        indicator_code=code,
+                        name_pl=name,
+                        priority=priority,
+                        rank=rank,
+                        domain=domain,
+                        observation=obs,
+                        citation_idx=c_idx,
+                        freshness=FreshnessStatus.ARCHIVAL,
+                        lag_days=days_since_decision,
+                        frequency="ARCHIVAL_DECISION",
+                        value_decimal=val,
+                        unit_code=unit,
+                        period_start=p_start,
+                        period_end=p_end,
+                        status_note=status_note,
+                        presentation_rule=rule,
+                    )
 
             # Szereg roczny (np. GUS BDL 60270 dla stopy bezrobocia)
             is_annual = freq == "ANNUAL" or (p_start.endswith("-01-01") and p_end.endswith("-12-31") and p_start[:4] == p_end[:4])
@@ -419,14 +487,21 @@ class ReportIndicatorPolicy:
             sorted_q = sorted(list(gdp_quarters))
             parts.append(f"{sorted_q[-1]} (PKB)")
 
-        # 3. Obowiązująca stopa NBP
+        # 3. Obowiązująca lub archiwalna stopa NBP
         for item in core_eval:
-            if item.observation and item.freshness == FreshnessStatus.EFFECTIVE and item.period_start:
-                try:
-                    dt = datetime.strptime(item.period_start, "%Y-%m-%d").strftime("%d.%m.%Y")
-                    parts.append(f"stopa NBP obowiązująca od {dt} r.")
-                except Exception:
-                    parts.append(f"stopa NBP obowiązująca od {item.period_start}")
+            if item.observation and "NBP" in item.indicator_code:
+                if item.freshness == FreshnessStatus.EFFECTIVE and item.period_start:
+                    try:
+                        dt = datetime.strptime(item.period_start, "%Y-%m-%d").strftime("%d.%m.%Y")
+                        parts.append(f"stopa NBP obowiązująca od {dt} r.")
+                    except Exception:
+                        parts.append(f"stopa NBP obowiązująca od {item.period_start}")
+                elif item.freshness == FreshnessStatus.ARCHIVAL and item.period_start:
+                    try:
+                        dt = datetime.strptime(item.period_start, "%Y-%m-%d").strftime("%d.%m.%Y")
+                        parts.append(f"archiwalna stopa NBP z {dt} r.")
+                    except Exception:
+                        parts.append(f"archiwalna stopa NBP z {item.period_start}")
 
         # 4. Szeregi roczne z bazy BDL
         annual_years = set()

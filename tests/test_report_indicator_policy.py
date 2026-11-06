@@ -8,6 +8,7 @@ from datetime import datetime
 import json
 import os
 import re
+from typing import Any, Dict, List, Optional
 import pytest
 
 from modules.connectors.base import MacroObservation, RawEvidence
@@ -21,7 +22,16 @@ from modules.report_indicator_policy import (
 from modules.storage_v2 import SQLiteV2Storage
 
 
-def _create_sample_obs(code: str, val: str, unit: str, p_start: str, p_end: str, source: str = "GUS", freq: str = "MONTHLY"):
+def _create_sample_obs(
+    code: str,
+    val: str,
+    unit: str,
+    p_start: str,
+    p_end: str,
+    source: str = "GUS",
+    freq: str = "MONTHLY",
+    metadata: Optional[dict] = None,
+):
     return {
         "observation_id": f"OBS_{code}",
         "indicator_code": code,
@@ -34,6 +44,7 @@ def _create_sample_obs(code: str, val: str, unit: str, p_start: str, p_end: str,
         "source_id": source,
         "source_url": "https://stat.gov.pl" if source == "GUS" else ("https://api.nbp.pl" if source == "NBP" else "https://ec.europa.eu/eurostat"),
         "is_official": True,
+        "metadata": metadata or {},
     }
 
 
@@ -256,8 +267,17 @@ def test_9_end_to_end_offline_pipeline_with_policy_and_no_duplicate_headers(tmp_
 
 def test_10_nbp_reference_rate_not_penalized_with_false_lag():
     """10. Test stóp NBP: stopa referencyjna jest prezentowana z datą obowiązywania, a nie jako przeterminowany odczyt."""
-    # Stopa NBP uchwalona np. 2026-03-05
-    obs_nbp = _create_sample_obs("PL_NBP_REFERENCE_RATE", "5.75", "PCT", "2026-03-05", "2026-03-05", source="SRC_NBP", freq="IRREGULAR")
+    # Stopa NBP uchwalona np. 2026-03-05 i potwierdzona w bieżącej oficjalnej tabeli NBP
+    obs_nbp = _create_sample_obs(
+        "PL_NBP_REFERENCE_RATE",
+        "3.75",
+        "PCT",
+        "2026-03-05",
+        "2026-03-05",
+        source="SRC_NBP",
+        freq="IRREGULAR",
+        metadata={"is_current_table": True},
+    )
     citations = [{"idx": 1, "indicator_code": "PL_NBP_REFERENCE_RATE", "institution": "NBP", "period": "2026-03-05", "is_official": True}]
 
     now_nov = datetime(2026, 11, 5)
@@ -278,3 +298,105 @@ def test_10_nbp_reference_rate_not_penalized_with_false_lag():
     assert is_nbp_rate is True
     assert lag_days > 90  # Kalendarzowo minęło >90 dni, ale reguła traktuje stawkę jako prawnie obowiązującą
     assert not (lag_days > 90 and not is_nbp_rate)  # Warunek nie może dopuścić fałszywej flagi lag
+
+
+
+def test_11_nbp_rate_policy_historical_5_75_vs_current_3_75():
+    """11. Test porównawczy: historyczna stopa 5.75% (2023) i bieżąca 3.75% (2026).
+    Upewnij się, że 3.75% jest traktowane jako EFFECTIVE, a 5.75% jako ARCHIVAL."""
+    obs_historical = _create_sample_obs(
+        "PL_NBP_REFERENCE_RATE", "5.75", "PCT", "2023-10-05", "2023-10-05", source="SRC_NBP", freq="IRREGULAR"
+    )
+    obs_current = _create_sample_obs(
+        "PL_NBP_REFERENCE_RATE", "3.75", "PCT", "2026-03-05", "2026-03-05", source="SRC_NBP", freq="IRREGULAR", metadata={"is_current_table": True}
+    )
+    citations = [
+        {"idx": 1, "indicator_code": "PL_NBP_REFERENCE_RATE", "institution": "NBP", "period": "2026-03-05", "is_official": True, "value_decimal": "3.75"},
+    ]
+
+    now_nov = datetime(2026, 11, 6)
+    plan = ReportIndicatorPolicy.evaluate([obs_historical, obs_current], citations, report_date="06.11.2026", now=now_nov)
+    nbp_eval = next(it for it in plan.core_indicators if it.indicator_code == "PL_NBP_REFERENCE_RATE")
+
+    # Wybrany wskaźnik główny to bieżąca decyzja 3.75% ze statusem EFFECTIVE
+    assert nbp_eval.value_decimal == "3.75"
+    assert nbp_eval.freshness == FreshnessStatus.EFFECTIVE
+    assert nbp_eval.period_start == "2026-03-05"
+    assert "stopa NBP obowiązująca od 05.03.2026 r." in plan.executive_horizon_summary
+
+    # Gdy historyczna obserwacja 5.75% z 2023 r. jest oceniana bez potwierdzenia, otrzymuje status ARCHIVAL
+    plan_hist = ReportIndicatorPolicy.evaluate([obs_historical], citations, report_date="06.11.2026", now=now_nov)
+    nbp_hist_eval = next(it for it in plan_hist.core_indicators if it.indicator_code == "PL_NBP_REFERENCE_RATE")
+    assert nbp_hist_eval.value_decimal == "5.75"
+    assert nbp_hist_eval.freshness == FreshnessStatus.ARCHIVAL
+    assert "Archiwalna stopa referencyjna" in nbp_hist_eval.status_note
+
+
+def test_12_unconfirmed_historical_rate_in_november_2026_is_archival():
+    """12. Wartość 5.75% z 2023 r. nie może być automatycznie uznawana za aktualną w listopadzie 2026 bez potwierdzenia."""
+    obs_unconfirmed_2023 = _create_sample_obs(
+        "PL_NBP_REFERENCE_RATE", "5.75", "PCT", "2023-10-05", "2023-10-05", source="SRC_NBP", freq="IRREGULAR"
+    )
+    citations = [
+        {"idx": 1, "indicator_code": "PL_NBP_REFERENCE_RATE", "institution": "NBP", "period": "2023-10-05", "is_official": True}
+    ]
+    now_nov = datetime(2026, 11, 6)
+    plan = ReportIndicatorPolicy.evaluate([obs_unconfirmed_2023], citations, report_date="06.11.2026", now=now_nov)
+    eval_rate = next(it for it in plan.core_indicators if it.indicator_code == "PL_NBP_REFERENCE_RATE")
+
+    assert eval_rate.freshness == FreshnessStatus.ARCHIVAL
+    assert "Zakaz prezentowania jako stawki bieżącej" in eval_rate.status_note
+    assert "archiwalna stopa NBP z 05.10.2023 r." in plan.executive_horizon_summary
+
+
+def test_13_reject_uncompleted_future_period_observations():
+    """13. Odrzucaj obserwacje mające datę końca okresu w przyszłości, chyba że dotyczą jawnie określonej prognozy."""
+    obs_future_annual = _create_sample_obs(
+        "PL_UNEMPLOYMENT_REGISTERED_RATE", "5.0", "PCT", "2026-01-01", "2026-12-31", freq="ANNUAL"
+    )
+    obs_future_annual["revision_type"] = "FINAL"
+    obs_past_annual = _create_sample_obs(
+        "PL_UNEMPLOYMENT_REGISTERED_RATE", "5.1", "PCT", "2025-01-01", "2025-12-31", freq="ANNUAL"
+    )
+    obs_past_annual["revision_type"] = "FINAL"
+    citations = [
+        {"idx": 1, "indicator_code": "PL_UNEMPLOYMENT_REGISTERED_RATE", "institution": "GUS", "period": "2025", "is_official": True}
+    ]
+
+    now_nov = datetime(2026, 11, 6)
+    plan = ReportIndicatorPolicy.evaluate([obs_future_annual, obs_past_annual], citations, report_date="06.11.2026", now=now_nov)
+    eval_unemp = next(it for it in plan.core_indicators if it.indicator_code == "PL_UNEMPLOYMENT_REGISTERED_RATE")
+
+    # Obserwacja z przyszłości (2026-12-31) została odrzucona; wybrany został zakończony okres 2025 (5.1%)
+    assert eval_unemp.value_decimal == "5.1"
+    assert eval_unemp.period_end == "2025-12-31"
+
+    # Jawna prognoza z przyszłości nie może być prezentowana jako oficjalny odczyt
+    obs_forecast = _create_sample_obs(
+        "PL_UNEMPLOYMENT_REGISTERED_RATE", "4.8", "PCT", "2026-01-01", "2026-12-31", freq="ANNUAL"
+    )
+    obs_forecast["revision_type"] = "FORECAST"
+    plan_fc = ReportIndicatorPolicy.evaluate([obs_forecast], citations, report_date="06.11.2026", now=now_nov)
+    eval_fc = next(it for it in plan_fc.core_indicators if it.indicator_code == "PL_UNEMPLOYMENT_REGISTERED_RATE")
+    assert eval_fc.freshness == FreshnessStatus.MISSING
+
+
+def test_14_gus_dbw_monthly_registered_unemployment_5_8_percent():
+    """14. Weryfikacja pozyskiwania miesięcznej stopy bezrobocia rejestrowanego GUS DBW (5.8% za wrzesień 2026)."""
+    from modules.connectors.gus import GusConnector
+    from modules.pipeline_v2 import OFFLINE_FIXTURES
+
+    connector = GusConnector(offline_mode=True)
+    connector.register_fixture("id-zmienna=875", OFFLINE_FIXTURES["GUS_DBW_UNEMPLOYMENT"])
+    evidence, obs = connector.fetch_registered_unemployment_monthly_dbw()
+
+    assert obs.indicator_code == "PL_UNEMPLOYMENT_REGISTERED_RATE"
+    assert obs.value_decimal == "5.8"
+    assert obs.unit_code == "PCT"
+    assert obs.frequency == "MONTHLY"
+    assert obs.period_start == "2026-09-01"
+    assert obs.period_end == "2026-09-30"
+    assert obs.status == "VERIFIED"
+    assert obs.metadata["gus_dbw_zmienna"] == 875
+    assert obs.metadata["gus_dbw_przekroj"] == 143
+    assert obs.metadata["territory_id"] == 33617

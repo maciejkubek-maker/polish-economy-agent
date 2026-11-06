@@ -166,6 +166,7 @@ class NbpConnector(BaseConnector):
                 "rate_type": "referencyjna",
                 "rate_id": "ref",
                 "effective_from": obowiazuje_od,
+                "is_current_table": True,
             },
         )
 
