@@ -1270,6 +1270,81 @@ class TestGusConnector:
         with pytest.raises(ValidationError, match="Nie znaleziono wymaganego sposobu prezentacji CPI r/r"):
             connector.fetch_cpi_dbw(rok=2026, okres_id=255)
 
+    def test_fetch_registered_unemployment_monthly_dbw_rejects_missing_or_mismatched_territory(self):
+        """Wymóg jednoznacznego potwierdzenia Polski (id-pozycja-1=33617). Odrzucenie braku lub niezgodności identyfikatora."""
+        connector = GusConnector(offline_mode=True)
+
+        # 1. Brak id-pozycja-1 w pojedynczym rekordzie (usunięty fallback akceptujący rekord bez sprawdzenia terytorium)
+        payload_no_pos = json.dumps({
+            "page": 1,
+            "page-size": 10,
+            "total-records": 1,
+            "data": [{
+                "id-zmienna": 875,
+                "id-przekroj": 143,
+                "id-rok": 2026,
+                "id-okres": 253,
+                "wartosc": 5.8
+            }]
+        })
+        connector.register_fixture("data/data-data", payload_no_pos)
+        with pytest.raises(ValidationError, match="oczekiwano id-pozycja-1=33617"):
+            connector.fetch_registered_unemployment_monthly_dbw(rok=2026, okres_id=253)
+
+        # 2. Błędny identyfikator terytorium (np. id-pozycja-1=12345)
+        payload_wrong_pos = json.dumps({
+            "page": 1,
+            "page-size": 10,
+            "total-records": 1,
+            "data": [{
+                "id-zmienna": 875,
+                "id-przekroj": 143,
+                "id-rok": 2026,
+                "id-okres": 253,
+                "id-pozycja-1": 12345,
+                "wartosc": 7.2
+            }]
+        })
+        connector.register_fixture("data/data-data", payload_wrong_pos)
+        with pytest.raises(ValidationError, match="oczekiwano id-pozycja-1=33617"):
+            connector.fetch_registered_unemployment_monthly_dbw(rok=2026, okres_id=253)
+
+        # 3. Wiele rekordów bez terytorium Polski 33617
+        payload_multi_no_poland = json.dumps({
+            "page": 1,
+            "page-size": 10,
+            "total-records": 2,
+            "data": [
+                {"id-zmienna": 875, "id-pozycja-1": 1001, "wartosc": 6.1},
+                {"id-zmienna": 875, "id-pozycja-1": 1002, "wartosc": 5.9}
+            ]
+        })
+        connector.register_fixture("data/data-data", payload_multi_no_poland)
+        with pytest.raises(ValidationError, match="oczekiwano id-pozycja-1=33617"):
+            connector.fetch_registered_unemployment_monthly_dbw(rok=2026, okres_id=253)
+
+        # 4. Prawidłowy rekord z potwierdzeniem id-pozycja-1=33617
+        payload_valid = json.dumps({
+            "page": 1,
+            "page-size": 10,
+            "total-records": 2,
+            "data": [
+                {"id-zmienna": 875, "id-pozycja-1": 1001, "wartosc": 6.1},
+                {
+                    "id-zmienna": 875,
+                    "id-przekroj": 143,
+                    "id-rok": 2026,
+                    "id-okres": 253,
+                    "id-pozycja-1": 33617,
+                    "wartosc": 5.8
+                }
+            ]
+        })
+        connector.register_fixture("data/data-data", payload_valid)
+        evidence, obs = connector.fetch_registered_unemployment_monthly_dbw(rok=2026, okres_id=253)
+        assert obs.value_decimal == "5.8"
+        assert obs.metadata["territory_id"] == 33617
+
 
 class TestBaseConnectorGuards:
     """Testy mechanizmów walidacyjnych i odpornościowych BaseConnector."""

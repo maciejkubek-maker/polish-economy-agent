@@ -34,6 +34,26 @@ from modules.connectors.base import (
 # Statyczny, audytowany rejestr zatwierdzonych mapowań BDL
 # Statyczny, audytowany rejestr zatwierdzonych mapowań BDL
 # Zagnieżdżone rekordy są MappingProxyType, co zabezpiecza przed modyfikacją wewnętrznych pól.
+_APPROVED_DBW_REGISTRY_DATA: Dict[int, MappingProxyType] = {
+    305: MappingProxyType({
+        "indicator_code": "PL_CPI_YOY",
+        "name": "Wskaźnik cen towarów i usług konsumpcyjnych (CPI)",
+        "unit_code": "PCT",
+        "frequency": "MONTHLY",
+        "default_przekroj": 736,
+        "status": "VERIFIED",
+    }),
+    875: MappingProxyType({
+        "indicator_code": "PL_UNEMPLOYMENT_REGISTERED_RATE",
+        "name": "Stopa bezrobocia rejestrowanego",
+        "unit_code": "PCT",
+        "frequency": "MONTHLY",
+        "default_przekroj": 143,
+        "default_position": 33617,
+        "status": "VERIFIED",
+    }),
+}
+
 _APPROVED_BDL_REGISTRY_DATA: Dict[int, MappingProxyType] = {
     60270: MappingProxyType({
         "indicator_code": "PL_UNEMPLOYMENT_REGISTERED_RATE",
@@ -446,6 +466,11 @@ class GusConnector(BaseConnector):
                 p_end = f"{year_int:04d}-12-31"
                 freq = "ANNUAL"
 
+            if kwargs.get("reject_future_periods", False):
+                today_iso = datetime.now().date().isoformat()
+                if p_end > today_iso and kwargs.get("revision_type") != "FORECAST":
+                    continue
+
             val_str = self.validate_value(raw_val)
 
             obs = MacroObservation(
@@ -593,6 +618,190 @@ class GusConnector(BaseConnector):
         raise DataNotFoundError(
             f"Nie znaleziono dostępnych odczytów CPI w oficjalnym API GUS DBW dla zmienna={var_id}, przekroj={przekroj_id} (badano lata {now_year}-{now_year - 2})"
         )
+
+    def _discover_latest_unemployment_period(
+        self, var_id: int = 875, przekroj_id: int = 143, position_id: int = 33617
+    ) -> Tuple[int, int, int]:
+        """
+        Wyszukuje najnowszy rzeczywiście dostępny odczyt stopy bezrobocia rejestrowanego w oficjalnym API GUS DBW.
+        Bada okresy wstecz od bieżącego roku bez zgadywania wartości.
+        """
+        now_year = datetime.now().year
+        for r in range(now_year, now_year - 3, -1):
+            for m in range(12, 0, -1):
+                okres = 246 + m
+                url = (
+                    f"{self.DBW_BASE_URL}/variable/variable-data-section"
+                    f"?id-zmienna={var_id}&id-przekroj={przekroj_id}&id-rok={r}&id-okres={okres}"
+                )
+                try:
+                    code, payload, _, _ = self._execute_request(url)
+                    if code == 200 and payload:
+                        data = json.loads(payload).get("data", [])
+                        if data and any(
+                            it.get("wartosc") is not None
+                            and it.get("id-pozycja-1") == position_id
+                            for it in data
+                        ):
+                            return (r, okres, m)
+                except Exception:
+                    pass
+        raise DataNotFoundError(
+            f"Nie znaleziono dostępnych odczytów stopy bezrobocia w oficjalnym API GUS DBW dla zmienna={var_id}, przekroj={przekroj_id} (badano lata {now_year}-{now_year - 2})"
+        )
+
+    def fetch_registered_unemployment_monthly_dbw(
+        self,
+        rok: Optional[int] = None,
+        okres_id: Optional[int] = None,
+        month: Optional[int] = None,
+        var_id: int = 875,
+        przekroj_id: int = 143,
+        position_id: int = 33617,
+    ) -> Tuple[RawEvidence, MacroObservation]:
+        """
+        Pobiera oficjalną miesięczną stopę bezrobocia rejestrowanego z GUS DBW (zmienna 875, przekrój 143, pozycja Polska 33617).
+        Dla wywołania bez parametrów w trybie live: automatycznie pobiera najnowszy
+        rzeczywiście dostępny odczyt z oficjalnego API.
+        W trybie offline domyślnie rok 2026, okres 255 (wrzesień 2026, 5.8%).
+        Weryfikuje identyfikator zmiennej, przekrój, pozycję, okres, rok i jednostkę w oficjalnej odpowiedzi.
+        """
+        if rok is None or okres_id is None:
+            if self.offline_mode:
+                rok = 2026 if rok is None else rok
+                okres_id = 255 if okres_id is None else okres_id
+                if month is None:
+                    month = 9
+            else:
+                disc_rok, disc_okres, disc_month = self._discover_latest_unemployment_period(
+                    var_id=var_id, przekroj_id=przekroj_id, position_id=position_id
+                )
+                rok = disc_rok if rok is None else rok
+                okres_id = disc_okres if okres_id is None else okres_id
+                month = disc_month if month is None else month
+
+        resolved_month = self._resolve_dbw_month(okres_id, explicit_month=month)
+        rok_int = int(rok)
+        if rok_int < 1990 or rok_int > 2050:
+            raise ValidationError(f"Nieprawidłowy rok dla GUS DBW: {rok}")
+
+        url = (
+            f"{self.DBW_BASE_URL}/variable/variable-data-section"
+            f"?id-zmienna={var_id}&id-przekroj={przekroj_id}&id-rok={rok_int}&id-okres={okres_id}"
+        )
+
+        try:
+            status_code, payload_text, content_hash, retrieved_at_utc = self._execute_request(url)
+        except Exception:
+            if self.offline_mode:
+                fallback_url = f"{self.DBW_BASE_URL}/data/data-data"
+                status_code, payload_text, content_hash, retrieved_at_utc = self._execute_request(fallback_url)
+            else:
+                raise
+
+        try:
+            data = json.loads(payload_text)
+        except json.JSONDecodeError as err:
+            raise ValidationError(f"Błąd parsowania JSON z GUS DBW Bezrobocie ({url}): {str(err)}") from err
+
+        data_list = data.get("data", [])
+        if not data_list:
+            raise DataNotFoundError(
+                f"Brak danych w GUS DBW dla zmienna={var_id}, przekroj={przekroj_id}, rok={rok_int}, okres={okres_id}"
+            )
+
+        # Wymagaj jednoznacznego potwierdzenia terytorium Polska (id-pozycja-1=33617)
+        # Zakaz fallbacku akceptującego pojedynczy rekord bez sprawdzenia terytorium
+        item = next((it for it in data_list if it.get("id-pozycja-1") == position_id), None)
+        if item is None:
+            present_positions = [it.get("id-pozycja-1") for it in data_list]
+            raise ValidationError(
+                f"Brak lub niezgodność identyfikatora terytorium Polska (oczekiwano id-pozycja-1={position_id}) "
+                f"w odpowiedzi GUS DBW dla zmiennej {var_id}. Dostępne pozycje: {present_positions}. "
+                "Odrzucono brak lub niezgodność identyfikatora terytorium."
+            )
+
+        if item.get("id-pozycja-1") != position_id:
+            raise ValidationError(
+                f"Niezgodność identyfikatora terytorium w wybranym rekordzie GUS DBW: "
+                f"oczekiwano {position_id}, otrzymano {item.get('id-pozycja-1')}"
+            )
+
+        item_var_id = item.get("id-zmienna")
+        if item_var_id is not None and int(item_var_id) != int(var_id):
+            raise ValidationError(
+                f"Niezgodność id-zmienna w odpowiedzi GUS DBW: oczekiwano {var_id}, otrzymano {item_var_id}"
+            )
+
+        item_przekroj = item.get("id-przekroj")
+        if item_przekroj is not None and int(item_przekroj) != int(przekroj_id):
+            raise ValidationError(
+                f"Niezgodność id-przekroj w odpowiedzi GUS DBW: oczekiwano {przekroj_id}, otrzymano {item_przekroj}"
+            )
+
+        item_okres = item.get("id-okres")
+        if item_okres is not None and int(item_okres) != int(okres_id):
+            item_m = self.DBW_PERIOD_TO_MONTH.get(int(item_okres))
+            req_m = self.DBW_PERIOD_TO_MONTH.get(int(okres_id)) or resolved_month
+            if item_m is None or item_m != req_m:
+                raise ValidationError(
+                    f"Niezgodność id-okres w odpowiedzi GUS DBW: oczekiwano {okres_id}, otrzymano {item_okres}"
+                )
+
+        item_rok = item.get("id-rok") or item.get("id-daty")
+        if item_rok is not None and int(item_rok) != int(rok_int):
+            raise ValidationError(
+                f"Niezgodność roku w odpowiedzi GUS DBW: oczekiwano {rok_int}, otrzymano {item_rok}"
+            )
+
+        raw_val = item.get("wartosc")
+        if raw_val is None:
+            raise DataNotFoundError("Brak wartości liczbowej 'wartosc' w odpowiedzi GUS DBW Stopa Bezrobocia")
+
+        val_str = self.validate_value(raw_val, min_plausible=Decimal("0.0"), max_plausible=Decimal("50.0"))
+        unit_code = self.validate_unit("PCT")
+        p_start = f"{rok_int:04d}-{resolved_month:02d}-01"
+        last_day = calendar.monthrange(rok_int, resolved_month)[1]
+        p_end = f"{rok_int:04d}-{resolved_month:02d}-{last_day:02d}"
+
+        today_iso = datetime.now().date().isoformat()
+        if p_end > today_iso:
+            raise ValidationError(f"Odrzucono odczyt z datą końca w przyszłości: {p_end} > {today_iso}")
+
+        evidence = self.create_evidence(
+            source_id=self.SOURCE_ID_DBW,
+            source_url=url,
+            document_type="API_RESPONSE",
+            payload_text=payload_text,
+            content_hash=content_hash,
+            status_code=status_code,
+            retrieved_at_utc=retrieved_at_utc,
+        )
+
+        observation = MacroObservation(
+            indicator_code="PL_UNEMPLOYMENT_REGISTERED_RATE",
+            country_code="PL",
+            period_start=p_start,
+            period_end=p_end,
+            frequency=self.validate_frequency("MONTHLY"),
+            value_decimal=val_str,
+            unit_code=unit_code,
+            revision_type="FINAL",
+            status="VERIFIED",
+            evidence_id=evidence.evidence_id,
+            publication_date=None,
+            metadata={
+                "gus_dbw_zmienna": var_id,
+                "gus_dbw_przekroj": przekroj_id,
+                "territory_id": position_id,
+                "rok": rok_int,
+                "okres_id": okres_id,
+                "resolved_month": resolved_month,
+                "raw_value": str(raw_val),
+            },
+        )
+
+        return evidence, observation
 
     def fetch_cpi_dbw(
         self,
@@ -772,7 +981,14 @@ class GusConnector(BaseConnector):
         code = indicator_code.upper().strip()
 
         if code == "PL_UNEMPLOYMENT_REGISTERED_RATE":
-            return self.fetch_registered_unemployment()
+            freq = kwargs.get("frequency", "").upper().strip()
+            if freq == "ANNUAL":
+                return self.fetch_registered_unemployment()
+            return self.fetch_registered_unemployment_monthly_dbw(
+                rok=kwargs.get("rok"),
+                okres_id=kwargs.get("okres_id"),
+                month=kwargs.get("month"),
+            )
 
         if code == "PL_UNEMPLOYMENT_REGISTERED_COUNT":
             var_id = kwargs.get("var_id")

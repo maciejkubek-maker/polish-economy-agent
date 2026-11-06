@@ -704,3 +704,124 @@ def test_legacy_database_is_untouched_after_tests():
     assert cursor.execute("SELECT count(*) FROM trusted_sources").fetchone()[0] == 10
     assert cursor.execute("SELECT count(*) FROM generated_reports").fetchone()[0] == 6
     conn.close()
+
+def test_schema_v2_migration_metadata_json_idempotent_on_legacy_schema(tmp_path):
+    """Testuje bezpieczną, idempotentną migrację istniejącej bazy SQLite v2 ze starym schematem.
+    
+    Weryfikuje:
+    - Utworzenie bazy ze schematem v2 bez kolumny observations.metadata_json.
+    - Zapis obserwacji historycznych.
+    - Automatyczną i idempotentną migrację (ALTER TABLE observations ADD COLUMN metadata_json TEXT).
+    - Zachowanie integralności i wartości danych historycznych (brak zmian i brak usunięć).
+    - Poprawne działanie get_observation_history() bez błędu NameError na run_id.
+    - Obsługę nowo dodawanych obserwacji z metadanymi i flagą is_current_table.
+    """
+    from modules.storage_v2 import SQLiteV2Storage
+    from modules.connectors.base import RawEvidence, MacroObservation
+
+    with open(SCHEMA_V2_SQL_PATH, "r", encoding="utf-8") as f:
+        ddl = f.read()
+
+    # Symulacja starego schematu SQLite v2 sprzed migracji (brak kolumny metadata_json)
+    ddl_old = ddl.replace("    metadata_json TEXT,\n", "")
+
+    db_file = str(tmp_path / "legacy_schema_v2.db")
+    conn = sqlite3.connect(db_file)
+    conn.execute("PRAGMA foreign_keys = ON;")
+    conn.executescript(ddl_old)
+
+    cols_initial = [col[1] for col in conn.execute("PRAGMA table_info(observations)").fetchall()]
+    assert "metadata_json" not in cols_initial, "Kolumna metadata_json nie powinna istnieć w starym schemacie"
+
+    conn.execute("""
+        INSERT INTO source_registry (source_id, name, institution, base_url, source_type, trust_tier, update_frequency, is_active)
+        VALUES ('SRC_GUS', 'GUS', 'GUS', 'https://stat.gov.pl', 'OFFICIAL_API', 'TIER_A', 'MONTHLY', 1);
+    """)
+    conn.execute("""
+        INSERT INTO indicator_catalog (indicator_code, name_pl, definition_pl, frequency, unit_code, target_macro_area, is_headline)
+        VALUES ('PL_CPI_YOY', 'CPI r/r', 'Inflacja konsumencka', 'MONTHLY', 'PCT', 'INFLATION', 1);
+    """)
+    conn.execute("""
+        INSERT INTO ingestion_runs (run_id, provider, run_type, started_at_utc, status)
+        VALUES ('RUN_HIST', 'GUS_API', 'TRIGGERED', CURRENT_TIMESTAMP, 'COMPLETED');
+    """)
+    conn.execute("""
+        INSERT INTO source_evidence (evidence_id, run_id, source_id, source_url, document_type, content_hash, raw_payload_text, retrieved_at_utc)
+        VALUES ('EVI_HIST', 'RUN_HIST', 'SRC_GUS', 'https://stat.gov.pl', 'API_RESPONSE', 'hash_123', 'payload', '2025-12-31T12:00:00Z');
+    """)
+    conn.execute("""
+        INSERT INTO observations (
+            observation_id, indicator_code, country_code, period_start, period_end,
+            frequency, value_decimal, unit_code, revision_type, version_number,
+            supersedes_id, evidence_id, status, observed_at_utc
+        ) VALUES (
+            'OBS_HIST_1', 'PL_CPI_YOY', 'PL', '2025-12-01', '2025-12-31',
+            'MONTHLY', '4.5', 'PCT', 'FINAL', 1,
+            NULL, 'EVI_HIST', 'VERIFIED', '2025-12-31T12:00:00Z'
+        );
+    """)
+    conn.commit()
+    conn.close()
+
+    # Otwarcie bazy przez SQLiteV2Storage uruchamia bezpieczną, niedestrukcyjną migrację
+    storage = SQLiteV2Storage(db_file)
+
+    conn2 = storage.get_connection()
+    cols_after = [col[1] for col in conn2.execute("PRAGMA table_info(observations)").fetchall()]
+    conn2.close()
+    assert "metadata_json" in cols_after, "Kolumna metadata_json musi istnieć po migracji"
+
+    # Weryfikacja nienaruszalności danych historycznych
+    hist_obs = storage.get_observation_history("PL_CPI_YOY")
+    assert len(hist_obs) == 1
+    assert hist_obs[0]["observation_id"] == "OBS_HIST_1"
+    assert hist_obs[0]["value_decimal"] == "4.5"
+    assert hist_obs[0]["metadata_json"] is None
+    assert hist_obs[0]["metadata"] == {}
+    assert hist_obs[0]["is_current_table"] is False
+
+    # Powtórne wywołanie migracji jest w 100% idempotentne
+    res = storage.migrate_schema()
+    assert res["observations_metadata_json"] is False, "Powtórna migracja musi być no-op"
+
+    # Zapis nowej obserwacji z metadanymi i flagą is_current_table
+    run_new = storage.start_ingestion_run(provider="NBP_API", run_type="TRIGGERED")
+    evi_new = RawEvidence(
+        evidence_id="EVI_NEW",
+        source_id="SRC_NBP",
+        source_url="https://api.nbp.pl",
+        document_type="API_RESPONSE",
+        payload_text="<xml></xml>",
+        content_hash="h1",
+        status_code=200,
+        retrieved_at_utc="2026-11-06T12:00:00Z"
+    )
+    storage.save_evidence(evi_new, run_id=run_new)
+    obs_new = MacroObservation(
+        observation_id="OBS_NEW_1",
+        indicator_code="PL_CPI_YOY",
+        country_code="PL",
+        period_start="2026-09-01",
+        period_end="2026-09-30",
+        frequency="MONTHLY",
+        value_decimal="4.8",
+        unit_code="PCT",
+        revision_type="FINAL",
+        status="VERIFIED",
+        evidence_id="EVI_NEW",
+        metadata={"is_current_table": True}
+    )
+    storage.save_observation(obs_new, run_id=run_new)
+
+    # get_observation_history() bez podanego run_id
+    full_history = storage.get_observation_history("PL_CPI_YOY")
+    assert len(full_history) == 2
+    assert full_history[1]["metadata"]["is_current_table"] is True
+    assert full_history[1]["is_current_table"] is True
+
+    # get_observation_history() z filtrowaniem po run_id
+    run_history = storage.get_observation_history("PL_CPI_YOY", run_id=run_new)
+    assert len(run_history) == 1
+    assert run_history[0]["observation_id"] == "OBS_NEW_1"
+    assert run_history[0]["is_current_table"] is True
+

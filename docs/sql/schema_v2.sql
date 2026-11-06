@@ -178,6 +178,7 @@ CREATE TABLE IF NOT EXISTS observations (
     status TEXT NOT NULL CHECK(status IN (
         'VERIFIED', 'PENDING', 'CONFLICT', 'REJECTED', 'SUPERSEDED'
     )),
+    metadata_json TEXT,
     observed_at_utc TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     validated_at_utc TIMESTAMP
 );

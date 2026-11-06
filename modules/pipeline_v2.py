@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hashlib
 import json
+import re
 import logging
 import os
 import time
@@ -63,10 +64,12 @@ OFFLINE_FIXTURES = {
       "rates": [{"no": "212/A/NBP/2026", "effectiveDate": "2026-10-30", "mid": 3.9251}]
     }""",
     "NBP_RATES": """<?xml version="1.0" encoding="utf-8"?>
-    <stopy_procentowe>
-        <pozycja id="ref" obowiazuje_od="2023-10-05" oprocentowanie="5.75"/>
-        <pozycja id="lom" obowiazuje_od="2023-10-05" oprocentowanie="6.25"/>
-        <pozycja id="dep" obowiazuje_od="2023-10-05" oprocentowanie="5.25"/>
+    <stopy_procentowe data_publikacji="2026-03-05">
+        <tabela id="stoproc" naglowek="Stopa procentowa:">
+            <pozycja id="ref" obowiazuje_od="2026-03-05" oprocentowanie="3.75"/>
+            <pozycja id="lom" obowiazuje_od="2026-03-05" oprocentowanie="4.25"/>
+            <pozycja id="dep" obowiazuje_od="2026-03-05" oprocentowanie="3.25"/>
+        </tabela>
     </stopy_procentowe>""",
     "EUROSTAT_TEICP000": """{
       "version": "2.0",
@@ -161,9 +164,26 @@ OFFLINE_FIXTURES = {
         "id": "000000000000",
         "name": "POLSKA",
         "values": [
-          {"year": 2025, "val": 5.1, "attrId": 1},
-          {"year": 2026, "val": 5.0, "attrId": 1}
+          {"year": 2024, "val": 5.1, "attrId": 1},
+          {"year": 2025, "val": 5.1, "attrId": 1}
         ]
+      }]
+    }""",
+    "GUS_DBW_UNEMPLOYMENT": """{
+      "page": 1,
+      "page-size": 10,
+      "total-records": 1,
+      "data": [{
+        "rownumber": 1,
+        "id-zmienna": 875,
+        "id-przekroj": 143,
+        "id-wymiar-1": 10,
+        "id-pozycja-1": 33617,
+        "id-okres": 255,
+        "id-sposob-prezentacji-miara": 95,
+        "id-daty": 2026,
+        "wartosc": 5.8,
+        "precyzja": 2
       }]
     }""",
     "GUS_DBW_CPI": """{
@@ -245,6 +265,8 @@ class MacroPipelineV2:
         self.gus.register_fixture("variables/60270", OFFLINE_FIXTURES["GUS_BDL_60270"])
         self.gus.register_fixture("data/by-variable/60270", OFFLINE_FIXTURES["GUS_BDL_60270"])
         self.gus.register_fixture("id-zmienna=305", OFFLINE_FIXTURES["GUS_DBW_CPI"])
+        self.gus.register_fixture("id-zmienna=875", OFFLINE_FIXTURES["GUS_DBW_UNEMPLOYMENT"])
+        self.gus.register_fixture("variable-data-section?id-zmienna=875", OFFLINE_FIXTURES["GUS_DBW_UNEMPLOYMENT"])
         self.gus.register_fixture("data/data-data", OFFLINE_FIXTURES["GUS_DBW_CPI"])
 
     # -------------------------------------------------------------------------
@@ -393,21 +415,32 @@ class MacroPipelineV2:
                 output_summary=f"evidence_count={euro_evi_count}",
             )
 
-        # 3. GUS - BDL Stopa bezrobocia (60270), DBW CPI (305/736)
+        # 3. GUS - DBW Stopa bezrobocia miesięczna (875/143), BDL Roczna (60270), DBW CPI (305/736)
         t0_gus = time.perf_counter()
         self.diagnostics.record_step(
             run_id=run_id,
             function="fetch_gus",
             stage="START",
-            input_summary="unemployment 60270, CPI DBW 305/736",
+            input_summary="monthly unemployment DBW 875, annual BDL 60270, CPI DBW 305/736",
         )
         gus_errs: List[str] = []
+        try:
+            evi_gus_unemp_m, obs_gus_unemp_m = self.gus.fetch_registered_unemployment_monthly_dbw()
+            evidence_list.append(evi_gus_unemp_m)
+            observation_list.append(obs_gus_unemp_m)
+        except Exception as err:
+            msg = f"Błąd GUS DBW Miesięczna stopa bezrobocia: {err}"
+            errors.append(msg)
+            gus_errs.append(msg)
+            qid = self.db.record_quality_event("INGESTION", run_id, "GUS_DBW_UNEMP_FAIL", "WARNING", str(err))
+            q_events.append(qid)
+
         try:
             evi_gus_unemp, obs_gus_unemp = self.gus.fetch_registered_unemployment()
             evidence_list.append(evi_gus_unemp)
             observation_list.extend(obs_gus_unemp)
         except Exception as err:
-            msg = f"Błąd GUS BDL Stopa bezrobocia: {err}"
+            msg = f"Błąd GUS BDL Stopa bezrobocia (roczna): {err}"
             errors.append(msg)
             gus_errs.append(msg)
             qid = self.db.record_quality_event("INGESTION", run_id, "GUS_BDL_UNEMP_FAIL", "WARNING", str(err))
@@ -486,10 +519,15 @@ class MacroPipelineV2:
             input_summary=f"evidence_count={len(evidence_list)}, observations_count={len(observation_list)}",
         )
         try:
+            today_iso = datetime.now().date().isoformat()
+            filtered_observations = [
+                obs for obs in observation_list
+                if not (obs.period_end > today_iso and obs.revision_type != "FORECAST")
+            ]
             for evi in evidence_list:
                 self.db.save_evidence(evi, run_id=run_id)
 
-            saved_obs = self.db.save_observations(observation_list, run_id=run_id)
+            saved_obs = self.db.save_observations(filtered_observations, run_id=run_id)
             dur = (time.perf_counter() - t0) * 1000.0
             self.diagnostics.record_step(
                 run_id=run_id,
@@ -601,9 +639,13 @@ class MacroPipelineV2:
             country_code="PL",
             run_id=run_id,
         )
-        raw_periods = [o["period_start"] for o in verified]
-        from modules.evaluator import build_executive_horizon
-        exec_horizon = build_executive_horizon(raw_periods)
+        m_horiz = re.search(r"\*\*Horyzont analizowanych danych:\*\*\s*(.+)", report_markdown)
+        if m_horiz:
+            exec_horizon = m_horiz.group(1).strip()
+        else:
+            raw_periods = [o["period_start"] for o in verified]
+            from modules.evaluator import build_executive_horizon
+            exec_horizon = build_executive_horizon(raw_periods)
 
         # Deterministyczny hash migawki
         snap_payload = f"{country}|{report_date}|{exec_horizon}|{report_markdown}"

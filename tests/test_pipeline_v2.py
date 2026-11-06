@@ -96,12 +96,12 @@ def test_pipeline_v2_full_run_offline(temp_v2_db, tmp_path):
     # 4. Weryfikacja liczb makroekonomicznych w raporcie
     assert "4.3955" in md  # EUR/PLN, tabela A NBP 212/A/NBP/2026
     assert "3.9251" in md  # USD/PLN, tabela A NBP 212/A/NBP/2026
-    assert "5.75%" in md  # Stopa referencyjna NBP
+    assert "3.75%" in md  # Stopa referencyjna NBP
     assert "4.0%" in md or "4.0" in md  # HICP
     assert "2.9%" in md  # Bezrobocie zharmonizowane
     assert "1.1%" in md  # PKB kw/kw
     assert "3.9%" in md  # PKB r/r
-    assert "5.0%" in md  # Stopa bezrobocia rejestrowanego
+    assert "5.8%" in md  # Stopa bezrobocia rejestrowanego
     assert "3.1%" in md  # CPI DBW
 
     # 5. Odnośniki do źródeł
@@ -810,7 +810,7 @@ def test_flask_serve_report_from_v2(temp_v2_db):
             assert "<title>Raport Kondycji Gospodarczej: Polska</title>" in html_text
             assert "Analiza Trendów w Dostępnym Okresie" in html_text
             assert "4.3955" in html_text
-            assert "5.75%" in html_text
+            assert "3.75%" in html_text
     finally:
         set_storage_v2(None)
 
