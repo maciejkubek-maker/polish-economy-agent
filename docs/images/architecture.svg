@@ -1,0 +1,151 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 720" width="100%" height="100%">
+  <defs>
+    <style>
+      .bg { fill: #F4F7FB; }
+      .title { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 24px; font-weight: 700; fill: #142B49; }
+      .subtitle { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 13px; font-weight: 500; fill: #5A6A80; }
+      .box { fill: #FFFFFF; stroke: #D9E2EC; stroke-width: 1.5; rx: 12px; }
+      .box-accent { fill: #FFFFFF; stroke: #38658F; stroke-width: 2; rx: 12px; }
+      .box-db { fill: #F8FAFC; stroke: #142B49; stroke-width: 2; rx: 12px; }
+      .box-context { fill: #FFFBEB; stroke: #F59E0B; stroke-width: 1.5; stroke-dasharray: 4 3; rx: 12px; }
+      .header-text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 14px; font-weight: 700; fill: #142B49; }
+      .body-text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 11.5px; font-weight: 400; fill: #475569; }
+      .mono-text { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 11px; fill: #38658F; }
+      .badge-official { fill: #E0F2FE; stroke: #0284C7; stroke-width: 1; rx: 4px; }
+      .badge-official-text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 10px; font-weight: 600; fill: #0369A1; }
+      .badge-context { fill: #FEF3C7; stroke: #D97706; stroke-width: 1; rx: 4px; }
+      .badge-context-text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 10px; font-weight: 600; fill: #B45309; }
+      .arrow { stroke: #38658F; stroke-width: 1.8; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+      .arrow-dashed { stroke: #F59E0B; stroke-width: 1.8; stroke-dasharray: 4 4; fill: none; stroke-linecap: round; }
+      .shadow { filter: drop-shadow(0px 4px 12px rgba(20, 43, 73, 0.06)); }
+    </style>
+    <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#38658F" />
+    </marker>
+    <marker id="arrowhead-orange" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#F59E0B" />
+    </marker>
+  </defs>
+
+  <!-- Background Canvas -->
+  <rect width="1080" height="720" rx="16" fill="#F4F7FB" stroke="#D9E2EC" stroke-width="1.5"/>
+
+  <!-- Title & Subtitle -->
+  <g transform="translate(48, 44)">
+    <text x="0" y="0" class="title">Polish Economy Agent — Przepływ Danych i Architektura Systemu</text>
+    <text x="0" y="24" class="subtitle">Deterministyczny potok pozyskiwania wskaźników oficjalnych, magazyn append-only SQLite v2, synteza LLM i rygorystyczny walidator faktograficzny</text>
+  </g>
+
+  <!-- ==================== LAYER 1: DATA SOURCES ==================== -->
+  <!-- Official Sources Box -->
+  <g class="shadow" transform="translate(48, 100)">
+    <rect width="660" height="105" class="box" />
+    <rect x="16" y="14" width="112" height="18" class="badge-official" />
+    <text x="24" y="27" class="badge-official-text">OFICJALNE ŹRÓDŁA</text>
+    <text x="136" y="28" class="header-text">Krajowe i Europejskie Instytucje Statystyczne</text>
+
+    <!-- Source Items -->
+    <rect x="20" y="44" width="195" height="46" rx="6" fill="#F8FAFC" stroke="#E2E8F0" />
+    <text x="32" y="62" class="header-text" style="font-size:12px;">GUS (BDL / DBW API)</text>
+    <text x="32" y="78" class="mono-text">CPI r/r, bezrobocie rej.</text>
+
+    <rect x="230" y="44" width="195" height="46" rx="6" fill="#F8FAFC" stroke="#E2E8F0" />
+    <text x="242" y="62" class="header-text" style="font-size:12px;">NBP (Web API &amp; XML)</text>
+    <text x="242" y="78" class="mono-text">Stopy RPP, kursy EUR/USD</text>
+
+    <rect x="440" y="44" width="200" height="46" rx="6" fill="#F8FAFC" stroke="#E2E8F0" />
+    <text x="452" y="62" class="header-text" style="font-size:12px;">Eurostat (Dissemination)</text>
+    <text x="452" y="78" class="mono-text">Realny PKB, HICP, LFS</text>
+  </g>
+
+  <!-- News / Context Source (Tavily) -->
+  <g class="shadow" transform="translate(740, 100)">
+    <rect width="292" height="105" class="box-context" />
+    <rect x="16" y="14" width="124" height="18" class="badge-context" />
+    <text x="22" y="27" class="badge-context-text">KONTEKST MEDIALNY</text>
+    <text x="20" y="55" class="header-text">Tavily Search API</text>
+    <text x="20" y="72" class="body-text">Tylko tło rynkowe i nastroje.</text>
+    <text x="20" y="88" class="body-text" style="font-weight:600; fill:#B45309;">Zakaz wprowadzania liczb!</text>
+  </g>
+
+  <!-- Flow Arrows: Sources -> Pipeline -->
+  <path d="M 378 205 L 378 240" class="arrow" marker-end="url(#arrowhead)" />
+  <path d="M 886 205 L 886 430 L 765 430" class="arrow-dashed" marker-end="url(#arrowhead-orange)" />
+
+  <!-- ==================== LAYER 2: INGESTION & DATA VALIDATION ==================== -->
+  <g class="shadow" transform="translate(48, 245)">
+    <rect width="660" height="90" class="box-accent" />
+    <text x="24" y="26" class="header-text">Konektory Źródłowe i Weryfikacja Danych (Ingestion Pipeline)</text>
+    <text x="24" y="46" class="body-text">1. Pobieranie wieloźródłowe z odpornością na awarie (retries, timeouts, fallback offline)</text>
+    <text x="24" y="63" class="body-text">2. Walidacja typów: Decimal, daty graniczne (odrzucenie dat z przyszłości), kody jednostek (PCT, PLN)</text>
+    <text x="24" y="80" class="body-text">3. Rejestracja audytowa dowodów: URL, status HTTP, SHA-256 surowej odpowiedzi, czas UTC</text>
+  </g>
+
+  <!-- Flow Arrow: Ingestion -> SQLite v2 -->
+  <path d="M 378 335 L 378 370" class="arrow" marker-end="url(#arrowhead)" />
+
+  <!-- ==================== LAYER 3: STORAGE (SQLITE V2) ==================== -->
+  <g class="shadow" transform="translate(48, 375)">
+    <rect width="660" height="105" class="box-db" />
+    <text x="24" y="26" class="header-text" style="fill:#142B49;">Magazyn SQLite v2 (Strictly Append-Only Data Platform)</text>
+    
+    <rect x="20" y="42" width="195" height="50" rx="6" fill="#FFFFFF" stroke="#CBD5E1" />
+    <text x="30" y="58" class="header-text" style="font-size:11px;">source_evidence</text>
+    <text x="30" y="74" class="mono-text">run_id, hash, payload</text>
+
+    <rect x="230" y="42" width="195" height="50" rx="6" fill="#FFFFFF" stroke="#CBD5E1" />
+    <text x="240" y="58" class="header-text" style="font-size:11px;">observations</text>
+    <text x="240" y="74" class="mono-text">trg_prevent_update/del</text>
+
+    <rect x="440" y="42" width="200" height="50" rx="6" fill="#FFFFFF" stroke="#CBD5E1" />
+    <text x="450" y="58" class="header-text" style="font-size:11px;">quality_events &amp; reports</text>
+    <text x="450" y="74" class="mono-text">audyt anomalii, snapshot</text>
+  </g>
+
+  <!-- Flow Arrows: SQLite -> Evaluation & Policy -->
+  <path d="M 230 480 L 230 515" class="arrow" marker-end="url(#arrowhead)" />
+  <path d="M 525 480 L 525 515" class="arrow" marker-end="url(#arrowhead)" />
+
+  <!-- ==================== LAYER 4: REPORT POLICY & SYNTHESIS ==================== -->
+  <!-- Left Box: Deterministic Offline Generator -->
+  <g class="shadow" transform="translate(48, 520)">
+    <rect width="315" height="95" class="box" />
+    <text x="16" y="24" class="header-text">Generator Deterministyczny</text>
+    <text x="16" y="42" class="mono-text">_build_deterministic_v2_report</text>
+    <text x="16" y="60" class="body-text">Darmowy tryb offline bez API LLM.</text>
+    <text x="16" y="76" class="body-text">100% gwarancja zgodności z faktami i [N].</text>
+  </g>
+
+  <!-- Right Box: LLM Synthesis with Policy Guidelines -->
+  <g class="shadow" transform="translate(385, 520)">
+    <rect width="323" height="95" class="box" />
+    <text x="16" y="24" class="header-text">Synteza GPT (OpenAI)</text>
+    <text x="16" y="42" class="mono-text">ReportIndicatorPolicy (PR #10)</text>
+    <text x="16" y="60" class="body-text">Lagi: PKB &lt;=210d, CPI &lt;=105d, NBP lag=0.</text>
+    <text x="16" y="76" class="body-text">Merytoryczna interpretacja makroekonomiczna.</text>
+  </g>
+
+  <!-- Flow Arrows: Generators -> Validator -->
+  <path d="M 205 615 L 205 640 L 735 640 L 735 565 L 755 565" class="arrow" />
+  <path d="M 546 615 L 546 640 L 735 640" class="arrow" />
+  <path d="M 735 565 L 755 565" class="arrow" marker-end="url(#arrowhead)" />
+
+  <!-- ==================== LAYER 5: VALIDATOR & PRESENTATION ==================== -->
+  <g class="shadow" transform="translate(760, 500)">
+    <rect width="272" height="185" class="box-accent" />
+    <rect x="16" y="14" width="132" height="18" rx="4" fill="#FEF2F2" stroke="#EF4444" stroke-width="1" />
+    <text x="22" y="27" style="font-family: -apple-system, sans-serif; font-size:10px; font-weight:700; fill:#B91C1C;">SYSTEMOWY WALIDATOR</text>
+    
+    <text x="16" y="52" class="header-text">EconomyEvaluator V2</text>
+    <text x="16" y="72" class="body-text">• Weryfikacja każdego przypisu [N]</text>
+    <text x="16" y="88" class="body-text">• Zgodność wartości i jednostek</text>
+    <text x="16" y="104" class="body-text">• Spójność kontekstu i domeny</text>
+    <text x="16" y="120" class="body-text">• Automatyczny fallback przy błędzie</text>
+
+    <!-- Presentation Layer Mini-Card -->
+    <rect x="12" y="132" width="248" height="42" rx="6" fill="#F8FAFC" stroke="#CBD5E1" />
+    <text x="20" y="149" class="header-text" style="font-size:11px;">Flask Web UI &amp; report.html</text>
+    <text x="20" y="164" class="mono-text">HTML escape, CSP, ochrona XSS</text>
+  </g>
+
+</svg>
