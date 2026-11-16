@@ -17,7 +17,6 @@
   <img src="https://img.shields.io/badge/Storage-SQLite_v2_(Append--Only)-003B57?style=flat&logo=sqlite&logoColor=white" alt="SQLite v2" />
   <img src="https://img.shields.io/badge/Tests-233_passed_in_14.03s-059669?style=flat&logo=pytest&logoColor=white" alt="Tests" />
   <img src="https://img.shields.io/badge/Architecture-Audit--First_ETL_%2B_LLM-142B49?style=flat" alt="Architecture" />
-  <img src="https://img.shields.io/badge/License-MIT-gray?style=flat" alt="License" />
 </p>
 
 <p align="center">
@@ -57,7 +56,7 @@
 
 ### Overview
 
-**Polish Economy Agent** is an engineering portfolio project demonstrating a verifiable, audit-first pipeline for macroeconomic data. It retrieves official statistical observations from the National Bank of Poland (**NBP**), Statistics Poland (**GUS**), and **Eurostat**, stores immutable raw evidence and structured observations in an append-only **SQLite v2** platform, enriches findings with contextual search (**Tavily**), and synthesizes multi-section analytical reports via **OpenAI GPT** or a deterministic zero-cost offline engine.
+**Polish Economy Agent** is an engineering portfolio project demonstrating a verifiable, audit-first pipeline for macroeconomic data. It retrieves official statistical observations from the National Bank of Poland (**NBP**), Statistics Poland (**GUS**), and **Eurostat**, stores immutable raw evidence and structured observations in an append-only **SQLite v2** platform, enriches findings with contextual search (**Tavily**), and synthesizes multi-section analytical reports via **OpenAI GPT** or a deterministic offline engine.
 
 Unlike naive LLM wrappers, the system implements an econometric verification barrier: numbers in the report must strictly originate from verified statistical records, every factual statement carries a traceable footnote `[N]` linked to a verified source endpoint URL, and search results are strictly quarantined as media commentary (never converted into official statistical claims).
 
@@ -79,8 +78,8 @@ The platform enforces clean separation between official data ingestion, audit st
 3. **Storage (SQLite v2):** Audit-first relational database with append-only triggers on `observations` (`trg_observations_prevent_update`, `trg_observations_prevent_delete`), run-scoped lineage (`source_evidence.run_id`), and anomaly logging (`quality_events`).
 4. **Indicator Freshness Policy (`ReportIndicatorPolicy`):** Evaluates timeliness tailored to reporting frequencies — quarterly GDP allows natural 45–90d publication lag (valid up to 210d as `CURRENT`), monthly CPI and registered unemployment allow up to 105d as `CURRENT`, and the active NBP reference rate is maintained as legally binding (`EFFECTIVE`, lag = 0d).
 5. **Synthesis & Dual Generator:**
-   - **Live GPT Synthesis:** OpenAI GPT (`gpt-4o`) guided by strict econometric constraints and macroeconomic analysis prompts.
-   - **Deterministic Generator:** 100% rule-based offline fallback with zero API cost.
+   - **Live GPT Synthesis:** OpenAI GPT (`gpt-4o`) guided by strict econometric constraints and macroeconomic analysis prompts. In live mode, validation rejection or API error results in a safe `FAILED` run without persisting any report (no automatic fallback to offline report).
+   - **Deterministic Offline Generator:** Dedicated rule-based engine for offline demonstration and testing without external LLM calls.
 6. **Quality Gate (`EconomyEvaluator`):** Rigorous anti-hallucination barrier verifying all numerical claims, unit symbols, and cross-domain contexts.
 7. **Presentation:** Local Flask application serving sanitized, XSS-protected HTML reports (`app.py`).
 
@@ -147,7 +146,7 @@ Online mode connects to live external APIs (GUS, NBP, Eurostat, Tavily, OpenAI).
    uv run python app.py
    ```
 
-Online report generation utilizes OpenAI GPT (`gpt-4o`) via LangChain. In live mode, reports must pass strict factual validation against official records. Section 6 (Bibliography) is assembled programmatically from the citation registry with direct URLs. If validation fails or an API error occurs, the run fails safely (`FAILED`, `report_id=null`) without writing partial files.
+Online report generation utilizes OpenAI GPT (`gpt-4o`) via LangChain. In live mode, reports must pass strict factual validation against official records. Section 6 (Bibliography) is assembled programmatically from the citation registry with direct URLs. If validation fails or an API error occurs, the run fails safely (`FAILED`, `report_id=null`) without writing partial files or invoking any substitute report.
 
 ---
 
@@ -170,7 +169,7 @@ uv sync --group dev
 uv run pytest
 ```
 
-- **Latest Verified Audit Result:** **`233 passed in 14.03s`** *(measured locally in Python 3.11.16 environment)*.
+- **Latest Verified Audit Result:** **`233 passed in 14.03s`** *(measured during earlier local audit in Python 3.11.16 environment)*.
 
 ---
 
@@ -211,8 +210,8 @@ System zapewnia ścisłą separację pomiędzy pozyskiwaniem danych, audytowalny
 3. **Magazyn SQLite v2:** Relacyjna baza z wyzwalaczami append-only dla tabeli `observations` (`trg_observations_prevent_update`, `trg_observations_prevent_delete`), izolacją przebiegów (`source_evidence.run_id`) i audytem anomalii (`quality_events`).
 4. **Polityka aktualności wskaźników (`ReportIndicatorPolicy`):** Uwzględnia naturalne cykle publikacyjne — kwartalne PKB z naturalnym opóźnieniem 45–90 dni pozostaje w pełni aktualne do 210 dni (`CURRENT`), miesięczne CPI i bezrobocie do 105 dni (`CURRENT`), a obowiązująca stopa referencyjna NBP zachowuje status wiążącej decyzji prawnej (`EFFECTIVE`, lag = 0 dni).
 5. **Synteza i podwójny generator:**
-   - **Synteza GPT:** Model OpenAI (`gpt-4o`) kierowany rygorystycznymi regułami ekonometrycznymi i wymogiem merytorycznej interpretacji makroekonomicznej.
-   - **Generator deterministyczny:** Całkowicie bezpłatny, regułowy generator offline.
+   - **Synteza GPT (tryb live):** Model OpenAI (`gpt-4o`) kierowany regułami ekonometrycznymi i wymogiem merytorycznej interpretacji makroekonomicznej. Odrzucenie przez walidator lub błąd API skutkuje bezpiecznym statusem `FAILED` bez generowania raportu zastępczego (brak automatycznego fallbacku).
+   - **Generator deterministyczny (tryb offline):** Odrębny, regułowy silnik offline do demonstracji i testowania bez wywołań modeli LLM.
 6. **Bariera weryfikacyjna (`EconomyEvaluator`):** Niezależny walidator sprawdzający poprawność przypisów `[N]`, zgodność liczb, jednostek i brak sprzeczności kontekstowych.
 7. **Prezentacja:** Aplikacja Flask serwująca zabezpieczony raport HTML z ucieczką znaków (ochrona przed XSS).
 
@@ -279,7 +278,7 @@ Tryb online łączy się na żywo z usługami zewnętrznymi (GUS, NBP, Eurostat,
    uv run python app.py
    ```
 
-Synteza online wykorzystuje model OpenAI GPT (`gpt-4o`) za pośrednictwem biblioteki LangChain. W trybie live raport musi przejść restrykcyjną walidację zgodności z bazą odczytów. Sekcja 6. (bibliografia) jest składana programowo z rejestru cytowań z bezpośrednimi linkami URL. W przypadku błędu walidacji lub API przebieg kończy się bezpiecznym statusem `FAILED` bez zapisywania uszkodzonego raportu.
+Synteza online wykorzystuje model OpenAI GPT (`gpt-4o`) za pośrednictwem biblioteki LangChain. W trybie live raport musi przejść restrykcyjną walidację zgodności z bazą odczytów. Sekcja 6. (bibliografia) jest składana programowo z rejestru cytowań z bezpośrednimi linkami URL. W przypadku błędu walidacji lub API przebieg kończy się bezpiecznym statusem `FAILED` bez zapisywania uszkodzonego raportu i bez generowania raportu zastępczego.
 
 ---
 
@@ -302,7 +301,7 @@ uv sync --group dev
 uv run pytest
 ```
 
-- **Rzeczywisty wynik audytu końcowego:** **`233 passed in 14.03s`** *(zmierzony lokalnie w środowisku Python 3.11.16)*.
+- **Rzeczywisty wynik audytu końcowego:** **`233 passed in 14.03s`** *(zmierzony podczas wcześniejszego audytu lokalnego w środowisku Python 3.11.16)*.
 
 ---
 
