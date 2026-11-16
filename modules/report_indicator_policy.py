@@ -368,22 +368,59 @@ class ReportIndicatorPolicy:
                     presentation_rule=rule,
                 )
 
-            # Obliczenie opóźnienia publikacyjnego (lag) dla wskaźników miesięcznych i kwartalnych
+            # Obliczenie opóźnienia publikacyjnego (lag) z uwzględnieniem specyfiki częstotliwości i cyklu publikacji
             lag_days = 0
-            if p_end:
+            period_days = 0
+            if p_start and p_end:
                 try:
-                    end_dt = datetime.strptime(p_end, "%Y-%m-%d").date()
-                    lag_days = max(0, (now_dt - end_dt).days)
+                    start_d = datetime.strptime(p_start[:10], "%Y-%m-%d").date()
+                    end_d = datetime.strptime(p_end[:10], "%Y-%m-%d").date()
+                    period_days = (end_d - start_d).days
+                    lag_days = max(0, (now_dt - end_d).days)
+                except Exception:
+                    lag_days = 0
+            elif p_end:
+                try:
+                    end_d = datetime.strptime(p_end[:10], "%Y-%m-%d").date()
+                    lag_days = max(0, (now_dt - end_d).days)
                 except Exception:
                     lag_days = 0
 
-            is_archival = lag_days > 90
-            freshness = FreshnessStatus.ARCHIVAL if is_archival else FreshnessStatus.CURRENT
-            status_note = (
-                f"Odczyt archiwalny z okresu {p_start} – {p_end} (opóźnienie ~{lag_days} dni). Prezentować wyłącznie jako historyczną bazę odniesienia."
-                if is_archival
-                else f"Bieżący oficjalny odczyt za okres {p_start} – {p_end}."
+            # Ustalenie dopuszczalnego progu aktualności w oparciu o częstotliwość i cykl publikacji GUS/Eurostat
+            is_quarterly = (
+                freq in ("QUARTERLY", "KWARTALNA")
+                or "GDP" in code
+                or period_days in range(80, 100)
             )
+            is_daily = freq in ("DAILY", "DZIENNA") or "FX" in code
+
+            if is_quarterly:
+                # Kwartalny cykl publikacji PKB: odczyt kwartalny pojawia się z naturalnym opóźnieniem
+                # 45-90 dni po kwartale i pozostaje najnowszym oficjalnym odczytem przez kolejne 90 dni.
+                # Najnowszy odczyt kwartalny pozostaje bieżącym oficjalnym punktem odniesienia do 210 dni.
+                max_lag_days = 210
+            elif is_daily:
+                max_lag_days = 14
+            else:
+                # Miesięczny cykl publikacji (CPI, bezrobocie rejestrowane, płace, zatrudnienie):
+                # publikacja w T+1, naturalne okno aktualności do 105 dni (~3.5 miesiąca).
+                max_lag_days = 105
+
+            is_archival = lag_days > max_lag_days
+            freshness = FreshnessStatus.ARCHIVAL if is_archival else FreshnessStatus.CURRENT
+
+            if is_archival:
+                status_note = (
+                    f"Odczyt archiwalny z okresu {p_start} – {p_end} (opóźnienie ~{lag_days} dni przekracza cykl publikacji {max_lag_days} dni). "
+                    f"Prezentować wyłącznie jako historyczną bazę odniesienia."
+                )
+            elif is_quarterly:
+                status_note = (
+                    f"Najnowszy oficjalny odczyt kwartalny za okres {p_start} – {p_end} (PKB). "
+                    f"Pełnowartościowa podstawa do analizy dynamiki wzrostu gospodarczego."
+                )
+            else:
+                status_note = f"Bieżący oficjalny odczyt za okres {p_start} – {p_end}." 
 
             return EvaluatedIndicator(
                 indicator_code=code,
@@ -575,17 +612,22 @@ class ReportIndicatorPolicy:
                 lines.append(f"- [BRAK] {item.name_pl} ({item.indicator_code}) — {item.status_note}")
 
         lines.append("\nIV. WYTYCZNE METODOLOGICZNE I ZASADY STRUKTURY:")
-        lines.append("1. SEKCJA 'Ceny i Zakupy' (perspektywa Kowalskiego):")
+        lines.append("1. ANALIZA EKONOMICZNA I INTERPRETACJA WYNIKÓW:")
+        lines.append("   - WYMAGANE jest wyciąganie konkretnych, uzasadnionych wniosków ekonomicznych z dostępnych oficjalnych danych.")
+        lines.append("   - Najnowszy dostępny oficjalny odczyt kwartalny PKB (np. II kwartał) oraz miesięczny CPI czy bezrobocia stanowią pełnowartościową podstawę do oceny tendencji w gospodarce.")
+        lines.append("   - ZAKAZ dotyczy wyłącznie nieuprawnionego przedstawiania historycznych wyników jako dzisiejszych (np. twierdzenia w listopadzie, że PKB z II kwartału to odczyt listopadowy) lub formułowania prognoz bez podstaw — NIE samej analizy oficjalnych odczytów.")
+        lines.append("   - Każdy odczyt należy precyzyjnie osadzać w jego okresie referencyjnym (np. 'Wzrost PKB w II kwartale wyniósł 3,8% r/r, co wskazuje na kontynuację ożywienia...').")
+        lines.append("2. SEKCJA 'Ceny i Zakupy' (perspektywa Kowalskiego):")
         lines.append("   - Głównym wskaźnikiem MUSI być inflacja konsumencka CPI GUS (PL_CPI_YOY).")
         lines.append("   - Wskaźnik HICP (Eurostat) może być wymieniony wyłącznie jako tło unijne. Zakaz zastępowania CPI przez HICP.")
-        lines.append("2. SEKCJA 'Praca i Zarobki' (perspektywa Kowalskiego):")
+        lines.append("3. SEKCJA 'Praca i Zarobki' (perspektywa Kowalskiego):")
         lines.append("   - Głównym wskaźnikiem MUSI być bezrobocie rejestrowane GUS (PL_UNEMPLOYMENT_REGISTERED_RATE).")
         lines.append("   - Bezrobocie BAEL/LFS jest wyłącznie uzupełnieniem ankietowym. Zakaz zastępowania bezrobocia rejestrowanego przez BAEL.")
         lines.append("   - Jeśli bezrobocie rejestrowane pochodzi z szeregu rocznego BDL, podaj je jako roczną bazę odniesienia na koniec roku.")
-        lines.append("3. SEKCJA 1 ('Analiza Trendów') ORAZ SEKCJA 5 ('Podsumowanie'):")
-        lines.append("   - Wzrost PKB r/r (PL_GDP_YOY) jest nadrzędny nad PKB kw/kw i wolumenem w mln EUR.")
-        lines.append("   - ZAKAZ nazywania pojedynczego odczytu z jednego dnia trendem (dotyczy zwłaszcza kursów EUR/PLN i USD/PLN).")
-        lines.append("4. STOPA REFERENCYJNA NBP:")
+        lines.append("4. SEKCJA 1 ('Analiza Trendów') ORAZ SEKCJA 5 ('Podsumowanie'):")
+        lines.append("   - Wzrost PKB r/r (PL_GDP_YOY) jest nadrzędny nad PKB kw/kw i wolumenem w mln EUR. Analizuj dynamikę PKB jako podstawowy miernik tempa wzrostu gospodarczego.")
+        lines.append("   - ZAKAZ nazywania pojedynczego odczytu z jednego dnia trendem (dotyczy zwłaszcza kursów EUR/PLN i USD/PLN). Trend wymaga odpowiednich porównań okresowych.")
+        lines.append("5. STOPA REFERENCYJNA NBP:")
         lines.append("   - Podawaj ją jako obecnie obowiązującą stawkę NBP wraz z datą decyzji RPP. Nie sugeruj, że jest to odczyt nieaktualny.")
 
         if missing_core:

@@ -293,11 +293,11 @@ class EconomyEvaluator:
                 "Data sporządzenia analizy: {report_date}.\n"
                 "Skonsolidowany horyzont odczytów: {periods_summary}.\n\n"
                 "RYGORYSTYCZNE ZASADY METODOLOGICZNE I EKONOMETRYCZNE:\n"
-                "1. ASYNCHRONICZNOŚĆ WSKAŹNIKÓW (LAGI PUBLIKACYJNE):\n"
-                "   - Wskaźniki spływają z różną częstotliwością i opóźnieniem. Jeśli w zestawie danych"
-                " znajduje się informacja o opóźnieniu publikacyjnym (np. odczyt z poprzedniego roku),"
-                " bezwzględnie wskaż ten fakt czytelnikowi. ZAKAZ nazywania historycznego odczytu"
-                " bieżącym stanem gospodarki z {report_date}.\n"
+                "1. AKTUALNOŚĆ DANYCH, CYKLE PUBLIKACJI I WNIOSKOWANIE EKONOMICZNE:\n"
+                "   - Wskaźniki makroekonomiczne mają zróżnicowane cykle publikacji (PKB — kwartalne z naturalnym opóźnieniem 2-3 miesięcy, CPI i bezrobocie — miesięczne, stopy NBP — do odwołania uchwałą RPP).\n"
+                "   - Najnowszy dostępny oficjalny odczyt (np. PKB za ostatni zamknięty kwartał, miesięczny CPI czy stopa NBP) jest pełnowartościową, bieżącą podstawą analizy makroekonomicznej. NIE utożsamiaj go z odczytem przeterminowanym ani bezużytecznym!\n"
+                "   - WYMAGANE jest wyciąganie konkretnych, uzasadnionych wniosków ekonomicznych z dostępnych oficjalnych danych o stanie gospodarki, tendencjach cenowych, aktywności produkcyjnej i rynku pracy.\n"
+                "   - ZAKAZ dotyczy wyłącznie nieuprawnionego przedstawiania wyników historycznych jako dzisiejszych (np. pisania, że wynik PKB z II kwartału to odczyt z listopada) lub formułowania prognoz bez podstaw — NIE samej analizy dostępnych odczytów. Precyzyjnie osadzaj każdy wniosek w jego okresie referencyjnym.\n"
                 "2. DYSCYPLINA FAKTÓW I OBLICZEŃ POCHODNYCH:\n"
                 "   - Syntetyzuj wyłącznie fakty obecne w przekazanych, zweryfikowanych odczytach oficjalnych."
                 " Każda pojedyncza liczba w tekście MUSI posiadać bezpośredni przypis [N] odpowiadający"
@@ -596,15 +596,44 @@ class EconomyEvaluator:
           f"| value_decimal: {o['value_decimal']} | unit_code: {o['unit_code']} "
           f"| period_start: {o['period_start']} | period_end: {o['period_end']} | citation_idx: {c_num}"
       )
-      # Kontrola opóźnienia publikacyjnego (lag)
+      # Kontrola opóźnienia publikacyjnego (lag) z uwzględnieniem cyklu publikacji
       try:
         p_end_dt = datetime.datetime.strptime(o["period_end"][:10], "%Y-%m-%d").date()
         lag_days = (today_dt - p_end_dt).days
         is_nbp_rate = "NBP" in o.get("source_id", "") and ("RATE" in o["indicator_code"] or "POLICY" in o["indicator_code"])
-        if lag_days > 90 and not is_nbp_rate:
-          line_str += f" -> [UWAGA NA LAG PUBLIKACYJNY: odczyt historyczny z okresu zakończonego {o['period_end']}, opóźnienie ~{lag_days} dni względem {report_date}. ZAKAZ nazywania go bieżącą wartością z {report_date}!]"
-        elif is_nbp_rate:
+
+        freq = o.get("frequency") or ""
+        p_start_str = o.get("period_start", "")[:10]
+        p_days = 0
+        if p_start_str:
+          try:
+            p_start_dt = datetime.datetime.strptime(p_start_str, "%Y-%m-%d").date()
+            p_days = (p_end_dt - p_start_dt).days
+          except Exception:
+            p_days = 0
+
+        is_quarterly = (
+            freq in ("QUARTERLY", "KWARTALNA")
+            or "GDP" in o["indicator_code"]
+            or p_days in range(80, 100)
+        )
+        is_daily = freq in ("DAILY", "DZIENNA") or "FX" in o["indicator_code"]
+
+        if is_quarterly:
+          max_lag_days = 210
+        elif is_daily:
+          max_lag_days = 14
+        else:
+          max_lag_days = 105
+
+        if is_nbp_rate:
           line_str += f" -> [OBOWIĄZUJĄCA DECYZJA RPP: oficjalna stopa NBP obowiązująca od {o['period_start']} r. do kolejnej decyzji RPP. W pełni aktualna stawka prawna.]"
+        elif lag_days > max_lag_days:
+          line_str += f" -> [UWAGA NA LAG PUBLIKACYJNY: odczyt historyczny z okresu zakończonego {o['period_end']}, opóźnienie ~{lag_days} dni względem {report_date}. ZAKAZ nazywania go bieżącą wartością z {report_date}! Należy wyraźnie wskazać datę okresu.]"
+        elif is_quarterly:
+          line_str += f" -> [NAJNOWSZY OFICJALNY ODCZYT KWARTALNY: okres {o['period_start']} – {o['period_end']}. Pełnoprawna podstawa do analizy dynamiki wzrostu gospodarczego. Formułuj konkretne, uzasadnione wnioski ekonomiczne dla tego kwartału.]"
+        else:
+          line_str += f" -> [BIEŻĄCY OFICJALNY ODCZYT: okres {o['period_start']} – {o['period_end']}. Pełnoprawna podstawa do analizy bieżącej sytuacji gospodarczej.]"
       except Exception:
         pass
       context_lines.append(line_str)
@@ -859,8 +888,11 @@ class EconomyEvaluator:
       if used_indices is not None and int(c["idx"]) not in used_indices:
         continue
       prefix = "Oficjalne API / Rejestr" if c.get("is_official") else "Analiza / Komentarz medialny"
+      name = c.get("indicator_name") or c.get("indicator_code", "Wskaźnik")
+      url = c.get("url", "")
+      url_suffix = f", {url}" if url else ""
       sources_lines.append(
-          f"[{c['idx']}] {c['institution']}, {c['indicator_name']}, okres: {c['period']} [{prefix}], {c['url']}"
+          f"[{c['idx']}] {c.get('institution', '')}, {name}, okres: {c.get('period', '')} [{prefix}]{url_suffix}"
       )
     return "\n".join(sources_lines)
 
@@ -1892,7 +1924,10 @@ class EconomyEvaluator:
         o = obs_by_code[code]
         c_num = obs_citation_map.get(code)
         ref = f" [{c_num}]" if c_num else ""
-        return f"{o['value_decimal']}{o.get('unit_symbol', '')}{ref}", o['period_start']
+        unit_sym = o.get("unit_symbol")
+        if not unit_sym and o.get("unit_code") in ("PCT", "PERCENT"):
+          unit_sym = "%"
+        return f"{o['value_decimal']}{unit_sym or ''}{ref}", o['period_start']
       return default, ""
 
     cpi_val, cpi_p = get_val("PL_CPI_YOY")
@@ -1943,7 +1978,7 @@ class EconomyEvaluator:
         f"Wzrost Produktu Krajowego Brutto w ujęciu rocznym (r/r) wyniósł {gdp_yoy_val}, a dynamika w ujęciu kwartał do kwartału ukształtowała się na poziomie {gdp_qoq_val}. "
         f"Rada Polityki Pieniężnej utrzymuje stopę referencyjną NBP na poziomie {ref_rate_val} (stawka prawnie obowiązująca od {ref_p} r. do kolejnej decyzji RPP). "
         f"Wymiar walutowy wyznaczają średnie kursy NBP z tabeli A: EUR/PLN {eur_pln_val} oraz USD/PLN {usd_pln_val}. "
-        f"Pojedyncze odczyty kursów walutowych oraz kwartalne odczyty PKB stanowią punktowe obserwacje faktograficzne i nie mogą być utożsamiane z trwałym trendem makroekonomicznym."
+        f"Pojedyncze dzienne notowania kursów walutowych nie tworzą samodzielnego trendu makroekonomicznego, natomiast dynamika PKB r/r jednoznacznie potwierdza kierunek rozwoju gospodarki w analizowanym horyzoncie."
     )
 
     # Sekcja 2
@@ -1976,10 +2011,10 @@ class EconomyEvaluator:
 
     # Sekcja 4
     sec4 = (
-        f"Dla przedsiębiorców odczyty PKB ({gdp_qoq_val} kw/kw oraz {gdp_yoy_val} r/r) opisują aktywność w różnych "
-        f"ujęciach i okresach. Kursy EUR/PLN ({eur_pln_val}) oraz USD/PLN ({usd_pln_val}) są obserwacjami dla wskazanych "
-        f"dat, a nie dowodem przyszłej stabilności walut. Decyzje o finansowaniu, imporcie i nakładach kapitałowych "
-        f"powinny uwzględniać ryzyko zmian stóp, kursów i popytu; dostępne dane nie przesądzają kierunku tych zmian {m_ref_2}."
+        f"Dla przedsiębiorców najnowsze oficjalne odczyty PKB ({gdp_qoq_val} kw/kw oraz {gdp_yoy_val} r/r) potwierdzają "
+        f"utrzymanie aktywności gospodarczej i stanowią wiarygodną podstawę do planowania popytu oraz inwestycji. "
+        f"Kursy EUR/PLN ({eur_pln_val}) oraz USD/PLN ({usd_pln_val}) są punktowymi obserwacjami z tabeli NBP dla wskazanych "
+        f"dat i nie przesądzają o długoterminowym kierunku rynku walutowego {m_ref_2}."
     )
 
     # Sekcja 5
