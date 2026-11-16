@@ -38,6 +38,7 @@ def _create_sample_obs(
         "country_code": "PL",
         "value_decimal": val,
         "unit_code": unit,
+        "unit_symbol": "%" if unit in ("PCT", "PERCENT") else "",
         "period_start": p_start,
         "period_end": p_end,
         "frequency": freq,
@@ -512,4 +513,135 @@ def test_15_nbp_current_table_flag_propagation_e2e_sqlite(tmp_path):
     )
     eval_mismatch = next(it for it in plan_mismatch.core_indicators if it.indicator_code == "PL_NBP_REFERENCE_RATE")
     assert eval_mismatch.freshness == FreshnessStatus.ARCHIVAL
+
+def test_16_quarterly_gdp_not_penalized_by_arbitrary_90_day_lag():
+    """16. Najnowszy dostępny oficjalny odczyt PKB kwartalnego nie jest utożsamiany z przeterminowanym/bezużytecznym,
+    nawet jeśli od końca kwartału minęło >90 dni (okno publikacji do 210 dni)."""
+    # Odczyt PKB za II kw. 2026 r. (2026-04-01 do 2026-06-30). Raport tworzony 06.11.2026 r. (minęło 129 dni).
+    obs_gdp_yoy = _create_sample_obs("PL_GDP_YOY", "3.8", "PCT", "2026-04-01", "2026-06-30", freq="QUARTERLY", source="EUROSTAT")
+    obs_gdp_qoq = _create_sample_obs("PL_GDP_QOQ", "1.1", "PCT", "2026-04-01", "2026-06-30", freq="QUARTERLY", source="EUROSTAT")
+    citations = [
+        {"idx": 1, "indicator_code": "PL_GDP_YOY", "institution": "Eurostat", "period": "2026-Q2", "is_official": True},
+        {"idx": 2, "indicator_code": "PL_GDP_QOQ", "institution": "Eurostat", "period": "2026-Q2", "is_official": True},
+    ]
+
+    now_nov = datetime(2026, 11, 6)
+    plan = ReportIndicatorPolicy.evaluate([obs_gdp_yoy, obs_gdp_qoq], citations, report_date="06.11.2026", now=now_nov)
+
+    eval_gdp_yoy = next(it for it in plan.core_indicators if it.indicator_code == "PL_GDP_YOY")
+    eval_gdp_qoq = next(it for it in plan.context_indicators if it.indicator_code == "PL_GDP_QOQ")
+
+    # Weryfikacja: status CURRENT (nie ARCHIVAL)
+    assert eval_gdp_yoy.freshness == FreshnessStatus.CURRENT
+    assert eval_gdp_qoq.freshness == FreshnessStatus.CURRENT
+    assert eval_gdp_yoy.lag_days == 129
+    assert "Najnowszy oficjalny odczyt kwartalny" in eval_gdp_yoy.status_note
+    assert "Pełnowartościowa podstawa do analizy dynamiki wzrostu gospodarczego" in eval_gdp_yoy.status_note
+
+    # PKB nie może trafić do listy ostrzeżeń o odczytach archiwalnych
+    assert len(plan.archival_core_indicators) == 0
+    assert "II kw. 2026 r. (PKB)" in plan.executive_horizon_summary
+
+    # Odczyt PKB sprzed ponad 210 dni (np. I kw. 2025 r. przy dacie listopad 2026, lag ~580 dni) jest prawidłowo ARCHIVAL
+    obs_old_gdp = _create_sample_obs("PL_GDP_YOY", "3.0", "PCT", "2025-01-01", "2025-03-31", freq="QUARTERLY", source="EUROSTAT")
+    plan_old = ReportIndicatorPolicy.evaluate([obs_old_gdp], citations, report_date="06.11.2026", now=now_nov)
+    eval_old = next(it for it in plan_old.core_indicators if it.indicator_code == "PL_GDP_YOY")
+    assert eval_old.freshness == FreshnessStatus.ARCHIVAL
+    assert "Odczyt archiwalny" in eval_old.status_note
+
+
+def test_17_monthly_cpi_freshness_within_publication_window_vs_archival():
+    """17. Weryfikacja logiki aktualności dla miesięcznego CPI:
+    - Odczyt mieszczący się w cyklu publikacji (np. wrzesień lub lipiec <= 105 dni) ma status CURRENT.
+    - Odczyt historyczny (np. grudzień 2025 r., lag > 300 dni) ma status ARCHIVAL."""
+    now_nov = datetime(2026, 11, 6)
+
+    # A. Wrzesień 2026 (lag ~37 dni) -> CURRENT
+    obs_sep = _create_sample_obs("PL_CPI_YOY", "4.8", "PCT", "2026-09-01", "2026-09-30", freq="MONTHLY")
+    citations_sep = [{"idx": 1, "indicator_code": "PL_CPI_YOY", "institution": "GUS", "period": "2026-09", "is_official": True}]
+    plan_sep = ReportIndicatorPolicy.evaluate([obs_sep], citations_sep, report_date="06.11.2026", now=now_nov)
+    eval_sep = next(it for it in plan_sep.core_indicators if it.indicator_code == "PL_CPI_YOY")
+    assert eval_sep.freshness == FreshnessStatus.CURRENT
+    assert eval_sep.lag_days == 37
+    assert "Bieżący oficjalny odczyt" in eval_sep.status_note
+
+    # B. Lipiec 2026 (lag ~98 dni > 90 dni, ale <= 105 dni okna publikacji) -> CURRENT
+    obs_jul = _create_sample_obs("PL_CPI_YOY", "4.2", "PCT", "2026-07-01", "2026-07-31", freq="MONTHLY")
+    citations_jul = [{"idx": 1, "indicator_code": "PL_CPI_YOY", "institution": "GUS", "period": "2026-07", "is_official": True}]
+    plan_jul = ReportIndicatorPolicy.evaluate([obs_jul], citations_jul, report_date="06.11.2026", now=now_nov)
+    eval_jul = next(it for it in plan_jul.core_indicators if it.indicator_code == "PL_CPI_YOY")
+    assert eval_jul.freshness == FreshnessStatus.CURRENT
+    assert eval_jul.lag_days == 98
+    assert "Bieżący oficjalny odczyt" in eval_jul.status_note
+
+    # C. Grudzień 2025 (lag ~310 dni > 105 dni) -> ARCHIVAL
+    obs_dec25 = _create_sample_obs("PL_CPI_YOY", "2.3", "PCT", "2025-12-01", "2025-12-31", freq="MONTHLY")
+    citations_dec25 = [{"idx": 1, "indicator_code": "PL_CPI_YOY", "institution": "GUS", "period": "2025-12", "is_official": True}]
+    plan_dec25 = ReportIndicatorPolicy.evaluate([obs_dec25], citations_dec25, report_date="06.11.2026", now=now_nov)
+    eval_dec25 = next(it for it in plan_dec25.core_indicators if it.indicator_code == "PL_CPI_YOY")
+    assert eval_dec25.freshness == FreshnessStatus.ARCHIVAL
+    assert eval_dec25.lag_days > 300
+    assert "Odczyt archiwalny" in eval_dec25.status_note
+
+
+def test_18_nbp_rate_effective_legal_decision_not_treated_as_expired():
+    """18. Stopa referencyjna NBP ze statusem EFFECTIVE jest traktowana jako w pełni obowiązująca decyzja prawna (lag_days=0)."""
+    now_nov = datetime(2026, 11, 6)
+    obs_nbp = _create_sample_obs(
+        "PL_NBP_REFERENCE_RATE", "3.75", "PCT", "2026-03-05", "2026-03-05",
+        source="SRC_NBP", freq="IRREGULAR", metadata={"is_current_table": True}
+    )
+    citations = [{"idx": 1, "indicator_code": "PL_NBP_REFERENCE_RATE", "institution": "NBP", "period": "2026-03-05", "is_official": True}]
+    plan = ReportIndicatorPolicy.evaluate([obs_nbp], citations, report_date="06.11.2026", now=now_nov)
+    eval_nbp = next(it for it in plan.core_indicators if it.indicator_code == "PL_NBP_REFERENCE_RATE")
+
+    assert eval_nbp.freshness == FreshnessStatus.EFFECTIVE
+    assert eval_nbp.lag_days == 0
+    assert "obowiązująca od 2026-03-05 r. do kolejnej decyzji RPP" in eval_nbp.status_note
+    assert "stopa NBP obowiązująca od 05.03.2026 r." in plan.executive_horizon_summary
+
+
+def test_19_offline_report_macro_analysis_no_false_disclaimers():
+    """19. Deterministyczny raport offline i formatowany kontekst dla GPT:
+    - Najnowsze PKB kwartalne nie zawiera fałszywych ostrzeżeń typu 'odczyt archiwalny'.
+    - Kontekst promptu dla GPT zawiera wymóg wyciągania merytorycznych wniosków ekonomicznych."""
+    now_nov = datetime(2026, 11, 6)
+    evaluator = EconomyEvaluator()
+
+    obs_cpi = _create_sample_obs("PL_CPI_YOY", "4.8", "PCT", "2026-09-01", "2026-09-30", freq="MONTHLY")
+    obs_gdp_yoy = _create_sample_obs("PL_GDP_YOY", "3.8", "PCT", "2026-04-01", "2026-06-30", freq="QUARTERLY", source="EUROSTAT")
+    obs_gdp_qoq = _create_sample_obs("PL_GDP_QOQ", "1.1", "PCT", "2026-04-01", "2026-06-30", freq="QUARTERLY", source="EUROSTAT")
+    obs_nbp = _create_sample_obs("PL_NBP_REFERENCE_RATE", "3.75", "PCT", "2026-03-05", "2026-03-05", freq="IRREGULAR", metadata={"is_current_table": True})
+    obs_unemp = _create_sample_obs("PL_UNEMPLOYMENT_REGISTERED_RATE", "5.8", "PCT", "2026-09-01", "2026-09-30", freq="MONTHLY")
+    obs_fx = _create_sample_obs("PL_FX_EUR_PLN", "4.3150", "EUR_PLN", "2026-11-05", "2026-11-05", freq="DAILY")
+
+    all_obs = [obs_cpi, obs_gdp_yoy, obs_gdp_qoq, obs_nbp, obs_unemp, obs_fx]
+    citations = [
+        {"idx": 1, "indicator_code": "PL_CPI_YOY", "institution": "GUS", "period": "2026-09", "is_official": True, "value_decimal": "4.8"},
+        {"idx": 2, "indicator_code": "PL_GDP_YOY", "institution": "Eurostat", "period": "2026-Q2", "is_official": True, "value_decimal": "3.8"},
+        {"idx": 3, "indicator_code": "PL_GDP_QOQ", "institution": "Eurostat", "period": "2026-Q2", "is_official": True, "value_decimal": "1.1"},
+        {"idx": 4, "indicator_code": "PL_NBP_REFERENCE_RATE", "institution": "NBP", "period": "2026-03-05", "is_official": True, "value_decimal": "3.75"},
+        {"idx": 5, "indicator_code": "PL_UNEMPLOYMENT_REGISTERED_RATE", "institution": "GUS", "period": "2026-09", "is_official": True, "value_decimal": "5.8"},
+        {"idx": 6, "indicator_code": "PL_FX_EUR_PLN", "institution": "NBP", "period": "2026-11-05", "is_official": True, "value_decimal": "4.3150"},
+    ]
+
+    obs_by_code = {o["indicator_code"]: o for o in all_obs}
+    obs_citation_map = {c["indicator_code"]: c["idx"] for c in citations if c.get("indicator_code")}
+
+    report = evaluator._build_deterministic_v2_report(
+        country="Polska",
+        report_date="06.11.2026",
+        periods_summary="II kw. 2026 r. (PKB) | Wrzesień 2026 r. (dane miesięczne)",
+        obs_by_code=obs_by_code,
+        obs_citation_map=obs_citation_map,
+        unverified_obs=[],
+        search_news=[],
+        citations=citations,
+    )
+
+    # Raport analizuje dynamikę PKB r/r i nie zawiera fałszywych ostrzeżeń, że to odczyt bezużyteczny/punktowy
+    assert "3.8% [2]" in report or "3.8%" in report
+    assert "nie mogą być utożsamiane z trwałym trendem makroekonomicznym" not in report
+    assert "dynamika PKB r/r jednoznacznie potwierdza kierunek rozwoju gospodarki" in report
+    assert "odczyt archiwalny, nie można traktować jako bieżącego stanu gospodarki" not in report
 
