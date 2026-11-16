@@ -1,0 +1,173 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 720" width="100%" height="100%">
+  <defs>
+    <style>
+      .bg { fill: #F4F7FB; }
+      .title { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 24px; font-weight: 700; fill: #142B49; }
+      .subtitle { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 13px; font-weight: 500; fill: #5A6A80; }
+      .box { fill: #FFFFFF; stroke: #D9E2EC; stroke-width: 1.5; rx: 12px; }
+      .box-accent { fill: #FFFFFF; stroke: #38658F; stroke-width: 2; rx: 12px; }
+      .box-db { fill: #F8FAFC; stroke: #142B49; stroke-width: 2; rx: 12px; }
+      .box-context { fill: #FFFBEB; stroke: #F59E0B; stroke-width: 1.5; stroke-dasharray: 4 3; rx: 12px; }
+      .header-text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 14px; font-weight: 700; fill: #142B49; }
+      .body-text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 11.5px; font-weight: 400; fill: #475569; }
+      .mono-text { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 11px; fill: #38658F; }
+      .badge-official { fill: #E0F2FE; stroke: #0284C7; stroke-width: 1; rx: 4px; }
+      .badge-official-text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 10px; font-weight: 600; fill: #0369A1; }
+      .badge-context { fill: #FEF3C7; stroke: #D97706; stroke-width: 1; rx: 4px; }
+      .badge-context-text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 10px; font-weight: 600; fill: #B45309; }
+      .arrow { stroke: #38658F; stroke-width: 1.8; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+      .arrow-dashed { stroke: #F59E0B; stroke-width: 1.8; stroke-dasharray: 4 4; fill: none; stroke-linecap: round; }
+      .arrow-red { stroke: #DC2626; stroke-width: 1.8; stroke-dasharray: 4 3; fill: none; stroke-linecap: round; }
+      .arrow-green { stroke: #059669; stroke-width: 1.8; fill: none; stroke-linecap: round; }
+      .shadow { filter: drop-shadow(0px 4px 12px rgba(20, 43, 73, 0.06)); }
+    </style>
+    <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#38658F" />
+    </marker>
+    <marker id="arrowhead-orange" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#F59E0B" />
+    </marker>
+    <marker id="arrowhead-red" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#DC2626" />
+    </marker>
+    <marker id="arrowhead-green" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#059669" />
+    </marker>
+  </defs>
+
+  <!-- Background Canvas -->
+  <rect width="1080" height="720" rx="16" fill="#F4F7FB" stroke="#D9E2EC" stroke-width="1.5"/>
+
+  <!-- Title & Subtitle -->
+  <g transform="translate(48, 44)">
+    <text x="0" y="0" class="title">Polish Economy Agent — Przepływ Danych i Architektura Systemu</text>
+    <text x="0" y="24" class="subtitle">Rozdzielenie trybu live (synteza GPT z walidacją → akceptacja / FAILED) oraz niezależnego trybu offline</text>
+  </g>
+
+  <!-- ==================== LAYER 1: DATA SOURCES ==================== -->
+  <!-- Official Sources Box -->
+  <g class="shadow" transform="translate(48, 100)">
+    <rect width="660" height="105" class="box" />
+    <rect x="16" y="14" width="112" height="18" class="badge-official" />
+    <text x="24" y="27" class="badge-official-text">OFICJALNE ŹRÓDŁA</text>
+    <text x="136" y="28" class="header-text">Krajowe i Europejskie Instytucje Statystyczne</text>
+
+    <!-- Source Items -->
+    <rect x="20" y="44" width="195" height="46" rx="6" fill="#F8FAFC" stroke="#E2E8F0" />
+    <text x="32" y="62" class="header-text" style="font-size:12px;">GUS (BDL / DBW API)</text>
+    <text x="32" y="78" class="mono-text">CPI r/r, bezrobocie rej.</text>
+
+    <rect x="230" y="44" width="195" height="46" rx="6" fill="#F8FAFC" stroke="#E2E8F0" />
+    <text x="242" y="62" class="header-text" style="font-size:12px;">NBP (Web API &amp; XML)</text>
+    <text x="242" y="78" class="mono-text">Stopy RPP, kursy EUR/USD</text>
+
+    <rect x="440" y="44" width="200" height="46" rx="6" fill="#F8FAFC" stroke="#E2E8F0" />
+    <text x="452" y="62" class="header-text" style="font-size:12px;">Eurostat (Dissemination)</text>
+    <text x="452" y="78" class="mono-text">Realny PKB, HICP, LFS</text>
+  </g>
+
+  <!-- News / Context Source (Tavily) -->
+  <g class="shadow" transform="translate(740, 100)">
+    <rect width="292" height="105" class="box-context" />
+    <rect x="16" y="14" width="124" height="18" class="badge-context" />
+    <text x="22" y="27" class="badge-context-text">KONTEKST MEDIALNY</text>
+    <text x="20" y="55" class="header-text">Tavily Search API</text>
+    <text x="20" y="72" class="body-text">Tylko tło rynkowe i nastroje.</text>
+    <text x="20" y="88" class="body-text" style="font-weight:600; fill:#B45309;">Zakaz wprowadzania liczb!</text>
+  </g>
+
+  <!-- Flow Arrows: Sources -> Pipeline -->
+  <path d="M 378 205 L 378 240" class="arrow" marker-end="url(#arrowhead)" />
+  <path d="M 886 205 L 886 430 L 685 430" class="arrow-dashed" marker-end="url(#arrowhead-orange)" />
+
+  <!-- ==================== LAYER 2: INGESTION & DATA VALIDATION ==================== -->
+  <g class="shadow" transform="translate(48, 245)">
+    <rect width="660" height="90" class="box-accent" />
+    <text x="24" y="26" class="header-text">Konektory Źródłowe i Weryfikacja Danych (Ingestion Pipeline)</text>
+    <text x="24" y="46" class="body-text">1. Pobieranie wieloźródłowe z odpornością na awarie (ponawianie prób, limity czasu, obsługa offline)</text>
+    <text x="24" y="63" class="body-text">2. Walidacja typów: Decimal, daty graniczne (odrzucenie dat z przyszłości), kody jednostek (PCT, PLN)</text>
+    <text x="24" y="80" class="body-text">3. Rejestracja audytowa dowodów: URL, status HTTP, SHA-256 surowej odpowiedzi, czas UTC</text>
+  </g>
+
+  <!-- Flow Arrow: Ingestion -> SQLite v2 -->
+  <path d="M 378 335 L 378 370" class="arrow" marker-end="url(#arrowhead)" />
+
+  <!-- ==================== LAYER 3: STORAGE (SQLITE V2) ==================== -->
+  <g class="shadow" transform="translate(48, 375)">
+    <rect width="660" height="105" class="box-db" />
+    <text x="24" y="26" class="header-text" style="fill:#142B49;">Magazyn SQLite v2 (Strictly Append-Only Data Platform)</text>
+    
+    <rect x="20" y="42" width="195" height="50" rx="6" fill="#FFFFFF" stroke="#CBD5E1" />
+    <text x="30" y="58" class="header-text" style="font-size:11px;">source_evidence</text>
+    <text x="30" y="74" class="mono-text">run_id, hash, payload</text>
+
+    <rect x="230" y="42" width="195" height="50" rx="6" fill="#FFFFFF" stroke="#CBD5E1" />
+    <text x="240" y="58" class="header-text" style="font-size:11px;">observations</text>
+    <text x="240" y="74" class="mono-text">trg_prevent_update/del</text>
+
+    <rect x="440" y="42" width="200" height="50" rx="6" fill="#FFFFFF" stroke="#CBD5E1" />
+    <text x="450" y="58" class="header-text" style="font-size:11px;">quality_events &amp; reports</text>
+    <text x="450" y="74" class="mono-text">audyt anomalii, snapshot</text>
+  </g>
+
+  <!-- Flow Arrows: SQLite -> Evaluation & Policy -->
+  <path d="M 195 480 L 195 520" class="arrow" marker-end="url(#arrowhead)" />
+  <path d="M 525 480 L 525 520" class="arrow" marker-end="url(#arrowhead)" />
+
+  <!-- ==================== LAYER 4: REPORT POLICY & DUAL ENGINES ==================== -->
+  <!-- Left Box: Deterministic Offline Generator -->
+  <g class="shadow" transform="translate(48, 520)">
+    <rect width="295" height="105" class="box" />
+    <rect x="14" y="12" width="100" height="18" rx="4" fill="#F1F5F9" stroke="#94A3B8" stroke-width="1" />
+    <text x="22" y="25" style="font-family: -apple-system, sans-serif; font-size:10px; font-weight:700; fill:#475569;">TRYB OFFLINE</text>
+    <text x="124" y="26" class="header-text">Silnik Deterministyczny</text>
+    <text x="14" y="46" class="mono-text">_build_deterministic_v2_report</text>
+    <text x="14" y="64" class="body-text">• Niezależny generator bez wywołań LLM</text>
+    <text x="14" y="80" class="body-text">• Regułowy montaż wyłącznie ze zweryfikowanych</text>
+    <text x="14" y="94" class="body-text">  obserwacji i rejestru cytowań</text>
+  </g>
+
+  <!-- Right Box: Live LLM Synthesis -->
+  <g class="shadow" transform="translate(365, 520)">
+    <rect width="320" height="105" class="box-accent" />
+    <rect x="14" y="12" width="86" height="18" rx="4" fill="#EFF6FF" stroke="#3B82F6" stroke-width="1" />
+    <text x="22" y="25" style="font-family: -apple-system, sans-serif; font-size:10px; font-weight:700; fill:#1D4ED8;">TRYB LIVE</text>
+    <text x="110" y="26" class="header-text">Synteza GPT (OpenAI)</text>
+    <text x="14" y="46" class="mono-text">ReportIndicatorPolicy (PR #10)</text>
+    <text x="14" y="64" class="body-text">• Cykle: PKB &lt;=210d, CPI &lt;=105d, NBP lag=0d</text>
+    <text x="14" y="80" class="body-text">• Wymóg merytorycznej interpretacji makro</text>
+    <text x="14" y="94" class="body-text">• Bezpośrednie przekazanie do walidatora</text>
+  </g>
+
+  <!-- Flow: Live GPT -> Validator -->
+  <path d="M 685 572 L 720 572" class="arrow" marker-end="url(#arrowhead)" />
+
+  <!-- Flow: Offline Generator -> Presentation -->
+  <path d="M 195 625 L 195 675 L 860 675 L 860 645" class="arrow" marker-end="url(#arrowhead)" />
+  <text x="460" y="670" style="font-family: -apple-system, sans-serif; font-size:11px; font-weight:600; fill:#475569;">Ścieżka offline: bezpośredni zapis report.html</text>
+
+  <!-- ==================== LAYER 5: VALIDATOR & RESULTS ==================== -->
+  <g class="shadow" transform="translate(725, 475)">
+    <rect width="305" height="170" class="box-accent" />
+    <rect x="16" y="14" width="138" height="18" rx="4" fill="#FEF2F2" stroke="#EF4444" stroke-width="1" />
+    <text x="22" y="27" style="font-family: -apple-system, sans-serif; font-size:10px; font-weight:700; fill:#B91C1C;">WALIDATOR FACT-CHECK</text>
+    <text x="160" y="28" class="header-text" style="font-size:12px;">EconomyEvaluator V2</text>
+    
+    <text x="16" y="52" class="body-text">• Weryfikacja każdego przypisu [N] w rejestrze</text>
+    <text x="16" y="68" class="body-text">• Zgodność wartości, jednostek i kontekstu domen</text>
+    <text x="16" y="84" class="body-text">• Zakaz liczb z niezweryfikowanego Tavily</text>
+
+    <!-- Success Outcome -->
+    <rect x="12" y="98" width="135" height="60" rx="6" fill="#ECFDF5" stroke="#10B981" stroke-width="1" />
+    <text x="18" y="114" style="font-family: -apple-system, sans-serif; font-size:10px; font-weight:700; fill:#065F46;">AKCEPTACJA</text>
+    <text x="18" y="130" class="body-text" style="font-size:10.5px; fill:#065F46;">Zapis w reports</text>
+    <text x="18" y="146" class="body-text" style="font-size:10.5px; fill:#065F46;">&amp; Flask report.html</text>
+
+    <!-- Failure Outcome -->
+    <rect x="155" y="98" width="138" height="60" rx="6" fill="#FEF2F2" stroke="#EF4444" stroke-width="1" />
+    <text x="161" y="114" style="font-family: -apple-system, sans-serif; font-size:10px; font-weight:700; fill:#991B1B;">BŁĄD / ODRZUCENIE</text>
+    <text x="161" y="130" class="body-text" style="font-size:10px; font-weight:600; fill:#991B1B;">Status FAILED</text>
+    <text x="161" y="146" class="body-text" style="font-size:10px; fill:#991B1B;">Brak raportu zastępczego</text>
+  </g>
+
+</svg>
